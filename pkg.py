@@ -19,8 +19,8 @@ by :class:`PackageManager`:
 
 - :class:`PackageMetadata`
     Parses the directory naming convention (``v<upstream>.l<local>``) and loads
-    the per-version config file (``opt_pkg.toml`` preferred, otherwise
-    ``opt_pkg.json``). It also computes paths used throughout installation.
+    the per-version config file (``pkg.toml`` preferred, otherwise
+    ``pkg.json``). It also computes paths used throughout installation.
 
 - :class:`JunctionManager`
     Creates/validates NTFS junctions and compares version strings to decide
@@ -72,12 +72,12 @@ A package lives under a *package directory* ``<pkg_name>`` with one or more
         App/
         Icons/
         Shortcuts/
-        opt_pkg.toml          (preferred) or opt_pkg.json
+        pkg.toml          (preferred) or pkg.json
 
 Version directories must be named ``v<upstream>.l<local>``, for example:
 ``v1.2.3.l1`` or ``v1.2-beta.3.l4``.
 
-Configuration schema (opt_pkg.toml/json)
+Configuration schema (pkg.toml/json)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Top-level keys used by this tool:
@@ -114,7 +114,7 @@ import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import winreg
 
@@ -132,16 +132,16 @@ Quick start
 
 Run the tool from inside a *version directory*:
 
-  gu-opt-pkg                 # installs from the current working directory
+  pkg                 # installs from the current working directory
 
 Or pass a path to a version directory:
 
-  gu-opt-pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
+  pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
 
 You may also pass the *package root* (the directory that contains ``current``);
 in that case the tool installs from the ``current`` junction:
 
-  gu-opt-pkg C:\opt\pkgs\Ripgrep
+  pkg C:\opt\pkgs\Ripgrep
 
 Scopes
 ~~~~~~
@@ -163,7 +163,7 @@ Config keys and examples
    Each entry is a dict. Supported keys:
 
    - name (required): file name without extension or with .lnk
-   - targetPath (required): executable path
+   - targetPath (required; alias: path): executable path
    - arguments (optional)
    - workingDirectory (optional)
    - iconLocation (optional): e.g. "C:\path\icon.ico,0"
@@ -179,7 +179,7 @@ Config keys and examples
      description = "Launch My App"
 
 2) Environment variables (``environment`` list)
-   Each entry must use *capitalized* keys ``Name`` and ``Value``:
+   Keys are case-insensitive (canonical: ``Name`` and ``Value``):
 
      [[environment]]
      Name = "MYAPP_HOME"
@@ -258,6 +258,10 @@ try:
     TOML_AVAILABLE = True
 except ImportError:
     TOML_AVAILABLE = False
+
+
+class ConfigValidationError(ValueError):
+    """Raised when pkg.toml/pkg.json configuration is invalid."""
 
 
 class Scope(Enum):
@@ -439,11 +443,241 @@ class PackageMetadata:
 
         return inconsistencies
 
+
+    # ---------------------------------------------------------------------
+    # Configuration normalization and validation
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _canonicalize_dict_keys(data: Dict[str, Any], keymap: Dict[str, str], *, context: str) -> Dict[str, Any]:
+        """Return a copy of *data* with keys normalized in a case-insensitive way.
+
+        Keys are matched by ``str(key).lower()`` against *keymap* and rewritten to
+        the canonical spelling stored in *keymap*. Unknown keys are preserved.
+
+        This function also detects collisions such as ``{"Name": ..., "name": ...}``
+        that would map to the same canonical key.
+
+        Args:
+            data: Input dictionary.
+            keymap: Mapping from lower-cased key -> canonical key name.
+            context: Human-readable context string used in error messages.
+
+        Returns:
+            A new dictionary with canonicalized keys.
+
+        Raises:
+            ConfigValidationError: If two different original keys map to the same
+                canonical key.
+        """
+        out: Dict[str, Any] = {}
+        seen_from: Dict[str, str] = {}
+
+        for k, v in data.items():
+            k_str = str(k)
+            canonical = keymap.get(k_str.lower(), k_str)
+
+            if canonical in out and seen_from.get(canonical) != k_str:
+                raise ConfigValidationError(
+                    f"Duplicate keys differing only by case/alias in {context}: "
+                    f"'{seen_from.get(canonical)}' and '{k_str}' both map to '{canonical}'."
+                )
+
+            out[canonical] = v
+            seen_from[canonical] = k_str
+
+        return out
+
+    @staticmethod
+    def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Canonicalize known config keys (case-insensitive) and normalize shapes.
+
+        This makes JSON/TOML keys case-insensitive for the supported schema. In
+        particular it normalizes:
+
+        - top-level keys like ``Name``/``NAME`` -> ``name``
+        - shortcut entry keys like ``TargetPath``/``path`` -> ``targetPath``
+        - environment entry keys like ``name`` -> ``Name`` and ``value`` -> ``Value``
+
+        Returns:
+            A new dict with canonicalized keys and list fields normalized to lists.
+
+        Raises:
+            ConfigValidationError: If the config structure is not as expected.
+        """
+        if not isinstance(data, dict):
+            raise ConfigValidationError(f"Configuration must be a dict, got: {type(data).__name__}")
+
+        top_map = {
+            # canonical schema keys (case-insensitive) + a few common aliases
+            "name": "name",
+            "version": "version",
+            "localversion": "localVersion",
+            "local_version": "localVersion",
+            "description": "description",
+            "homepage": "homepage",
+            "downloadurl": "downloadURL",
+            "download_url": "downloadURL",
+            "environment": "environment",
+            "env": "environment",
+            "bin": "bin",
+            "path": "path",
+            "shortcut": "shortcut",
+            "shortcuts": "shortcut",
+            "only_portable": "only_portable",
+            "onlyportable": "only_portable",
+            "portable": "portable",
+        }
+
+        out = PackageMetadata._canonicalize_dict_keys(data, top_map, context="config")
+
+        # Normalize absent/null list fields.
+        for k in ("environment", "bin", "path", "shortcut"):
+            if out.get(k, None) is None:
+                out[k] = []
+
+        # Normalize PATH: accept string -> [string] for convenience.
+        if isinstance(out.get("path", []), str):
+            out["path"] = [out["path"]]
+
+        if not isinstance(out.get("path", []), list):
+            raise ConfigValidationError(f"'path' must be a list of strings, got: {type(out['path']).__name__}")
+
+        # Canonicalize list-of-dict blocks.
+        env_map = {"name": "Name", "value": "Value"}
+        bin_map = {"name": "name", "content": "content"}
+        shortcut_map = {
+            "name": "name",
+            "targetpath": "targetPath",
+            "target_path": "targetPath",
+            "path": "targetPath",  # user-friendly alias for targetPath
+            "arguments": "arguments",
+            "args": "arguments",
+            "workingdirectory": "workingDirectory",
+            "working_directory": "workingDirectory",
+            "workdir": "workingDirectory",
+            "iconlocation": "iconLocation",
+            "icon_location": "iconLocation",
+            "description": "description",
+            "desc": "description",
+        }
+
+        def canonicalize_block(block_name: str, keymap: Dict[str, str]) -> List[Dict[str, Any]]:
+            raw = out.get(block_name, [])
+            if raw is None:
+                return []
+            if not isinstance(raw, list):
+                raise ConfigValidationError(f"'{block_name}' must be a list, got: {type(raw).__name__}")
+            result: List[Dict[str, Any]] = []
+            for i, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    raise ConfigValidationError(
+                        f"'{block_name}[{i}]' must be a dict, got: {type(item).__name__}"
+                    )
+                result.append(PackageMetadata._canonicalize_dict_keys(item, keymap, context=f"{block_name}[{i}]"))
+            return result
+
+        out["environment"] = canonicalize_block("environment", env_map)
+        out["bin"] = canonicalize_block("bin", bin_map)
+        out["shortcut"] = canonicalize_block("shortcut", shortcut_map)
+
+        # Ensure path entries are strings.
+        normalized_path: List[str] = []
+        for i, entry in enumerate(out.get("path", [])):
+            if entry is None:
+                continue
+            if not isinstance(entry, str):
+                raise ConfigValidationError(f"'path[{i}]' must be a string, got: {type(entry).__name__}")
+            normalized_path.append(entry)
+        out["path"] = normalized_path
+
+        return out
+
+    @staticmethod
+    def _validate_config_dict(data: Dict[str, Any]) -> None:
+        """Validate mandatory keys for list entries (shortcuts/env/bin).
+
+        This is a *sanity check* to prevent subtle bugs (e.g. creating an
+        ``opt.lnk`` shortcut when ``name`` is missing). See
+        :class:`ShortcutInstaller` for additional runtime guards.
+
+        Raises:
+            ConfigValidationError: If required fields are missing.
+        """
+        errors: List[str] = []
+
+        def keys_str(d: Dict[str, Any]) -> str:
+            return ", ".join(sorted(str(k) for k in d.keys()))
+
+        # Shortcuts: require name + targetPath
+        shortcuts = data.get("shortcut", [])
+        if isinstance(shortcuts, list):
+            for i, sc in enumerate(shortcuts):
+                if not isinstance(sc, dict):
+                    errors.append(f"shortcut[{i}] must be a dict")
+                    continue
+                name = str(sc.get("name", "") or "").strip()
+                target = str(sc.get("targetPath", "") or "").strip()
+                if not name or not target:
+                    missing = []
+                    if not name:
+                        missing.append("name")
+                    if not target:
+                        missing.append("targetPath")
+                    errors.append(
+                        f"shortcut[{i}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(sc)})"
+                    )
+
+        # Environment variables: require Name + Value
+        envs = data.get("environment", [])
+        if isinstance(envs, list):
+            for i, ev in enumerate(envs):
+                if not isinstance(ev, dict):
+                    errors.append(f"environment[{i}] must be a dict")
+                    continue
+                n = str(ev.get("Name", "") or "").strip()
+                v = str(ev.get("Value", "") or "").strip()
+                if not n or v == "":
+                    missing = []
+                    if not n:
+                        missing.append("Name")
+                    if v == "":
+                        missing.append("Value")
+                    errors.append(
+                        f"environment[{i}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(ev)})"
+                    )
+
+        # Bin wrappers: require name + content
+        bins = data.get("bin", [])
+        if isinstance(bins, list):
+            for i, bw in enumerate(bins):
+                if not isinstance(bw, dict):
+                    errors.append(f"bin[{i}] must be a dict")
+                    continue
+                n = str(bw.get("name", "") or "").strip()
+                c = str(bw.get("content", "") or "")
+                if not n or c == "":
+                    missing = []
+                    if not n:
+                        missing.append("name")
+                    if c == "":
+                        missing.append("content")
+                    errors.append(
+                        f"bin[{i}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(bw)})"
+                    )
+
+        if errors:
+            joined = "\n  - " + "\n  - ".join(errors)
+            raise ConfigValidationError(f"Invalid configuration:{joined}")
+
     def load_config(self) -> Dict:
         """Load configuration from TOML or JSON.
 
-        TOML (``opt_pkg.toml``) is preferred when the third-party ``toml`` package
-        is available; otherwise JSON (``opt_pkg.json``) is used. If neither file
+        TOML (``pkg.toml``) is preferred when the third-party ``toml`` package
+        is available; otherwise JSON (``pkg.json``) is used. If neither file
         exists, a default configuration is returned and loaded into the instance.
 
         Returns:
@@ -466,8 +700,8 @@ class PackageMetadata:
             "only_portable": self.only_portable,
         }
 
-        toml_path = self.version_path / "opt_pkg.toml"
-        json_path = self.version_path / "opt_pkg.json"
+        toml_path = self.version_path / "pkg.toml"
+        json_path = self.version_path / "pkg.json"
 
         # Try TOML first
         if toml_path.exists():
@@ -479,6 +713,8 @@ class PackageMetadata:
                 try:
                     with open(toml_path, "r", encoding="utf-8") as f:
                         data = toml.load(f)  # type: ignore[name-defined]
+                    data = self._canonicalize_config_dict(data)
+                    self._validate_config_dict(data)
                     self._load_from_dict(data)
                     return data
                 except Exception as e:
@@ -490,12 +726,16 @@ class PackageMetadata:
             try:
                 with open(json_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                data = self._canonicalize_config_dict(data)
+                self._validate_config_dict(data)
                 self._load_from_dict(data)
                 return data
             except Exception as e:
                 raise RuntimeError(f"Error loading JSON config from {json_path}: {e}") from e
 
         # No config file: use defaults
+        default_data = self._canonicalize_config_dict(default_data)
+        self._validate_config_dict(default_data)
         self._load_from_dict(default_data)
         return default_data
 
@@ -553,18 +793,23 @@ class PackageMetadata:
                 "only_portable": self.only_portable,
             }
         else:
+            data = self._canonicalize_config_dict(data)
+            self._validate_config_dict(data)
             data["name"] = self.name
             data["version"] = self.version
             data["localVersion"] = self.local_version
             data["only_portable"] = self.only_portable
+
+        # Final sanity validation before writing.
+        self._validate_config_dict(data)
 
         if self.name.lower().endswith("-portable") and not self.only_portable:
             self.only_portable = True
             data["only_portable"] = True
 
         if TOML_AVAILABLE:
-            toml_path = self.version_path / "opt_pkg.toml"
-            json_path = self.version_path / "opt_pkg.json"
+            toml_path = self.version_path / "pkg.toml"
+            json_path = self.version_path / "pkg.json"
 
             with open(toml_path, "w", encoding="utf-8") as f:
                 toml.dump(data, f)  # type: ignore[name-defined]
@@ -574,7 +819,7 @@ class PackageMetadata:
                 json_path.unlink()
                 print(f"Removed: {json_path} (converted to TOML)")
         else:
-            json_path = self.version_path / "opt_pkg.json"
+            json_path = self.version_path / "pkg.json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             print(f"Updated: {json_path}")
@@ -592,8 +837,8 @@ class PackageMetadata:
             print("Install it with: pip install toml")
             return False
 
-        json_path = self.version_path / "opt_pkg.json"
-        toml_path = self.version_path / "opt_pkg.toml"
+        json_path = self.version_path / "pkg.json"
+        toml_path = self.version_path / "pkg.toml"
 
         if not json_path.exists():
             print(f"Error: JSON configuration not found at {json_path}")
@@ -603,8 +848,12 @@ class PackageMetadata:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
+            data = self._canonicalize_config_dict(data)
+            self._validate_config_dict(data)
+            # Populate metadata from this config so directory-derived portability can be preserved.
+            self._load_from_dict(data)
+
             # Preserve portability flags if not present in JSON.
-            self.load_config()
             if self.only_portable and "only_portable" not in data and "portable" not in data:
                 data["only_portable"] = True
 
@@ -969,16 +1218,27 @@ class ShortcutInstaller:
         """Create a shortcut using pywin32 (COM)."""
         try:
             expanded = VariableExpander.expand_dict(shortcut_info, metadata)
+            name = str(expanded.get("name", "") or "").strip()
+            target_required = str(expanded.get("targetPath", "") or "").strip()
+            if not name or not target_required:
+                missing = []
+                if not name:
+                    missing.append("name")
+                if not target_required:
+                    missing.append("targetPath")
+                print(f"SHORTCUT error: missing required key(s) {missing} in entry: {shortcut_info}")
+                return False
+
             metadata.shortcut_dir.mkdir(parents=True, exist_ok=True)
 
-            shortcut_path = metadata.shortcut_dir / expanded.get("name", "")
+            shortcut_path = metadata.shortcut_dir / name
             if shortcut_path.suffix.lower() != ".lnk":
                 shortcut_path = shortcut_path.with_suffix(".lnk")
 
             shell = win32com.client.Dispatch("WScript.Shell")  # type: ignore[name-defined]
             shortcut = shell.CreateShortcut(str(shortcut_path))
 
-            shortcut.TargetPath = expanded.get("targetPath", "")
+            shortcut.TargetPath = target_required
             if "arguments" in expanded:
                 shortcut.Arguments = expanded["arguments"]
             if "workingDirectory" in expanded:
@@ -1001,16 +1261,27 @@ class ShortcutInstaller:
         """Create a shortcut using PowerShell (fallback)."""
         try:
             expanded = VariableExpander.expand_dict(shortcut_info, metadata)
+            name = str(expanded.get("name", "") or "").strip()
+            target_required = str(expanded.get("targetPath", "") or "").strip()
+            if not name or not target_required:
+                missing = []
+                if not name:
+                    missing.append("name")
+                if not target_required:
+                    missing.append("targetPath")
+                print(f"SHORTCUT error: missing required key(s) {missing} in entry: {shortcut_info}")
+                return False
+
             metadata.shortcut_dir.mkdir(parents=True, exist_ok=True)
 
-            shortcut_path = metadata.shortcut_dir / expanded.get("name", "")
+            shortcut_path = metadata.shortcut_dir / name
             if shortcut_path.suffix.lower() != ".lnk":
                 shortcut_path = shortcut_path.with_suffix(".lnk")
 
             def esc(s: str) -> str:
                 return s.replace("'", "''")
 
-            target_path = esc(expanded.get("targetPath", ""))
+            target_path = esc(target_required)
             arguments = esc(expanded.get("arguments", ""))
             working_dir = esc(expanded.get("workingDirectory", ""))
             icon_location = esc(expanded.get("iconLocation", ""))
