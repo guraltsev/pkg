@@ -1235,6 +1235,10 @@ class ShortcutInstaller:
             if shortcut_path.suffix.lower() != ".lnk":
                 shortcut_path = shortcut_path.with_suffix(".lnk")
 
+            # If the shortcut name includes subfolders (e.g. "Tools\My App"),
+            # ensure the parent directory exists before creating the .lnk.
+            shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+
             shell = win32com.client.Dispatch("WScript.Shell")  # type: ignore[name-defined]
             shortcut = shell.CreateShortcut(str(shortcut_path))
 
@@ -1277,6 +1281,10 @@ class ShortcutInstaller:
             shortcut_path = metadata.shortcut_dir / name
             if shortcut_path.suffix.lower() != ".lnk":
                 shortcut_path = shortcut_path.with_suffix(".lnk")
+
+            # If the shortcut name includes subfolders (e.g. "Tools\My App"),
+            # ensure the parent directory exists before creating the .lnk.
+            shortcut_path.parent.mkdir(parents=True, exist_ok=True)
 
             def esc(s: str) -> str:
                 return s.replace("'", "''")
