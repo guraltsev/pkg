@@ -262,6 +262,7 @@ def main() -> int:
     parser.add_argument("--dir", default=".", help="Directory that contains legacy JSON files (default: current directory)")
     parser.add_argument("--output", default="pkg.toml", help="Output TOML path (default: ./pkg.toml)")
     parser.add_argument("--dry-run", action="store_true", help="Print resulting TOML to stdout instead of writing")
+    parser.add_argument("--force", action="store_true", help="Overwrite output file if it already exists")
     args = parser.parse_args()
 
     base_dir = Path(args.dir).resolve()
@@ -277,6 +278,14 @@ def main() -> int:
         print(temp.read_text(encoding="utf-8"))
         temp.unlink(missing_ok=True)
         return 0
+
+    if out_path.exists() and not args.force:
+        print(
+            f"Error: {out_path} already exists. "
+            "Refusing to overwrite existing TOML to avoid data loss. "
+            "Use --force to overwrite."
+        )
+        return 1
 
     write_pkg_toml(out_path, cfg)
     print(f"Wrote {out_path}")
