@@ -126,7 +126,7 @@ def get_deps_path() -> Path:
     """Return the local dependency cache directory used by pkg.
 
     Dependencies are installed under:
-    ``%USERPROFILE%\AppData\Local\pkg\_deps``.
+    ``%USERPROFILE%\\AppData\\Local\\pkg\\_deps``.
     """
     userprofile = os.environ.get("USERPROFILE", str(Path.home()))
     return Path(userprofile) / "AppData" / "Local" / "pkg" / "_deps"
