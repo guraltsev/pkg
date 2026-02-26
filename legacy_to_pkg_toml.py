@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -114,7 +115,7 @@ def normalize_shortcut(item: dict[str, Any]) -> dict[str, str]:
         canon = key_map.get(str(k).lower())
         if canon is None or v is None:
             continue
-        out[canon] = str(v)
+        out[canon] = normalize_legacy_variable_path(str(v))
 
     # best effort for legacy .lnk naming
     if out.get("name", "").lower().endswith(".lnk"):
@@ -134,10 +135,39 @@ def normalize_bin(item: dict[str, Any]) -> dict[str, str]:
         if lk == "name" and v is not None:
             name = str(v)
         elif lk == "content" and v is not None:
-            content = str(v)
+            content = normalize_legacy_variable_path(str(v))
     if not name or content == "":
         return {}
     return {"name": name, "content": content}
+
+
+def normalize_legacy_variable_path(value: str) -> str:
+    """Normalize legacy path variable spellings to canonical forms.
+
+    Legacy configs can reference package component directories through
+    ``$AppPath``-style variables. Canonicalize these to current package
+    variables (``$App``, ``$Icons``, ``$Shortcuts``).
+    """
+
+    normalized = value
+
+    component_patterns = [
+        # Legacy root + explicit component folder.
+        (r"\$AppPath[\\/]+App(?=[\\/]+|$)", "$App"),
+        (r"\$AppPath[\\/]+Icons(?=[\\/]+|$)", "$Icons"),
+        (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
+        # Legacy component-specific aliases.
+        (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
+        (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
+        (r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)", "$Shortcuts"),
+        # Bare AppPath points to App component in old configs.
+        (r"\$AppPath(?=[\\/]+|$)", "$App"),
+    ]
+
+    for pattern, replacement in component_patterns:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+    return normalized
 
 
 def extend_normalized_list(
