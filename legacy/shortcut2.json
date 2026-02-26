@@ -1,0 +1,13 @@
+{
+    "shortcut": [
+        {
+            "Name": "Dont Sleep.lnk",
+            "TargetPath": "$Pkg_App_Path\\DontSleep_x64.exe",
+			"Arguments": "",
+            "WorkingDirectory": "",
+            "IconLocation": "",
+            "Description": ""
+        }
+    ]
+}
+

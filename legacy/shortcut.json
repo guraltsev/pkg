@@ -1,0 +1,13 @@
+{
+    "shortcut": [
+        {
+            "Name": "Czkawka.lnk",
+            "TargetPath": "$AppPath\\App\\czkawka_gui.exe",
+			"Arguments":"",
+            "WorkingDirectory": "",
+            "IconLocation": "$AppPath\\icons\\czkawka.ico",
+            "Description": "Find duplicates"
+        }
+    ]
+}
+
