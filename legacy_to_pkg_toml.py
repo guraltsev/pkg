@@ -47,6 +47,17 @@ def to_toml_scalar(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def toml_path_lines(path_entries: list[Any]) -> list[str]:
+    if not path_entries:
+        return ["path = []"]
+
+    lines = ["path = ["]
+    for entry in path_entries:
+        lines.append(f"  {to_toml_scalar(str(entry))},")
+    lines.append("]")
+    return lines
+
+
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -205,9 +216,9 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
         f"description = {to_toml_scalar(cfg.get('description', ''))}",
         f"homepage = {to_toml_scalar(cfg.get('homepage', ''))}",
         f"downloadURL = {to_toml_scalar(cfg.get('downloadURL', ''))}",
-        f"path = {to_toml_scalar(cfg.get('path', []))}",
-        "",
     ]
+    lines.extend(toml_path_lines(cfg.get("path", [])))
+    lines.append("")
 
     for entry in cfg.get("environment", []):
         lines.extend([
