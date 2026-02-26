@@ -1253,7 +1253,7 @@ class JunctionManager:
 
         """
         try:
-            if source.exists():
+            if os.path.lexists(str(source)):
                 if JunctionManager.is_junction(source):
                     os.unlink(str(source))
                 else:
@@ -1432,7 +1432,7 @@ class JunctionManager:
         """
         current_path = metadata.pkg_path / "current"
 
-        if current_path.exists():
+        if os.path.lexists(str(current_path)):
             if not JunctionManager.is_junction(current_path):
                 raise ValueError(
                     f"{current_path} exists but is not a junction. Aborting all operations."
@@ -1445,10 +1445,16 @@ class JunctionManager:
                 )
 
             current_target = current_target.resolve()
-            if not (current_target.parent == metadata.pkg_path and current_target.is_dir()):
+            if not current_target.is_dir():
+                print(
+                    f"JUNCTION: removing stale 'current' target (missing directory): {current_target}"
+                )
+                return JunctionManager.create_junction(current_path, metadata.version_path)
+
+            if current_target.parent != metadata.pkg_path:
                 raise ValueError(
                     f"{current_path} is a junction but its target {current_target} "
-                    f"is not a directory under {metadata.pkg_path}. Aborting."
+                    f"is not under {metadata.pkg_path}. Aborting."
                 )
 
             current_version = current_target.name
@@ -1947,6 +1953,29 @@ class PackageManager:
         print(f"Path: {metadata.version_path}")
         print(f"only_portable: {metadata.only_portable}\n")
 
+        if metadata.only_portable and self.scope == Scope.MACHINE:
+            print("ERROR: only_portable packages cannot be installed system-wide.")
+            print("Please use User scope for only_portable packages.")
+            self._pause()
+            return
+
+        should_install = False
+        if package_path.name.lower() == "current" and JunctionManager.is_junction(package_path):
+            print("Installing from 'current' junction (skipping junction management)")
+            should_install = True
+        else:
+            print("Managing 'current' junction...")
+            junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
+            should_install = junction_updated or metadata.is_current
+
+        if not should_install:
+            print("\nSkipping component installation (newer version already installed)")
+            print(f"\n{'-'*60}")
+            print("Installation complete!")
+            print(f"{'-'*60}")
+            self._pause()
+            return
+
         inconsistencies = metadata.check_metadata_consistency(config_data)
         if inconsistencies:
             if self.no_autoupdate_config:
@@ -1964,24 +1993,8 @@ class PackageManager:
             metadata.update_config(config_data)
             print("Configuration updated successfully.\n")
 
-        if metadata.only_portable and self.scope == Scope.MACHINE:
-            print("ERROR: only_portable packages cannot be installed system-wide.")
-            print("Please use User scope for only_portable packages.")
-            self._pause()
-            return
-
-        if package_path.name.lower() == "current" and JunctionManager.is_junction(package_path):
-            print("Installing from 'current' junction (skipping junction management)")
-            self._install_components(metadata)
-        else:
-            print("Managing 'current' junction...")
-            junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
-
-            if junction_updated or metadata.is_current:
-                print("\nInstalling components...")
-                self._install_components(metadata)
-            else:
-                print("\nSkipping component installation (newer version already installed)")
+        print("\nInstalling components...")
+        self._install_components(metadata)
 
         print(f"\n{'-'*60}")
         print("Installation complete!")
