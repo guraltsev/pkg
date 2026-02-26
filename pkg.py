@@ -1091,6 +1091,13 @@ class PackageMetadata:
             print(f"Error: JSON configuration not found at {json_path}")
             return False
 
+        if toml_path.exists():
+            print(
+                "Error: Conversion aborted because pkg.toml already exists. "
+                "Refusing to overwrite existing TOML to avoid data loss."
+            )
+            return False
+
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
