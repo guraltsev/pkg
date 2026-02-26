@@ -209,6 +209,7 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
     lines = [
         "# Auto-generated from legacy config files.",
         "# Please review and edit as needed.",
+        "[[main]]",
         f"name = {to_toml_scalar(cfg.get('name', ''))}",
         f"version = {to_toml_scalar(cfg.get('version', ''))}",
         f"localVersion = {to_toml_scalar(cfg.get('localVersion', ''))}",
@@ -216,6 +217,7 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
         f"description = {to_toml_scalar(cfg.get('description', ''))}",
         f"homepage = {to_toml_scalar(cfg.get('homepage', ''))}",
         f"downloadURL = {to_toml_scalar(cfg.get('downloadURL', ''))}",
+        "",
     ]
     lines.extend(toml_path_lines(cfg.get("path", [])))
     lines.append("")
