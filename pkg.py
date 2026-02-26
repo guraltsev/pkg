@@ -259,7 +259,21 @@ Config keys and examples
 
      [[bin]]
      name = "myapp.cmd"
-     content = "@echo off\r\n\"%~dp0\\..\\..\\...\"
+     content = "\"\"\"
+@echo off
+set "APP_HOME=%~dp0..\opt\MyApp"
+"%APP_HOME%\MyApp.exe" %*
+\"\"\"
+
+   PowerShell example:
+
+     [[bin]]
+     name = "myapp.ps1"
+     content = "\"\"\"
+$ErrorActionPreference = 'Stop'
+$app = Join-Path $PSScriptRoot '..\opt\MyApp\MyApp.exe'
+& $app @args
+\"\"\"
 
 Variable expansion rules
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -818,7 +832,11 @@ class PackageMetadata:
             "# Example bin entry:",
             '# [[bin]]',
             '# name = "myapp.cmd"',
-            "# content = \"@echo off && rem call app here\"",
+            '# content = """',
+            "# @echo off",
+            '# set "APP_HOME=%~dp0..\\opt\\MyApp"',
+            '# "%APP_HOME%\\MyApp.exe" %*',
+            '# """',
             "",
         ]
         self._write_pkg_toml(toml_path, data, preface=lines)
