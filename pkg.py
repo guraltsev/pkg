@@ -234,6 +234,7 @@ Config keys and examples
      [[shortcut]]
      name = "My App"
      targetPath = "$App\\MyApp.exe"
+     arguments = ""
      workingDirectory = "$App"
      iconLocation = "$Icons\\myapp.ico,0"
      description = "Launch My App"
