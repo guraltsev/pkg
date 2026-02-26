@@ -140,6 +140,28 @@ def normalize_bin(item: dict[str, Any]) -> dict[str, str]:
     return {"name": name, "content": content}
 
 
+def extend_normalized_list(
+    output: dict[str, Any],
+    source: dict[str, Any],
+    key: str,
+    normalizer,
+    source_name: str,
+) -> None:
+    rows = source.get(key, [])
+    if rows is None:
+        return
+    if not isinstance(rows, list):
+        print(f"Warning: {source_name}: '{key}' should be a list")
+        return
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        norm = normalizer(row)
+        if norm:
+            output[key].append(norm)
+
+
 def build_config(base_dir: Path) -> dict[str, Any]:
     out = dict(DEFAULTS)
 
@@ -172,35 +194,22 @@ def build_config(base_dir: Path) -> dict[str, Any]:
                 else:
                     out[canon] = v
 
+            # Some legacy repositories stored list blocks directly in opt_pkg.json
+            # rather than separate shortcut*.json / bin*.json files.
+            extend_normalized_list(out, data, "shortcut", normalize_shortcut, opt_pkg.name)
+            extend_normalized_list(out, data, "bin", normalize_bin, opt_pkg.name)
+
     for shortcut_file in pick_all_matching(base_dir, "shortcut"):
         data = read_json(shortcut_file)
         if not data:
             continue
-        rows = data.get("shortcut", [])
-        if not isinstance(rows, list):
-            print(f"Warning: {shortcut_file.name}: 'shortcut' should be a list")
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            norm = normalize_shortcut(row)
-            if norm:
-                out["shortcut"].append(norm)
+        extend_normalized_list(out, data, "shortcut", normalize_shortcut, shortcut_file.name)
 
     for bin_file in pick_all_matching(base_dir, "bin"):
         data = read_json(bin_file)
         if not data:
             continue
-        rows = data.get("bin", [])
-        if not isinstance(rows, list):
-            print(f"Warning: {bin_file.name}: 'bin' should be a list")
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            norm = normalize_bin(row)
-            if norm:
-                out["bin"].append(norm)
+        extend_normalized_list(out, data, "bin", normalize_bin, bin_file.name)
 
     return out
 
