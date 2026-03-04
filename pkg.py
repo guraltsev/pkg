@@ -1933,11 +1933,12 @@ class PackageManager:
         print(f"Scope: {self.scope.value}")
         print(f"{'='*60}\n")
 
-        # If the user passed the package root, install from its "current" junction.
-        if package_path.is_dir() and (package_path / "current").exists() and package_path.name.lower() != "current":
-            maybe_current = package_path / "current"
-            if JunctionManager.is_junction(maybe_current):
-                package_path = maybe_current
+        try:
+            package_path, installing_from_current = self._resolve_install_path(package_path)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            self._pause()
+            return
 
         try:
             metadata = PackageMetadata(package_path)
@@ -1960,8 +1961,8 @@ class PackageManager:
             return
 
         should_install = False
-        if package_path.name.lower() == "current" and JunctionManager.is_junction(package_path):
-            print("Installing from 'current' junction (skipping junction management)")
+        if installing_from_current:
+            print("Installing from resolved 'current' target (skipping junction management)")
             should_install = True
         else:
             print("Managing 'current' junction...")
@@ -2000,6 +2001,59 @@ class PackageManager:
         print("Installation complete!")
         print(f"{'-'*60}")
         self._pause()
+
+    def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
+        """Resolve install input into a version directory path.
+
+        Args:
+            package_path: User-provided install path.
+
+        Returns:
+            A tuple of ``(resolved_path, installing_from_current)``.
+
+        Raises:
+            ValueError: If ``current`` is missing/invalid when required.
+
+        """
+        current_path = package_path
+
+        # If a package root is passed, it must contain a usable "current" junction.
+        if package_path.name.lower() != "current":
+            current_path = package_path / "current"
+            if not current_path.exists():
+                raise ValueError(
+                    f'No "current" directory exists in package root: {package_path}\n'
+                    f"Debug: looked for {current_path}; root_exists={package_path.exists()}, "
+                    f"root_is_dir={package_path.is_dir()}"
+                )
+
+        # If the path is current, it must be a valid junction with a valid target directory.
+        if current_path.name.lower() == "current":
+            if not JunctionManager.is_junction(current_path):
+                raise ValueError(
+                    f'"current" path exists but is not a valid junction: {current_path}\n'
+                    f"Debug: exists={current_path.exists()}, is_dir={current_path.is_dir()}, "
+                    f"parent={current_path.parent}"
+                )
+
+            target = JunctionManager.get_junction_target(current_path)
+            if target is None:
+                raise ValueError(
+                    f'Could not resolve "current" junction target: {current_path}\n'
+                    "Debug: os.readlink failed or returned no target."
+                )
+
+            resolved_target = target.resolve()
+            if not resolved_target.is_dir():
+                raise ValueError(
+                    f'"current" junction target is not a directory: {resolved_target}\n'
+                    f"Debug: source={current_path}, raw_target={target}"
+                )
+
+            return resolved_target, True
+
+        # Otherwise install from explicit version directory.
+        return package_path, False
 
     def _install_components(self, metadata: PackageMetadata) -> None:
         """Install all components declared in config for the given package.
