@@ -264,15 +264,24 @@ Config keys and examples
    - name (required): file name under the bin dir (e.g. "myapp.cmd")
    - content (required): full file content after variable expansion
 
-   Example:
+   Syntax notes:
+
+   - ``content`` is the full script text written to the wrapper file.
+   - Use a TOML multi-line *literal* string (triple single quotes) for scripts
+     that include newlines, quotes, and backslashes.
+   - ``$App`` is expanded by pkg before writing the file.
+
+   Example (CMD wrapper with expanded ``$App``):
 
      [[bin]]
      name = "myapp.cmd"
-     content = "\"\"\"
+     content = '''
 @echo off
-set "APP_HOME=%~dp0..\opt\MyApp"
-"%APP_HOME%\MyApp.exe" %*
-\"\"\"
+python "$App\\app_script_name.py" %*
+'''
+
+   If you use TOML basic strings instead, escape quotes and backslashes
+   explicitly (e.g. ``\"`` and ``\\``).
 
    PowerShell example:
 
