@@ -1933,73 +1933,124 @@ class PackageManager:
         print(f"Scope: {self.scope.value}")
         print(f"{'='*60}\n")
 
-        # If the user passed the package root, install from its "current" junction.
-        if package_path.is_dir() and (package_path / "current").exists() and package_path.name.lower() != "current":
-            maybe_current = package_path / "current"
-            if JunctionManager.is_junction(maybe_current):
-                package_path = maybe_current
-
         try:
-            metadata = PackageMetadata(package_path)
-            metadata.set_scope(self.scope)
-            config_data = metadata.load_config()
-        except Exception as e:
-            print(f"ERROR: Failed to parse package metadata: {e}")
-            self._pause()
-            return
+            try:
+                package_path, installing_from_current = self._resolve_install_path(package_path)
+            except ValueError as e:
+                print(f"ERROR: {e}")
+                return
 
-        print(f"Package: {metadata.name}")
-        print(f"Version: {metadata.version_string}")
-        print(f"Path: {metadata.version_path}")
-        print(f"only_portable: {metadata.only_portable}\n")
+            try:
+                metadata = PackageMetadata(package_path)
+                metadata.set_scope(self.scope)
+                config_data = metadata.load_config()
+            except Exception as e:
+                print(f"ERROR: Failed to parse package metadata: {e}")
+                return
 
-        if metadata.only_portable and self.scope == Scope.MACHINE:
-            print("ERROR: only_portable packages cannot be installed system-wide.")
-            print("Please use User scope for only_portable packages.")
-            self._pause()
-            return
+            print(f"Package: {metadata.name}")
+            print(f"Version: {metadata.version_string}")
+            print(f"Path: {metadata.version_path}")
+            print(f"only_portable: {metadata.only_portable}\n")
 
-        should_install = False
-        if package_path.name.lower() == "current" and JunctionManager.is_junction(package_path):
-            print("Installing from 'current' junction (skipping junction management)")
-            should_install = True
-        else:
-            print("Managing 'current' junction...")
-            junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
-            should_install = junction_updated or metadata.is_current
+            if metadata.only_portable and self.scope == Scope.MACHINE:
+                print("ERROR: only_portable packages cannot be installed system-wide.")
+                print("Please use User scope for only_portable packages.")
+                return
 
-        if not should_install:
-            print("\nSkipping component installation (newer version already installed)")
+            should_install = False
+            if installing_from_current:
+                print("Installing from resolved 'current' target (skipping junction management)")
+                should_install = True
+            else:
+                print("Managing 'current' junction...")
+                junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
+                should_install = junction_updated or metadata.is_current
+
+            if not should_install:
+                print("\nSkipping component installation (newer version already installed)")
+                print(f"\n{'-'*60}")
+                print("Installation complete!")
+                print(f"{'-'*60}")
+                return
+
+            inconsistencies = metadata.check_metadata_consistency(config_data)
+            if inconsistencies:
+                if self.no_autoupdate_config:
+                    print("ERROR: Configuration inconsistencies detected and --no-autoupdate-config is enabled:")
+                    for msg in inconsistencies:
+                        print(f"  - {msg}")
+                    print("\nAborting installation. Please fix the configuration manually.")
+                    return
+
+                print("WARNING: Configuration inconsistencies detected:")
+                for msg in inconsistencies:
+                    print(f"  - {msg}")
+                print("\nAuto-updating configuration file to match directory structure...")
+                metadata.update_config(config_data)
+                print("Configuration updated successfully.\n")
+
+            print("\nInstalling components...")
+            self._install_components(metadata)
+
             print(f"\n{'-'*60}")
             print("Installation complete!")
             print(f"{'-'*60}")
+        finally:
             self._pause()
-            return
 
-        inconsistencies = metadata.check_metadata_consistency(config_data)
-        if inconsistencies:
-            if self.no_autoupdate_config:
-                print("ERROR: Configuration inconsistencies detected and --no-autoupdate-config is enabled:")
-                for msg in inconsistencies:
-                    print(f"  - {msg}")
-                print("\nAborting installation. Please fix the configuration manually.")
-                self._pause()
-                return
+    def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
+        """Resolve install input into a version directory path.
 
-            print("WARNING: Configuration inconsistencies detected:")
-            for msg in inconsistencies:
-                print(f"  - {msg}")
-            print("\nAuto-updating configuration file to match directory structure...")
-            metadata.update_config(config_data)
-            print("Configuration updated successfully.\n")
+        Args:
+            package_path: User-provided install path.
 
-        print("\nInstalling components...")
-        self._install_components(metadata)
+        Returns:
+            A tuple of ``(resolved_path, installing_from_current)``.
 
-        print(f"\n{'-'*60}")
-        print("Installation complete!")
-        print(f"{'-'*60}")
-        self._pause()
+        Raises:
+            ValueError: If ``current`` is missing/invalid when required.
+
+        """
+        current_path = package_path
+
+        # If a package root is passed, it must contain a usable "current" junction.
+        if package_path.name.lower() != "current":
+            current_path = package_path / "current"
+            if not current_path.exists():
+                raise ValueError(
+                    f'No "current" directory exists in package root: {package_path}\n'
+                    f"Debug: looked for {current_path}; root_exists={package_path.exists()}, "
+                    f"root_is_dir={package_path.is_dir()}"
+                )
+
+        # If the path is current, it must be a valid junction with a valid target directory.
+        if current_path.name.lower() == "current":
+            if not JunctionManager.is_junction(current_path):
+                raise ValueError(
+                    f'"current" path exists but is not a valid junction: {current_path}\n'
+                    f"Debug: exists={current_path.exists()}, is_dir={current_path.is_dir()}, "
+                    f"parent={current_path.parent}"
+                )
+
+            target = JunctionManager.get_junction_target(current_path)
+            if target is None:
+                raise ValueError(
+                    f'Could not resolve "current" junction target: {current_path}\n'
+                    "Debug: os.readlink failed or returned no target."
+                )
+
+            resolved_target = target.resolve()
+            if not resolved_target.is_dir():
+                raise ValueError(
+                    f'"current" junction target is not a directory: {resolved_target}\n'
+                    f"Debug: source={current_path}, raw_target={target}"
+                )
+
+            return resolved_target, True
+
+        # Otherwise install from explicit version directory.
+        return package_path, False
 
     def _install_components(self, metadata: PackageMetadata) -> None:
         """Install all components declared in config for the given package.
