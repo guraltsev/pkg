@@ -1934,73 +1934,70 @@ class PackageManager:
         print(f"{'='*60}\n")
 
         try:
-            package_path, installing_from_current = self._resolve_install_path(package_path)
-        except ValueError as e:
-            print(f"ERROR: {e}")
-            self._pause()
-            return
+            try:
+                package_path, installing_from_current = self._resolve_install_path(package_path)
+            except ValueError as e:
+                print(f"ERROR: {e}")
+                return
 
-        try:
-            metadata = PackageMetadata(package_path)
-            metadata.set_scope(self.scope)
-            config_data = metadata.load_config()
-        except Exception as e:
-            print(f"ERROR: Failed to parse package metadata: {e}")
-            self._pause()
-            return
+            try:
+                metadata = PackageMetadata(package_path)
+                metadata.set_scope(self.scope)
+                config_data = metadata.load_config()
+            except Exception as e:
+                print(f"ERROR: Failed to parse package metadata: {e}")
+                return
 
-        print(f"Package: {metadata.name}")
-        print(f"Version: {metadata.version_string}")
-        print(f"Path: {metadata.version_path}")
-        print(f"only_portable: {metadata.only_portable}\n")
+            print(f"Package: {metadata.name}")
+            print(f"Version: {metadata.version_string}")
+            print(f"Path: {metadata.version_path}")
+            print(f"only_portable: {metadata.only_portable}\n")
 
-        if metadata.only_portable and self.scope == Scope.MACHINE:
-            print("ERROR: only_portable packages cannot be installed system-wide.")
-            print("Please use User scope for only_portable packages.")
-            self._pause()
-            return
+            if metadata.only_portable and self.scope == Scope.MACHINE:
+                print("ERROR: only_portable packages cannot be installed system-wide.")
+                print("Please use User scope for only_portable packages.")
+                return
 
-        should_install = False
-        if installing_from_current:
-            print("Installing from resolved 'current' target (skipping junction management)")
-            should_install = True
-        else:
-            print("Managing 'current' junction...")
-            junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
-            should_install = junction_updated or metadata.is_current
+            should_install = False
+            if installing_from_current:
+                print("Installing from resolved 'current' target (skipping junction management)")
+                should_install = True
+            else:
+                print("Managing 'current' junction...")
+                junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
+                should_install = junction_updated or metadata.is_current
 
-        if not should_install:
-            print("\nSkipping component installation (newer version already installed)")
+            if not should_install:
+                print("\nSkipping component installation (newer version already installed)")
+                print(f"\n{'-'*60}")
+                print("Installation complete!")
+                print(f"{'-'*60}")
+                return
+
+            inconsistencies = metadata.check_metadata_consistency(config_data)
+            if inconsistencies:
+                if self.no_autoupdate_config:
+                    print("ERROR: Configuration inconsistencies detected and --no-autoupdate-config is enabled:")
+                    for msg in inconsistencies:
+                        print(f"  - {msg}")
+                    print("\nAborting installation. Please fix the configuration manually.")
+                    return
+
+                print("WARNING: Configuration inconsistencies detected:")
+                for msg in inconsistencies:
+                    print(f"  - {msg}")
+                print("\nAuto-updating configuration file to match directory structure...")
+                metadata.update_config(config_data)
+                print("Configuration updated successfully.\n")
+
+            print("\nInstalling components...")
+            self._install_components(metadata)
+
             print(f"\n{'-'*60}")
             print("Installation complete!")
             print(f"{'-'*60}")
+        finally:
             self._pause()
-            return
-
-        inconsistencies = metadata.check_metadata_consistency(config_data)
-        if inconsistencies:
-            if self.no_autoupdate_config:
-                print("ERROR: Configuration inconsistencies detected and --no-autoupdate-config is enabled:")
-                for msg in inconsistencies:
-                    print(f"  - {msg}")
-                print("\nAborting installation. Please fix the configuration manually.")
-                self._pause()
-                return
-
-            print("WARNING: Configuration inconsistencies detected:")
-            for msg in inconsistencies:
-                print(f"  - {msg}")
-            print("\nAuto-updating configuration file to match directory structure...")
-            metadata.update_config(config_data)
-            print("Configuration updated successfully.\n")
-
-        print("\nInstalling components...")
-        self._install_components(metadata)
-
-        print(f"\n{'-'*60}")
-        print("Installation complete!")
-        print(f"{'-'*60}")
-        self._pause()
 
     def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
         """Resolve install input into a version directory path.
