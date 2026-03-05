@@ -922,8 +922,8 @@ class PackageMetadata:
             '# name = "myapp.cmd"',
             '# content = """',
             "# @echo off",
-            '# set "APP_HOME=%~dp0..\\opt\\MyApp"',
-            '# "%APP_HOME%\\MyApp.exe" %*',
+            '# rem $App gets replaced with the package App directory at install time',
+            '# @ $App\\app.exe %*',
             '# """',
             "",
         ]
