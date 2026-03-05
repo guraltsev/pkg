@@ -1,5 +1,5 @@
 @echo off
-echo Running gu-opt-pkg with Machine scope (requires admin)...
+echo Running gurlatsev/pkg with Machine scope (requires admin)...
 echo.
 
 REM Get the directory where this script is located
