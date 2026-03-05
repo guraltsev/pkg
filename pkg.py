@@ -347,6 +347,8 @@ python "$App\\app_script_name.py" %*
    In particular, Windows paths like ``$App\bin\gh.exe`` must be written as
    ``$App\\bin\\gh.exe`` in basic strings, or placed inside a literal
    multi-line string to avoid TOML "reserved escape sequence" parse errors.
+   Also, if you keep content on one line (JSON or TOML basic string), use
+   escaped newlines (``\n``), which pkg now normalizes to real line breaks.
 
    PowerShell example:
 
@@ -638,6 +640,18 @@ class PackageMetadata:
         return out
 
     @staticmethod
+    def _normalize_bin_content(value: Any) -> str:
+        """Normalize wrapper content so escaped newlines behave as users expect.
+
+        If a value contains literal escape sequences like ``\n``/``\r\n`` but no
+        actual newline characters, convert those escapes to real newlines. This
+        keeps one-line TOML/JSON strings usable for multi-line wrapper scripts.
+        """
+        text = str(value or "")
+        if "\n" in text:
+            return text
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
     def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         """Canonicalize known config keys (case-insensitive) and normalize shapes.
 
@@ -756,6 +770,9 @@ class PackageMetadata:
 
         out["environment"] = canonicalize_block("environment", env_map)
         out["bin"] = canonicalize_block("bin", bin_map)
+        for bw in out["bin"]:
+            if "content" in bw:
+                bw["content"] = PackageMetadata._normalize_bin_content(bw.get("content", ""))
         out["shortcut"] = canonicalize_block("shortcut", shortcut_map)
 
         # Ensure path entries are [[path]] tables like { value = "..." }.
