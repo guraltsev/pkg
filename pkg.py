@@ -1941,7 +1941,7 @@ class PackageManager:
 
         """
         print(f"\n{'='*60}")
-        print("gu-opt-pkg: Package Manager")
+        print("gurlatsev/pkg: Package Manager")
         print(f"Scope: {self.scope.value}")
         print(f"{'='*60}\n")
 
@@ -2189,7 +2189,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description="Local Package Manager for Windows (gu-opt-pkg)",
+        description="Local Package Manager for Windows (gurlatsev/pkg)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
