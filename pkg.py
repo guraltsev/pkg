@@ -1,8 +1,69 @@
 #!/usr/bin/env python3
 r"""gurlatsev/pkg — Local Package Manager for Windows
 
-Architecture and organization
-----------------------------
+User-facing functionality
+-------------------------
+
+``pkg`` installs and configures locally cached Windows applications that follow
+the package layout used by this project. From a user perspective, it does three
+main things:
+
+1) Picks the version to activate by updating the package-level ``current``
+   junction to the selected version directory.
+2) Applies package configuration from ``pkg.toml`` (or legacy ``pkg.json``),
+   including Start Menu shortcuts, environment variables, PATH entries, and
+   wrapper files in a per-scope ``bin`` directory.
+3) Supports both ``User`` and ``Machine`` installation scopes, so packages can
+   be installed per-user or system-wide (with admin rights for Machine scope).
+
+The default action is ``Install``. Additional actions are available to keep
+metadata in sync (``UpdateConfig``) and migrate legacy configs
+(``ConvertJSONToTOML``).
+
+Examples
+--------
+
+Typical invocations:
+
+::
+
+    pkg
+    pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
+    pkg C:\opt\pkgs\Ripgrep
+
+Expected package layout:
+
+::
+
+    <pkg_name>/
+      current/                (NTFS junction)
+      v1.2.3.l1/
+        App/
+        Icons/
+        Shortcuts/
+        pkg.toml          (preferred) or pkg.json
+
+Minimal ``pkg.toml`` snippet:
+
+::
+
+    name = "Ripgrep"
+    version = "14.1.0"
+    localVersion = 1
+
+    [[shortcut]]
+    name = "Ripgrep"
+    targetPath = "$App\\rg.exe"
+
+    [[environment]]
+    Name = "RIPGREP_HOME"
+    Value = "$App"
+
+    [[path]]
+    value = "$App"
+
+Architecture and design
+-----------------------
 
 This script installs *locally cached* Windows applications from a standardized
 directory layout. An installation typically:
@@ -78,7 +139,7 @@ Version directories must be named ``v<upstream>.l<local>``, for example:
 ``v1.2.3.l1`` or ``v1.2-beta.3.l4``.
 
 Configuration schema (pkg.toml/json)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Top-level keys used by this tool:
 
@@ -87,8 +148,8 @@ Top-level keys used by this tool:
 - ``localVersion`` (int|str): local revision (the ``lN`` part).
 - ``only_portable`` (bool): if true, disallow Machine installs.
 - ``environment`` (list[dict]): items with keys ``Name`` and ``Value``.
-- ``path`` (list[str] | list[dict]): extra directories to append to PATH.
-  You can use either ``path = ["..."]`` or repeated ``[[path]]`` tables.
+- ``path`` (list[dict]): extra directories to append to PATH.
+  Use repeated ``[[path]]`` tables with a required ``value`` key.
 - ``shortcut`` (list[dict]): shortcut definitions (see extended help).
 - ``bin`` (list[dict]): wrapper definitions with keys ``name`` and ``content``.
 
@@ -251,9 +312,7 @@ Config keys and examples
 
 3) PATH additions (``path`` list)
    Each entry is appended (if not already present). Entries may include $-vars.
-   Both formats below are valid:
-
-     path = ["$App", "$App\\bin"]
+   Use repeated ``[[path]]`` tables (only):
 
      [[path]]
      value = "$App"
@@ -653,13 +712,9 @@ class PackageMetadata:
             if out.get(k, None) is None:
                 out[k] = []
 
-        # Normalize PATH: accept string -> [string] for convenience.
-        if isinstance(out.get("path", []), str):
-            out["path"] = [out["path"]]
-
         if not isinstance(out.get("path", []), list):
             raise ConfigValidationError(
-                f"'path' must be a list of strings or path tables, got: {type(out['path']).__name__}"
+                f"'path' must be a list of [[path]] tables, got: {type(out['path']).__name__}"
             )
 
         # Canonicalize list-of-dict blocks.
@@ -700,7 +755,7 @@ class PackageMetadata:
         out["bin"] = canonicalize_block("bin", bin_map)
         out["shortcut"] = canonicalize_block("shortcut", shortcut_map)
 
-        # Ensure path entries are strings, accepting [[path]] tables like { value = "..." }.
+        # Ensure path entries are [[path]] tables like { value = "..." }.
         path_entry_map = {
             "value": "value",
             "path": "value",
@@ -708,9 +763,6 @@ class PackageMetadata:
         normalized_path: List[str] = []
         for i, entry in enumerate(out.get("path", [])):
             if entry is None:
-                continue
-            if isinstance(entry, str):
-                normalized_path.append(entry)
                 continue
             if isinstance(entry, dict):
                 path_item = PackageMetadata._canonicalize_dict_keys(entry, path_entry_map, context=f"path[{i}]")
@@ -724,7 +776,7 @@ class PackageMetadata:
                 normalized_path.append(value)
                 continue
             raise ConfigValidationError(
-                f"'path[{i}]' must be a string or dict, got: {type(entry).__name__}"
+                f"'path[{i}]' must be a dict ([[path]] table), got: {type(entry).__name__}"
             )
         out["path"] = normalized_path
 
