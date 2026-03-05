@@ -50,12 +50,15 @@ def to_toml_scalar(value: Any) -> str:
 
 def toml_path_lines(path_entries: list[Any]) -> list[str]:
     if not path_entries:
-        return ["path = []"]
+        return []
 
-    lines = ["path = ["]
+    lines: list[str] = []
     for entry in path_entries:
-        lines.append(f"  {to_toml_scalar(str(entry))},")
-    lines.append("]")
+        lines.extend([
+            "[[path]]",
+            f"value = {to_toml_scalar(str(entry))}",
+            "",
+        ])
     return lines
 
 
@@ -217,9 +220,7 @@ def build_config(base_dir: Path) -> dict[str, Any]:
                 canon = top_map.get(str(k).lower())
                 if canon is None or v is None:
                     continue
-                if canon == "path" and isinstance(v, str):
-                    out["path"] = [v]
-                elif canon == "path" and isinstance(v, list):
+                if canon == "path" and isinstance(v, list):
                     out["path"] = [str(x) for x in v if x is not None]
                 else:
                     out[canon] = v
