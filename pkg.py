@@ -827,7 +827,7 @@ class PackageMetadata:
     def _toml_path_lines(path_entries: List[str]) -> List[str]:
         """Render ``path`` as repeated ``[[path]]`` TOML tables."""
         if not path_entries:
-            return ["path = []"]
+            return []
 
         lines: List[str] = []
         for entry in path_entries:

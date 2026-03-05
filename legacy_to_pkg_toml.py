@@ -50,12 +50,15 @@ def to_toml_scalar(value: Any) -> str:
 
 def toml_path_lines(path_entries: list[Any]) -> list[str]:
     if not path_entries:
-        return ["path = []"]
+        return []
 
-    lines = ["path = ["]
+    lines: list[str] = []
     for entry in path_entries:
-        lines.append(f"  {to_toml_scalar(str(entry))},")
-    lines.append("]")
+        lines.extend([
+            "[[path]]",
+            f"value = {to_toml_scalar(str(entry))}",
+            "",
+        ])
     return lines
 
 
