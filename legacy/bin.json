@@ -1,9 +1,0 @@
-{
-    "bin": [
-        {
-            "Name": "rsync.cmd",
-			"Content": "@ $AppPath\\App\\bin\\rsync.exe %*"
-        }
-    ]
-}
-
