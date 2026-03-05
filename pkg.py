@@ -344,6 +344,9 @@ python "$App\\app_script_name.py" %*
 
    If you use TOML basic strings instead, escape quotes and backslashes
    explicitly (e.g. ``\"`` and ``\\``).
+   In particular, Windows paths like ``$App\bin\gh.exe`` must be written as
+   ``$App\\bin\\gh.exe`` in basic strings, or placed inside a literal
+   multi-line string to avoid TOML "reserved escape sequence" parse errors.
 
    PowerShell example:
 
