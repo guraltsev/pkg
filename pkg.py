@@ -2026,6 +2026,12 @@ class PackageManager:
         """
         current_path = package_path
 
+        # Explicit version directories should be installed directly and must not
+        # require sibling "current" junction discovery.
+        is_version_dir = bool(re.match(r"^v.+\.l\d+$", package_path.name))
+        if is_version_dir:
+            return package_path, False
+
         # If a package root is passed, it must contain a usable "current" junction.
         if package_path.name.lower() != "current":
             current_path = package_path / "current"
