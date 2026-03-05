@@ -161,6 +161,8 @@ def ensure_dependency(module_name: str, pip_package: str) -> bool:
                 "install",
                 "--disable-pip-version-check",
                 "--no-warn-script-location",
+                "--upgrade",
+                "--ignore-installed",
                 "--target",
                 str(deps_path),
                 pip_package,
@@ -172,6 +174,7 @@ def ensure_dependency(module_name: str, pip_package: str) -> bool:
 
     # Refresh import path and retry import.
     _ensure_deps_on_path()
+    importlib.invalidate_caches()
     try:
         importlib.import_module(module_name)
         return True
