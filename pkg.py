@@ -1289,20 +1289,13 @@ class VariableExpander:
 
         text = re.sub(r"\$\{([^}]+)\}", expand_env_var_braces, text)
 
-        # Expand $VAR tokens conservatively based on whitespace splitting.
-        words = text.split()
-        expanded_words: List[str] = []
-        for word in words:
-            if word.startswith("$") and len(word) > 1 and word[1].isalnum():
-                var_name = word[1:].split("$")[0]
-                for i in range(len(var_name), 0, -1):
-                    if var_name[:i].isidentifier():
-                        env_value = os.environ.get(var_name[:i], "")
-                        word = env_value + word[1 + i :]
-                        break
-            expanded_words.append(word)
+        # Expand $VAR tokens without altering original whitespace/newlines.
+        # Variable names here intentionally follow shell-like ASCII word rules.
+        def expand_env_var_plain(match: re.Match) -> str:
+            var_name = match.group(1)
+            return os.environ.get(var_name, "")
 
-        return " ".join(expanded_words)
+        return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", expand_env_var_plain, text)
 
     @staticmethod
     def expand_dict(data: Dict[str, str], metadata: PackageMetadata) -> Dict[str, str]:
