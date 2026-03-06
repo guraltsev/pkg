@@ -652,6 +652,7 @@ class PackageMetadata:
             return text
         return text.replace("\\r\\n", "\n").replace("\\n", "\n")
 
+    @staticmethod
     def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         """Canonicalize known config keys (case-insensitive) and normalize shapes.
 
