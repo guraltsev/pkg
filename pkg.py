@@ -170,6 +170,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -212,6 +213,15 @@ def ensure_dependency(module_name: str, pip_package: str) -> bool:
         pass
 
     deps_path = get_deps_path()
+
+    # If pip is unavailable in this interpreter, auto-install is impossible.
+    if importlib.util.find_spec("pip") is None:
+        print(
+            f"Warning: dependency '{pip_package}' is missing and pip is not available "
+            f"for this Python interpreter ({sys.executable})."
+        )
+        return False
+
     print(f"Dependency '{pip_package}' missing; installing to: {deps_path}")
     try:
         subprocess.check_call(
@@ -376,8 +386,10 @@ Notes
 
 - After registry PATH changes, existing terminals won't automatically see the
   new PATH. Open a new terminal or log off/on.
-- If ``toml`` is not installed, JSON is used. To enable TOML support:
-    pip install toml
+- TOML support:
+    - Python 3.11+ uses the stdlib ``tomllib`` module (no pip required).
+    - On older Python versions, install the third-party ``toml`` package:
+        pip install toml
 """
 
 
@@ -406,9 +418,26 @@ PYWIN32_AVAILABLE = ensure_dependency("win32com.client", "pywin32")
 if PYWIN32_AVAILABLE:
     import win32com.client  # type: ignore
 
-TOML_AVAILABLE = ensure_dependency("toml", "toml")
-if TOML_AVAILABLE:
-    import toml  # type: ignore
+# TOML parsing support:
+# - Prefer stdlib tomllib on Python 3.11+ (works even when pip is not available).
+# - Otherwise use the third-party toml package (auto-installed if possible).
+TOML_BACKEND: Optional[str] = None
+try:
+    import tomllib  # Python 3.11+
+    TOML_BACKEND = "tomllib"
+except ImportError:
+    tomllib = None  # type: ignore[assignment]
+
+if TOML_BACKEND is None:
+    try:
+        import toml  # type: ignore
+        TOML_BACKEND = "toml"
+    except ImportError:
+        if ensure_dependency("toml", "toml"):
+            import toml  # type: ignore
+            TOML_BACKEND = "toml"
+
+TOML_AVAILABLE = TOML_BACKEND is not None
 
 
 class ConfigValidationError(ValueError):
@@ -926,8 +955,9 @@ class PackageMetadata:
             f"description = {self._to_toml_scalar(data.get('description'))}",
             f"homepage = {self._to_toml_scalar(data.get('homepage'))}",
             f"downloadURL = {self._to_toml_scalar(data.get('downloadURL'))}",
-            "",
         ])
+
+        lines.append("")
         lines.extend(self._toml_path_lines(data.get("path", [])))
         lines.append("")
 
@@ -1006,8 +1036,9 @@ class PackageMetadata:
     def load_config(self) -> Dict:
         """Load configuration from TOML or JSON.
 
-        TOML (``pkg.toml``) is preferred when the third-party ``toml`` package
-        is available; otherwise JSON (``pkg.json``) is used. If neither file
+        TOML (``pkg.toml``) is preferred when a TOML parser is available
+        (Python 3.11+ stdlib ``tomllib`` or the third-party ``toml`` package);
+        otherwise JSON (``pkg.json``) is used. If neither file
         exists, a default configuration is returned and loaded into the instance.
 
         Returns:
@@ -1032,17 +1063,24 @@ class PackageMetadata:
 
         toml_path = self.version_path / "pkg.toml"
         json_path = self.version_path / "pkg.json"
-
         # Try TOML first
         if toml_path.exists():
             if not TOML_AVAILABLE:
-                print("Warning: TOML file found but 'toml' package is not installed.")
-                print("Install it with: pip install toml")
+                print("Warning: pkg.toml found but no TOML parser is available for this Python interpreter.")
+                if importlib.util.find_spec("pip") is None:
+                    print("This Python interpreter does not include pip, so pkg cannot auto-install the 'toml' package.")
+                print("To enable TOML support, either:")
+                print("  - run pkg with Python 3.11+ (stdlib tomllib), or")
+                print("  - install the third-party 'toml' package (pip install toml).")
                 print("Falling back to JSON configuration if present.")
             else:
                 try:
-                    with open(toml_path, "r", encoding="utf-8") as f:
-                        data = toml.load(f)  # type: ignore[name-defined]
+                    if TOML_BACKEND == "tomllib":
+                        with open(toml_path, "rb") as f:
+                            data = tomllib.load(f)  # type: ignore[union-attr]
+                    else:
+                        with open(toml_path, "r", encoding="utf-8") as f:
+                            data = toml.load(f)  # type: ignore[name-defined]
                     data = self._canonicalize_config_dict(data)
                     self._validate_config_dict(data)
                     self._load_from_dict(data)
@@ -1050,6 +1088,7 @@ class PackageMetadata:
                 except Exception as e:
                     print(f"Warning: Error loading TOML config: {e}")
                     print("Falling back to JSON configuration if present.")
+
 
         # Fall back to JSON
         if json_path.exists():
@@ -1126,6 +1165,7 @@ class PackageMetadata:
                 "shortcut": self.shortcut,
                 "only_portable": self.only_portable,
             }
+
         else:
             data = self._canonicalize_config_dict(data)
             self._validate_config_dict(data)
@@ -1166,8 +1206,8 @@ class PackageMetadata:
 
         """
         if not TOML_AVAILABLE:
-            print("Error: 'toml' package is required for TOML conversion.")
-            print("Install it with: pip install toml")
+            print("Error: TOML support is required for conversion.")
+            print("Use Python 3.11+ (stdlib tomllib) or install 'toml' (pip install toml).")
             return False
 
         json_path = self.version_path / "pkg.json"
@@ -2279,6 +2319,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="version",
         version=f"%(prog)s {__version__}",
         help="Show program's version number and exit",
+    )
+
+    parser.add_argument(
+        "--python",
+        default=None,
+        help=(
+            "Python interpreter override for the pkg.cmd bootstrap launcher. "
+            "(Ignored by pkg.py itself; interpreter selection happens before Python starts.)"
+        ),
     )
 
     parser.add_argument(

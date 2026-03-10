@@ -9,6 +9,6 @@ REM Change to the script directory
 cd /d "%SCRIPT_DIR%"
 
 REM Run the Python script with Machine scope
-python pkg.py --scope Machine --pause %* 
+pkg.cmd --scope Machine --pause %* 
 
 echo.

@@ -14,6 +14,6 @@ REM Change to the script directory
 cd /d "%SCRIPT_DIR%"
 
 REM Run the Python script with default arguments (User scope)
-python pkg.py --pause %*
+pkg.cmd --pause %*
 
 echo.
