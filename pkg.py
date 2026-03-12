@@ -10,15 +10,14 @@ main things:
 
 1) Picks the version to activate by updating the package-level ``current``
    junction to the selected version directory.
-2) Applies package configuration from ``pkg.toml`` (or legacy ``pkg.json``),
-   including Start Menu shortcuts, environment variables, PATH entries, and
-   wrapper files in a per-scope ``bin`` directory.
+2) Applies package configuration from ``pkg.toml``, including Start Menu
+   shortcuts, environment variables, PATH entries, and wrapper files in a
+   per-scope ``bin`` directory.
 3) Supports both ``User`` and ``Machine`` installation scopes, so packages can
    be installed per-user or system-wide (with admin rights for Machine scope).
 
-The default action is ``Install``. Additional actions are available to keep
-metadata in sync (``UpdateConfig``) and migrate legacy configs
-(``ConvertJSONToTOML``).
+The default action is ``Install``. An additional action is available to keep
+metadata in sync (``UpdateConfig``).
 
 Examples
 --------
@@ -41,7 +40,7 @@ Expected package layout:
         App/
         Icons/
         Shortcuts/
-        pkg.toml          (preferred) or pkg.json
+        pkg.toml
 
 Minimal ``pkg.toml`` snippet:
 
@@ -80,8 +79,8 @@ by :class:`PackageManager`:
 
 - :class:`PackageMetadata`
     Parses the directory naming convention (``v<upstream>.l<local>``) and loads
-    the per-version config file (``pkg.toml`` preferred, otherwise
-    ``pkg.json``). It also computes paths used throughout installation.
+    the per-version config file (``pkg.toml``). It also computes paths used
+    throughout installation.
 
 - :class:`JunctionManager`
     Creates/validates NTFS junctions and compares version strings to decide
@@ -117,7 +116,7 @@ the provided path, then performs one of the actions:
   shortcuts/env/PATH/bin wrappers.
 - ``UpdateConfig``: write a normalized config file reflecting directory-derived
   metadata.
-- ``ConvertJSONToTOML``: convert an existing JSON config to TOML.
+
 
 Directory layout
 ~~~~~~~~~~~~~~~~
@@ -133,12 +132,12 @@ A package lives under a *package directory* ``<pkg_name>`` with one or more
         App/
         Icons/
         Shortcuts/
-        pkg.toml          (preferred) or pkg.json
+        pkg.toml
 
 Version directories must be named ``v<upstream>.l<local>``, for example:
 ``v1.2.3.l1`` or ``v1.2-beta.3.l4``.
 
-Configuration schema (pkg.toml/json)
+Configuration schema (pkg.toml)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Top-level keys used by this tool:
@@ -357,7 +356,7 @@ python "$App\\app_script_name.py" %*
    In particular, Windows paths like ``$App\bin\gh.exe`` must be written as
    ``$App\\bin\\gh.exe`` in basic strings, or placed inside a literal
    multi-line string to avoid TOML "reserved escape sequence" parse errors.
-   Also, if you keep content on one line (JSON or TOML basic string), use
+   Also, if you keep content on one line (TOML basic string), use
    escaped newlines (``\n``), which pkg now normalizes to real line breaks.
 
    PowerShell example:
@@ -375,11 +374,16 @@ Variable expansion rules
 
 - Package variables are expanded first:
     $App, $Icons, $Shortcuts
-  These resolve through the ``current`` junction, so the junction must exist
-  and point to the version being installed.
+  These resolve through the stable ``current`` junction path (e.g.
+  ``<pkg>\\current\\App``). The junction does not need to exist for simple
+  string substitution.
 
 - Environment variables are expanded next:
     $VAR and ${VAR}
+
+- Escaping:
+    Use ``$$`` to produce a literal ``$`` (for example, ``$$App`` becomes
+    the literal text ``$App`` rather than expanding to a path).
 
 Notes
 ~~~~~
@@ -441,7 +445,7 @@ TOML_AVAILABLE = TOML_BACKEND is not None
 
 
 class ConfigValidationError(ValueError):
-    """Raised when pkg.toml/pkg.json configuration is invalid."""
+    """Raised when pkg.toml configuration is invalid."""
 
 
 class Scope(Enum):
@@ -461,7 +465,6 @@ class Action(Enum):
 
     INSTALL = "Install"
     UPDATE_CONFIG = "UpdateConfig"
-    CONVERT_JSON_TO_TOML = "ConvertJSONToTOML"
     COMPRESS = "Compress"
 
 
@@ -473,7 +476,7 @@ class PackageMetadata:
 
     Public attributes are populated from:
       1) directory structure, and
-      2) configuration file (TOML preferred, else JSON).
+      2) configuration file (TOML).
 
     """
 
@@ -586,7 +589,7 @@ class PackageMetadata:
         values for ``name``, ``version``, ``localVersion``, or portability flags.
 
         Args:
-            config_data: Parsed configuration dict (from TOML/JSON).
+            config_data: Parsed configuration dict (from TOML).
 
         Returns:
             A list of human-readable inconsistency messages. An empty list means
@@ -674,7 +677,7 @@ class PackageMetadata:
 
         If a value contains literal escape sequences like ``\n``/``\r\n`` but no
         actual newline characters, convert those escapes to real newlines. This
-        keeps one-line TOML/JSON strings usable for multi-line wrapper scripts.
+        keeps one-line TOML strings usable for multi-line wrapper scripts.
         """
         text = str(value or "")
         if "\n" in text:
@@ -685,7 +688,7 @@ class PackageMetadata:
     def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         """Canonicalize known config keys (case-insensitive) and normalize shapes.
 
-        This makes JSON/TOML keys case-insensitive for the supported schema. In
+        This makes TOML keys case-insensitive for the supported schema. In
         particular it normalizes:
 
         - top-level keys like ``Name``/``NAME`` -> ``name``
@@ -759,9 +762,15 @@ class PackageMetadata:
             if out.get(k, None) is None:
                 out[k] = []
 
-        if not isinstance(out.get("path", []), list):
+        # Be tolerant in what we accept:
+        #   - canonical TOML form: repeated [[path]] tables
+        #   - legacy/internal form: list[str]
+        #   - convenience form: a single string
+        if isinstance(out.get("path", None), str):
+            out["path"] = [out["path"]]
+        elif not isinstance(out.get("path", []), list):
             raise ConfigValidationError(
-                f"'path' must be a list of [[path]] tables, got: {type(out['path']).__name__}"
+                f"'path' must be a list of strings or [[path]] tables, got: {type(out['path']).__name__}"
             )
 
         # Canonicalize list-of-dict blocks.
@@ -805,7 +814,9 @@ class PackageMetadata:
                 bw["content"] = PackageMetadata._normalize_bin_content(bw.get("content", ""))
         out["shortcut"] = canonicalize_block("shortcut", shortcut_map)
 
-        # Ensure path entries are [[path]] tables like { value = "..." }.
+        # Normalize path entries.
+        # We canonicalize to List[str] internally regardless of whether the
+        # config used [[path]] tables or a list of strings.
         path_entry_map = {
             "value": "value",
             "path": "value",
@@ -813,6 +824,9 @@ class PackageMetadata:
         normalized_path: List[str] = []
         for i, entry in enumerate(out.get("path", [])):
             if entry is None:
+                continue
+            if isinstance(entry, str):
+                normalized_path.append(entry)
                 continue
             if isinstance(entry, dict):
                 path_item = PackageMetadata._canonicalize_dict_keys(entry, path_entry_map, context=f"path[{i}]")
@@ -826,7 +840,7 @@ class PackageMetadata:
                 normalized_path.append(value)
                 continue
             raise ConfigValidationError(
-                f"'path[{i}]' must be a dict ([[path]] table), got: {type(entry).__name__}"
+                f"'path[{i}]' must be a string or a dict ([[path]] table), got: {type(entry).__name__}"
             )
         out["path"] = normalized_path
 
@@ -989,8 +1003,8 @@ class PackageMetadata:
     def _write_best_guess_toml(self, data: Dict[str, Any]) -> None:
         """Write a best-guess ``pkg.toml`` with commented examples.
 
-        This is used when ``pkg.toml`` is missing. Existing JSON/default metadata
-        is used as the source, and commented example sections are included for
+        This is used when ``pkg.toml`` is missing. Existing/default metadata is
+        used as the source, and commented example sections are included for
         ``shortcut`` and ``bin`` entries.
         """
         toml_path = self.version_path / "pkg.toml"
@@ -1033,19 +1047,23 @@ class PackageMetadata:
         self._write_pkg_toml(toml_path, data, preface=lines)
         print(f"Generated: {toml_path} (best guess)")
 
-    def load_config(self) -> Dict:
-        """Load configuration from TOML or JSON.
+    def load_config(self, *, use_defaults: bool = False) -> Dict:
+        """Load configuration from ``pkg.toml``.
 
-        TOML (``pkg.toml``) is preferred when a TOML parser is available
-        (Python 3.11+ stdlib ``tomllib`` or the third-party ``toml`` package);
-        otherwise JSON (``pkg.json``) is used. If neither file
-        exists, a default configuration is returned and loaded into the instance.
+        Behavior goals:
+
+        - If a config file exists but cannot be parsed/validated, fail fast.
+          Installing with silent defaults is risky because it can skip expected
+          shortcuts/env/PATH/bin actions.
+        - The only exception is when the caller explicitly opts in via
+          ``use_defaults=True`` (exposed as ``--use-defaults`` on the CLI).
 
         Returns:
             The parsed configuration dictionary (or defaults if no file exists).
 
         Raises:
-            RuntimeError: If a JSON file exists but cannot be parsed.
+            RuntimeError: If ``pkg.toml`` exists but cannot be loaded/validated
+                and ``use_defaults`` is False.
         """
         default_data: Dict = {
             "name": self.name,
@@ -1062,17 +1080,29 @@ class PackageMetadata:
         }
 
         toml_path = self.version_path / "pkg.toml"
-        json_path = self.version_path / "pkg.json"
-        # Try TOML first
+
         if toml_path.exists():
             if not TOML_AVAILABLE:
-                print("Warning: pkg.toml found but no TOML parser is available for this Python interpreter.")
+                msg_lines = [
+                    "pkg.toml found but no TOML parser is available for this Python interpreter.",
+                ]
                 if importlib.util.find_spec("pip") is None:
-                    print("This Python interpreter does not include pip, so pkg cannot auto-install the 'toml' package.")
-                print("To enable TOML support, either:")
-                print("  - run pkg with Python 3.11+ (stdlib tomllib), or")
-                print("  - install the third-party 'toml' package (pip install toml).")
-                print("Falling back to JSON configuration if present.")
+                    msg_lines.append(
+                        "This Python interpreter does not include pip, so pkg cannot auto-install the 'toml' package."
+                    )
+                msg_lines.extend(
+                    [
+                        "To enable TOML support, either:",
+                        "  - run pkg with Python 3.11+ (stdlib tomllib), or",
+                        "  - install the third-party 'toml' package (pip install toml).",
+                    ]
+                )
+                msg = "\n".join(msg_lines)
+                if not use_defaults:
+                    raise RuntimeError(msg)
+                print(f"WARNING: {msg}")
+                print("WARNING: Proceeding with defaults because --use-defaults was provided.")
+                data = default_data
             else:
                 try:
                     if TOML_BACKEND == "tomllib":
@@ -1081,34 +1111,27 @@ class PackageMetadata:
                     else:
                         with open(toml_path, "r", encoding="utf-8") as f:
                             data = toml.load(f)  # type: ignore[name-defined]
-                    data = self._canonicalize_config_dict(data)
-                    self._validate_config_dict(data)
-                    self._load_from_dict(data)
-                    return data
                 except Exception as e:
-                    print(f"Warning: Error loading TOML config: {e}")
-                    print("Falling back to JSON configuration if present.")
+                    if not use_defaults:
+                        raise RuntimeError(f"Error loading TOML config from {toml_path}: {e}") from e
+                    print(f"WARNING: Error loading TOML config from {toml_path}: {e}")
+                    print("WARNING: Proceeding with defaults because --use-defaults was provided.")
+                    data = default_data
 
+            # Canonicalize + validate (even for defaults), then load.
+            data = self._canonicalize_config_dict(data)
+            self._validate_config_dict(data)
+            self._load_from_dict(data)
+            return data
 
-        # Fall back to JSON
-        if json_path.exists():
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                data = self._canonicalize_config_dict(data)
-                self._validate_config_dict(data)
-                self._load_from_dict(data)
-                if not toml_path.exists():
-                    self._write_best_guess_toml(data)
-                return data
-            except Exception as e:
-                raise RuntimeError(f"Error loading JSON config from {json_path}: {e}") from e
-
-        # No config file: use defaults and generate a starter TOML.
+        # No config file: use defaults and (optionally) generate a starter TOML.
         default_data = self._canonicalize_config_dict(default_data)
         self._validate_config_dict(default_data)
         self._load_from_dict(default_data)
-        if not toml_path.exists():
+
+        # Keep the prior "best guess" behavior for first-time packages.
+        # This is only done when no pkg.toml exists.
+        if TOML_AVAILABLE and not toml_path.exists():
             self._write_best_guess_toml(default_data)
         return default_data
 
@@ -1138,8 +1161,7 @@ class PackageMetadata:
         """Write metadata back to configuration file.
 
         By default, this writes a normalized config that reflects the current
-        :class:`PackageMetadata` fields. If ``toml`` is available, TOML is used
-        and any existing JSON config is removed. Otherwise JSON is written.
+        :class:`PackageMetadata` fields.
 
         Args:
             data:
@@ -1181,71 +1203,18 @@ class PackageMetadata:
             self.only_portable = True
             data["only_portable"] = True
 
-        if TOML_AVAILABLE:
-            toml_path = self.version_path / "pkg.toml"
-            json_path = self.version_path / "pkg.json"
-
-            self._write_pkg_toml(toml_path, data)
-            print(f"Updated: {toml_path}")
-
-            if json_path.exists():
-                json_path.unlink()
-                print(f"Removed: {json_path} (converted to TOML)")
-        else:
-            json_path = self.version_path / "pkg.json"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            print(f"Updated: {json_path}")
-
-    def convert_json_to_toml(self) -> bool:
-        """Convert an existing JSON configuration file to TOML.
-
-        Returns:
-            True if conversion succeeded (TOML written and JSON removed),
-            False otherwise.
-
-        """
-        if not TOML_AVAILABLE:
-            print("Error: TOML support is required for conversion.")
-            print("Use Python 3.11+ (stdlib tomllib) or install 'toml' (pip install toml).")
-            return False
-
-        json_path = self.version_path / "pkg.json"
         toml_path = self.version_path / "pkg.toml"
+        json_path = self.version_path / "pkg.json"  # legacy; removed if present
 
-        if not json_path.exists():
-            print(f"Error: JSON configuration not found at {json_path}")
-            return False
+        self._write_pkg_toml(toml_path, data)
+        print(f"Updated: {toml_path}")
 
-        if toml_path.exists():
-            print(
-                "Error: Conversion aborted because pkg.toml already exists. "
-                "Refusing to overwrite existing TOML to avoid data loss."
-            )
-            return False
-
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            data = self._canonicalize_config_dict(data)
-            self._validate_config_dict(data)
-            # Populate metadata from this config so directory-derived portability can be preserved.
-            self._load_from_dict(data)
-
-            # Preserve portability flags if not present in JSON.
-            if self.only_portable and "only_portable" not in data and "portable" not in data:
-                data["only_portable"] = True
-
-            self._write_pkg_toml(toml_path, data)
-
-            json_path.unlink()
-            print(f"Converted: {json_path} -> {toml_path}")
-            return True
-
-        except Exception as e:
-            print(f"Error converting JSON to TOML: {e}")
-            return False
+        if json_path.exists():
+            try:
+                json_path.unlink()
+                print(f"Removed: {json_path} (legacy config; TOML-only)")
+            except OSError as e:
+                print(f"Warning: failed to remove legacy JSON config {json_path}: {e}")
 
     def set_scope(self, scope: Scope) -> None:
         """Set installation scope and compute Start Menu target directory.
@@ -1282,9 +1251,14 @@ class VariableExpander:
         Expansion order:
 
         1) Package variables: ``$App``, ``$Icons``, ``$Shortcuts``.
-           These are resolved relative to the package's ``current`` junction, and
-           the method verifies that ``current`` points to ``metadata.version_path``.
+           These resolve through the package's stable ``current`` junction path
+           (for example: ``<pkg>\\current\\App``).
+           The junction does not need to exist for string substitution.
         2) Environment variables: ``${VAR}`` then ``$VAR``.
+
+        Escaping:
+          - ``$$`` produces a literal ``$``. For example, ``$$App`` becomes the
+            literal text ``$App`` (it will not be expanded).
 
         Args:
             text: Input string containing variables.
@@ -1293,49 +1267,51 @@ class VariableExpander:
         Returns:
             The expanded string.
 
-        Raises:
-            ValueError: If ``current`` junction does not exist, is not a junction,
-                or does not point to the version being installed.
-
         """
         if not text:
             return text
 
-        current_path = metadata.pkg_path / "current"
-        base_path = metadata.version_path
+        # Preserve user-intended literal dollars.
+        # We only unescape the dollars that were present in the input (not ones
+        # that might appear via environment-variable expansion).
+        sentinel = "\x00PKG_DOLLAR\x00"
+        text = text.replace("$$", sentinel)
 
-        if not (current_path.exists() and JunctionManager.is_junction(current_path)):
-            raise ValueError(f'"current" junction does not exist or is not a junction: ({current_path})')
-
-        try:
-            target = JunctionManager.get_junction_target(current_path)
-            if not (target and target.resolve() == base_path.resolve()):
-                raise ValueError(f'"current" junction is not pointing to this version ({target} != {base_path})')
-        except (OSError, AttributeError) as e:
-            raise ValueError(f'Failed to read "current" junction target: {current_path}\n Error message: {e}')
-
-        custom_vars = {
-            "$App": str(current_path / "App"),
-            "$Icons": str(current_path / "Icons"),
-            "$Shortcuts": str(current_path / "Shortcuts"),
+        # Package vars: boundary-safe ($App does not match $AppData).
+        pkg_base = metadata.pkg_path / "current"
+        pkg_map = {
+            "App": str(pkg_base / "App"),
+            "Icons": str(pkg_base / "Icons"),
+            "Shortcuts": str(pkg_base / "Shortcuts"),
         }
 
-        for var, value in custom_vars.items():
-            text = text.replace(var, value)
+        def repl_pkg(match: re.Match) -> str:
+            name = match.group(1)
+            return pkg_map.get(name, match.group(0))
 
-        def expand_env_var_braces(match: re.Match) -> str:
+        text = re.sub(r"\$(App|Icons|Shortcuts)\b", repl_pkg, text)
+
+        # ${VAR} environment expansion.
+        def repl_env_braces(match: re.Match) -> str:
             var_name = match.group(1)
             return os.environ.get(var_name, "")
 
-        text = re.sub(r"\$\{([^}]+)\}", expand_env_var_braces, text)
+        text = re.sub(r"\$\{([^}]+)\}", repl_env_braces, text)
 
-        # Expand $VAR tokens without altering original whitespace/newlines.
+        # $VAR environment expansion.
         # Variable names here intentionally follow shell-like ASCII word rules.
-        def expand_env_var_plain(match: re.Match) -> str:
+        def repl_env_plain(match: re.Match) -> str:
             var_name = match.group(1)
+            # Avoid surprising double-expansion if someone happens to have an
+            # environment variable named App/Icons/Shortcuts.
+            if var_name in pkg_map:
+                return match.group(0)
             return os.environ.get(var_name, "")
 
-        return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", expand_env_var_plain, text)
+        text = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", repl_env_plain, text)
+
+        # Restore escaped dollars.
+        return text.replace(sentinel, "$")
 
     @staticmethod
     def expand_dict(data: Dict[str, str], metadata: PackageMetadata) -> Dict[str, str]:
@@ -1371,10 +1347,24 @@ class JunctionManager:
 
         """
         try:
+            if not target.exists() or not target.is_dir():
+                print(f"JUNCTION error: target does not exist or is not a directory: {target}")
+                return False
+
             if os.path.lexists(str(source)):
                 if JunctionManager.is_junction(source):
-                    os.unlink(str(source))
+                    try:
+                        # Junctions are directory reparse points. Use rmdir for
+                        # consistent removal across Python/Windows versions.
+                        os.rmdir(str(source))
+                    except OSError as e:
+                        print(f"JUNCTION error: failed to remove existing junction {source}: {e}")
+                        return False
                 else:
+                    print(
+                        f"JUNCTION error: {source} already exists and is not a junction; "
+                        "refusing to overwrite."
+                    )
                     return False
 
             result = subprocess.run(
@@ -1388,12 +1378,105 @@ class JunctionManager:
                 print(f"JUNCTION: created: {source.name} -> {target}")
                 return True
 
-            print(f"JUNCTION error: {result.stderr}")
+            err = (result.stderr or "").strip()
+            out = (result.stdout or "").strip()
+            if err:
+                print(f"JUNCTION error: {err}")
+            if out:
+                print(f"JUNCTION output: {out}")
             return False
 
         except Exception as e:
             print(f"JUNCTION error creating {source}: {e}")
             return False
+
+    @staticmethod
+    def _win_get_reparse_tag(path: Path) -> Optional[int]:
+        """Return the reparse tag for *path* using Windows APIs.
+
+        This avoids parsing localized/human output such as ``dir``.
+
+        Returns:
+            The integer reparse tag, or ``None`` if it cannot be determined.
+
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # CreateFileW flags for opening a directory reparse point.
+            FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+            FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+            OPEN_EXISTING = 3
+            FILE_SHARE_READ = 0x00000001
+            FILE_SHARE_WRITE = 0x00000002
+            FILE_SHARE_DELETE = 0x00000004
+
+            FSCTL_GET_REPARSE_POINT = 0x000900A8
+
+            CreateFileW = ctypes.windll.kernel32.CreateFileW
+            CreateFileW.argtypes = [
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            ]
+            CreateFileW.restype = wintypes.HANDLE
+
+            DeviceIoControl = ctypes.windll.kernel32.DeviceIoControl
+            DeviceIoControl.argtypes = [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+                wintypes.LPVOID,
+            ]
+            DeviceIoControl.restype = wintypes.BOOL
+
+            CloseHandle = ctypes.windll.kernel32.CloseHandle
+            CloseHandle.argtypes = [wintypes.HANDLE]
+            CloseHandle.restype = wintypes.BOOL
+
+            handle = CreateFileW(
+                str(path),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+            INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+            if handle == INVALID_HANDLE_VALUE:
+                return None
+
+            try:
+                buf = ctypes.create_string_buffer(16 * 1024)
+                returned = wintypes.DWORD(0)
+                ok = DeviceIoControl(
+                    handle,
+                    FSCTL_GET_REPARSE_POINT,
+                    None,
+                    0,
+                    buf,
+                    len(buf),
+                    ctypes.byref(returned),
+                    None,
+                )
+                if not ok:
+                    return None
+                # REPARSE_DATA_BUFFER starts with ULONG ReparseTag.
+                return int.from_bytes(buf.raw[0:4], "little", signed=False)
+            finally:
+                CloseHandle(handle)
+        except Exception:
+            return None
 
     @staticmethod
     def is_junction(path: Path) -> bool:
@@ -1407,8 +1490,8 @@ class JunctionManager:
 
         Notes:
             - On Python 3.12+, ``os.path.isjunction`` is used if available.
-            - On older versions, this function uses a combination of Windows file
-              attributes and a fallback ``dir /al`` check.
+            - On older versions, this function queries the reparse tag via
+              Windows APIs (ctypes + ``FSCTL_GET_REPARSE_POINT``).
 
         """
         try:
@@ -1418,35 +1501,10 @@ class JunctionManager:
             if not os.path.isdir(str(path)):
                 return False
 
-            try:
-                st = os.stat(str(path))
-                # FILE_ATTRIBUTE_REPARSE_POINT = 0x400 in Windows
-                FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-                if not (getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
-                    return False
-
-                try:
-                    os.readlink(str(path))
-                    return True
-                except (OSError, AttributeError):
-                    pass
-            except (AttributeError, OSError):
-                pass
-
-            result = subprocess.run(
-                ["cmd", "/c", "dir", "/al", str(path.parent)],
-                capture_output=True,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-
-            if result.returncode == 0:
-                junction_name = path.name
-                for line in result.stdout.splitlines():
-                    if "<JUNCTION>" in line.upper() and junction_name in line:
-                        return True
-
-            return False
+            # IO_REPARSE_TAG_MOUNT_POINT indicates an NTFS junction/mount point.
+            IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+            tag = JunctionManager._win_get_reparse_tag(path)
+            return tag == IO_REPARSE_TAG_MOUNT_POINT
 
         except Exception:
             return False
@@ -1469,16 +1527,26 @@ class JunctionManager:
             return None
 
     @staticmethod
-    def _parse_version_part(part: str) -> Union[int, str]:
-        """Parse one version token for comparisons."""
-        return int(part) if part.isdigit() else part.lower()
-
-    @staticmethod
     def compare_versions(version1: str, version2: str) -> int:
         """Compare two version strings of the form ``v<upstream>.l<local>``.
 
-        The comparison is *lexicographic by upstream parts*, where numeric tokens
-        compare numerically, and then by the integer local revision.
+        The prior implementation compared mixed int/string tokens
+        lexicographically, which can mis-order pre-releases.
+
+        Ordering rules (semver-ish):
+
+        1) Compare upstream *main* parts split by ``.``.
+           - Purely numeric identifiers are compared numerically.
+           - Missing numeric identifiers are treated as 0 (so ``1.2`` == ``1.2.0``).
+        2) If upstream contains a ``-`` prerelease part
+           (e.g. ``1.2.0-beta.1``), prereleases sort *before* the
+           corresponding release.
+        3) If upstreams are equal, compare the local revision (the ``lN`` part)
+           numerically.
+
+        This intentionally does **not** attempt full PEP 440 parsing; it provides
+        a stable, documented ordering for the directory naming convention used
+        by this project.
 
         Args:
             version1: Version string like ``v1.2.3.l4``.
@@ -1491,54 +1559,115 @@ class JunctionManager:
 
         """
 
-        def split_version(v: str) -> Tuple[List[Union[int, str]], int]:
+        def split_version(v: str) -> Tuple[str, int]:
+            v = v.strip()
             if v.startswith("v"):
                 v = v[1:]
 
             if ".l" in v:
                 upstream_part, local_part = v.rsplit(".l", 1)
-                local_rev = int(local_part) if local_part.isdigit() else 0
+                try:
+                    local_rev = int(local_part)
+                except ValueError:
+                    local_rev = 0
             else:
                 upstream_part = v
                 local_rev = 0
+            return upstream_part, local_rev
 
-            upstream_parts: List[Union[int, str]] = [
-                JunctionManager._parse_version_part(p)
-                for p in upstream_part.split(".")
-                if p
-            ]
-            return upstream_parts, local_rev
+        def parse_identifier(token: str) -> Union[int, str]:
+            token = token.strip()
+            if token.isdigit():
+                return int(token)
+            return token.lower()
 
-        upstream1, local1 = split_version(version1)
-        upstream2, local2 = split_version(version2)
+        def parse_upstream(up: str) -> Tuple[List[Union[int, str]], Optional[List[Union[int, str]]]]:
+            # Ignore build metadata (anything after '+') for ordering.
+            up = up.split("+", 1)[0]
+            if "-" in up:
+                main_part, pre_part = up.split("-", 1)
+                pre = [parse_identifier(t) for t in pre_part.split(".") if t]
+            else:
+                main_part = up
+                pre = None
+            main = [parse_identifier(t) for t in main_part.split(".") if t]
+            return main, pre
 
-        for i in range(max(len(upstream1), len(upstream2))):
-            up1: Union[int, str] = upstream1[i] if i < len(upstream1) else 0
-            up2: Union[int, str] = upstream2[i] if i < len(upstream2) else 0
-
-            if type(up1) != type(up2):
-                up1, up2 = str(up1), str(up2)
-
-            if up1 > up2:
+        def compare_main(a: Union[int, str], b: Union[int, str]) -> int:
+            if isinstance(a, int) and isinstance(b, int):
+                return (a > b) - (a < b)
+            if isinstance(a, str) and isinstance(b, str):
+                return (a > b) - (a < b)
+            # Main version: numeric identifiers sort after non-numeric.
+            if isinstance(a, int) and isinstance(b, str):
                 return 1
-            if up1 < up2:
+            if isinstance(a, str) and isinstance(b, int):
+                return -1
+            return (str(a) > str(b)) - (str(a) < str(b))
+
+        def compare_prerelease(
+            pre_a: Optional[List[Union[int, str]]],
+            pre_b: Optional[List[Union[int, str]]],
+        ) -> int:
+            if pre_a is None and pre_b is None:
+                return 0
+            if pre_a is None:
+                return 1  # release > prerelease
+            if pre_b is None:
                 return -1
 
-        if local1 > local2:
-            return 1
-        if local1 < local2:
-            return -1
-        return 0
+            for i in range(max(len(pre_a), len(pre_b))):
+                if i >= len(pre_a):
+                    return -1  # shorter prerelease < longer
+                if i >= len(pre_b):
+                    return 1
+
+                a = pre_a[i]
+                b = pre_b[i]
+                if a == b:
+                    continue
+                if isinstance(a, int) and isinstance(b, int):
+                    return (a > b) - (a < b)
+                if isinstance(a, str) and isinstance(b, str):
+                    return (a > b) - (a < b)
+
+                # Semver prerelease: numeric identifiers have lower precedence
+                # than non-numeric identifiers.
+                if isinstance(a, int) and isinstance(b, str):
+                    return -1
+                if isinstance(a, str) and isinstance(b, int):
+                    return 1
+                return (str(a) > str(b)) - (str(a) < str(b))
+            return 0
+
+        up1, local1 = split_version(version1)
+        up2, local2 = split_version(version2)
+        main1, pre1 = parse_upstream(up1)
+        main2, pre2 = parse_upstream(up2)
+
+        for i in range(max(len(main1), len(main2))):
+            a: Union[int, str] = main1[i] if i < len(main1) else 0
+            b: Union[int, str] = main2[i] if i < len(main2) else 0
+            cmp_main = compare_main(a, b)
+            if cmp_main != 0:
+                return cmp_main
+
+        cmp_pre = compare_prerelease(pre1, pre2)
+        if cmp_pre != 0:
+            return cmp_pre
+
+        return (local1 > local2) - (local1 < local2)
 
     @staticmethod
-    def update_current_junction_if_needed(metadata: PackageMetadata) -> bool:
+    def update_current_junction_if_needed(metadata: PackageMetadata, *, force: bool = False) -> bool:
         r"""Update ``<pkg_path>\current`` if the supplied version is not older.
 
         If ``current`` already exists and points to a newer version, no change is
-        made.
+        made unless ``force=True``.
 
         Args:
             metadata: Package metadata for the candidate version.
+            force: If True, update ``current`` even when it would be a downgrade.
 
         Returns:
             True if ``current`` was created/updated; False if it was left unchanged.
@@ -1546,6 +1675,7 @@ class JunctionManager:
         Raises:
             ValueError: If ``current`` exists but is not a junction or points
                 somewhere unexpected.
+            RuntimeError: If creating or updating the junction fails.
 
         """
         current_path = metadata.pkg_path / "current"
@@ -1567,7 +1697,9 @@ class JunctionManager:
                 print(
                     f"JUNCTION: removing stale 'current' target (missing directory): {current_target}"
                 )
-                return JunctionManager.create_junction(current_path, metadata.version_path)
+                if JunctionManager.create_junction(current_path, metadata.version_path):
+                    return True
+                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
 
             if current_target.parent != metadata.pkg_path:
                 raise ValueError(
@@ -1579,13 +1711,23 @@ class JunctionManager:
             print(f"'current' junction version: {current_version}")
             comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
 
+            if force:
+                print(f"JUNCTION: --force: updating current to {metadata.version_string}")
+                if JunctionManager.create_junction(current_path, metadata.version_path):
+                    return True
+                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
+
             if comparison >= 0:
-                return JunctionManager.create_junction(current_path, metadata.version_path)
+                if JunctionManager.create_junction(current_path, metadata.version_path):
+                    return True
+                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
 
             print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
             return False
 
-        return JunctionManager.create_junction(current_path, metadata.version_path)
+        if JunctionManager.create_junction(current_path, metadata.version_path):
+            return True
+        raise RuntimeError(f"Failed to create 'current' junction at {current_path}")
 
 
 class ShortcutInstaller:
@@ -1749,6 +1891,49 @@ class EnvironmentVariableManager:
         return winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 
     @staticmethod
+    def broadcast_environment_change() -> None:
+        """Broadcast an environment-change notification (WM_SETTINGCHANGE).
+
+        Writing environment values to the registry does not immediately update
+        existing processes. Broadcasting improves the odds that new shells and
+        some listeners observe updated variables without requiring logoff.
+
+        This is best-effort: failures are reported as warnings.
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+
+            SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
+            SendMessageTimeoutW.argtypes = [
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPCWSTR,
+                wintypes.UINT,
+                wintypes.UINT,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            SendMessageTimeoutW.restype = wintypes.LPARAM
+
+            result = wintypes.DWORD(0)
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                "Environment",
+                SMTO_ABORTIFHUNG,
+                5000,
+                ctypes.byref(result),
+            )
+        except Exception as e:
+            print(f"Warning: failed to broadcast environment change notification: {e}")
+
+    @staticmethod
     def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
         """Set an environment variable in the registry.
 
@@ -1770,6 +1955,7 @@ class EnvironmentVariableManager:
                 winreg.SetValueEx(key, name, 0, reg_type, value)
 
             print(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
+            EnvironmentVariableManager.broadcast_environment_change()
             return True
 
         except PermissionError:
@@ -1805,6 +1991,18 @@ class EnvironmentVariableManager:
 
 class PATHManager:
     """Read and update the registry-backed PATH value."""
+
+    @staticmethod
+    def _path_key(p: str) -> str:
+        """Return a normalized comparison key for PATH de-duplication.
+
+        Windows paths are case-insensitive and tolerate mixed separators.
+        We normalize for comparisons while preserving original formatting in the
+        stored PATH where possible.
+        """
+        # normpath collapses \ and /; normcase lowercases on Windows.
+        key = os.path.normcase(os.path.normpath(p))
+        return key.rstrip("\\/")
 
     @staticmethod
     def get_current_path(scope: Scope) -> List[str]:
@@ -1847,6 +2045,7 @@ class PATHManager:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
             with winreg.OpenKey(root, subkey, 0, winreg.KEY_SET_VALUE) as key:
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, path_value)
+            EnvironmentVariableManager.broadcast_environment_change()
             return True
         except PermissionError:
             print(f"ERROR: Insufficient permissions to set {scope.value} PATH")
@@ -1877,9 +2076,16 @@ class PATHManager:
         current_path = PATHManager.get_current_path(metadata.scope)
         updated_path = current_path.copy()
 
+        existing_keys = {PATHManager._path_key(p) for p in current_path if p}
+
         for entry in expanded_new_entries:
-            if entry and entry not in updated_path:
+            if not entry:
+                continue
+
+            key = PATHManager._path_key(entry)
+            if key not in existing_keys:
                 updated_path.append(entry)
+                existing_keys.add(key)
                 print(f"PATH: adding to {metadata.scope.value} scope: {entry}")
 
         if current_path != updated_path:
@@ -1920,7 +2126,9 @@ class PATHManager:
         current_path = PATHManager.get_current_path(metadata.scope)
         bin_dir_str = str(bin_dir)
 
-        if bin_dir_str not in current_path:
+        bin_key = PATHManager._path_key(bin_dir_str)
+        current_keys = {PATHManager._path_key(p) for p in current_path if p}
+        if bin_key not in current_keys:
             return PATHManager.add_to_path([bin_dir_str], metadata)
 
         return True
@@ -1971,10 +2179,35 @@ class BinFileCreator:
             bin_dir.mkdir(parents=True, exist_ok=True)
 
             wrapper_path = bin_dir / name
-            with open(wrapper_path, "w", encoding="utf-8") as f:
-                f.write(expanded_content)
+            wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
-            print(f"BIN: created: {wrapper_path}")
+            ext = wrapper_path.suffix.lower()
+            # cmd.exe historically uses legacy code pages; UTF-8 can be
+            # problematic for non-ASCII. Prefer ASCII when possible.
+            if ext in (".cmd", ".bat"):
+                try:
+                    desired_bytes = expanded_content.encode("ascii")
+                except UnicodeEncodeError:
+                    print(
+                        f"Warning: non-ASCII content in {ext} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+                    )
+                    desired_bytes = expanded_content.encode("utf-8-sig")
+            else:
+                desired_bytes = expanded_content.encode("utf-8")
+
+            existed_before = wrapper_path.exists()
+            if existed_before:
+                try:
+                    if wrapper_path.read_bytes() == desired_bytes:
+                        print(f"BIN: up-to-date: {wrapper_path}")
+                        return True
+                except OSError:
+                    # Fall through to rewrite.
+                    pass
+
+            wrapper_path.write_bytes(desired_bytes)
+            action = "updated" if existed_before else "created"
+            print(f"BIN: {action}: {wrapper_path}")
             return True
 
         except Exception as e:
@@ -1999,14 +2232,31 @@ class BinFileCreator:
 class PackageManager:
     """Orchestrate install/update operations for a package."""
 
-    def __init__(self, scope: Scope = Scope.USER, pause: bool = False, no_autoupdate_config: bool = False):
+    def __init__(
+        self,
+        scope: Scope = Scope.USER,
+        pause: bool = False,
+        fix_config: bool = False,
+        use_defaults: bool = False,
+        force: bool = False,
+        no_autoupdate_config: bool = False,
+    ):
         """Create a :class:`PackageManager`.
 
         Args:
             scope: Installation scope.
             pause: If True, pause for a keypress before exiting (useful in double-click scenarios).
+            fix_config:
+                If True, rewrite ``pkg.toml`` when config mismatches directory metadata.
+                If False (default), abort with a clear error.
+            use_defaults:
+                If True, proceed with defaults if ``pkg.toml`` exists but cannot
+                be parsed/validated.
+            force:
+                If True, allow downgrades/reinstalls by updating ``current`` even
+                when it points to a newer version.
             no_autoupdate_config:
-                If True, abort installs when config mismatches directory metadata instead of rewriting config.
+                Deprecated alias retained for backwards compatibility.
 
         Raises:
             SystemExit: If Machine scope is requested without Administrator privileges.
@@ -2014,7 +2264,14 @@ class PackageManager:
         """
         self.scope = scope
         self.pause = pause
-        self.no_autoupdate_config = no_autoupdate_config
+        self.fix_config = fix_config
+        self.use_defaults = use_defaults
+        self.force = force
+
+        # Deprecated: previous default was to auto-update config unless this
+        # flag was set. New default is to abort unless fix_config=True.
+        if no_autoupdate_config:
+            self.fix_config = False
 
         if not PYWIN32_AVAILABLE:
             print("Warning: pywin32 not available. Shortcuts will be created using PowerShell.")
@@ -2061,9 +2318,9 @@ class PackageManager:
             try:
                 metadata = PackageMetadata(package_path)
                 metadata.set_scope(self.scope)
-                config_data = metadata.load_config()
+                config_data = metadata.load_config(use_defaults=self.use_defaults)
             except Exception as e:
-                print(f"ERROR: Failed to parse package metadata: {e}")
+                print(f"ERROR: Failed to load package metadata/config: {e}")
                 return
 
             print(f"Package: {metadata.name}")
@@ -2082,10 +2339,19 @@ class PackageManager:
                 should_install = True
             else:
                 print("Managing 'current' junction...")
-                junction_updated = JunctionManager.update_current_junction_if_needed(metadata)
+                try:
+                    junction_updated = JunctionManager.update_current_junction_if_needed(metadata, force=self.force)
+                except Exception as e:
+                    print(f"ERROR: {e}")
+                    return
                 should_install = junction_updated or metadata.is_current
 
             if not should_install:
+                if self.force:
+                    print("\nERROR: --force was requested, but pkg could not update the 'current' junction.")
+                    print("Aborting to avoid installing against an unexpected active version.")
+                    return
+
                 print("\nSkipping component installation (newer version already installed)")
                 print(f"\n{'-'*60}")
                 print("Installation complete!")
@@ -2094,17 +2360,20 @@ class PackageManager:
 
             inconsistencies = metadata.check_metadata_consistency(config_data)
             if inconsistencies:
-                if self.no_autoupdate_config:
-                    print("ERROR: Configuration inconsistencies detected and --no-autoupdate-config is enabled:")
+                if not self.fix_config:
+                    print("ERROR: Configuration inconsistencies detected:")
                     for msg in inconsistencies:
                         print(f"  - {msg}")
-                    print("\nAborting installation. Please fix the configuration manually.")
+                    print("\nAborting installation to avoid mutating configs as a side effect.")
+                    print("To fix the config, run one of:")
+                    print(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.version_path}")
+                    print("  - re-run this install with --fix-config")
                     return
 
                 print("WARNING: Configuration inconsistencies detected:")
                 for msg in inconsistencies:
                     print(f"  - {msg}")
-                print("\nAuto-updating configuration file to match directory structure...")
+                print("\n--fix-config enabled: updating configuration file to match directory structure...")
                 metadata.update_config(config_data)
                 print("Configuration updated successfully.\n")
 
@@ -2217,44 +2486,14 @@ class PackageManager:
             None.
 
         """
-        if package_path.is_dir() and (package_path / "current").exists() and package_path.name.lower() != "current":
-            maybe_current = package_path / "current"
-            if JunctionManager.is_junction(maybe_current):
-                package_path = maybe_current
-
         try:
-            metadata = PackageMetadata(package_path)
-            metadata.load_config()
+            resolved_path, _ = self._resolve_install_path(package_path)
+            metadata = PackageMetadata(resolved_path)
+            metadata.load_config(use_defaults=self.use_defaults)
             metadata.update_config()
             print(f"Updated configuration for {metadata.name} {metadata.version_string}")
         except Exception as e:
             print(f"ERROR: Failed to update configuration: {e}")
-
-        self._pause()
-
-    def convert_json_to_toml(self, package_path: Path) -> None:
-        """Convert a version's JSON config to TOML.
-
-        Args:
-            package_path: Version directory, ``current`` junction, or package root.
-
-        Returns:
-            None.
-
-        """
-        if package_path.is_dir() and (package_path / "current").exists() and package_path.name.lower() != "current":
-            maybe_current = package_path / "current"
-            if JunctionManager.is_junction(maybe_current):
-                package_path = maybe_current
-
-        try:
-            metadata = PackageMetadata(package_path)
-            if metadata.convert_json_to_toml():
-                print("Successfully converted JSON to TOML")
-            else:
-                print("Failed to convert JSON to TOML")
-        except Exception as e:
-            print(f"ERROR: Failed to convert JSON to TOML: {e}")
 
         self._pause()
 
@@ -2302,7 +2541,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "  %(prog)s                         # Install in User scope from current directory\n"
             "  %(prog)s --scope Machine          # Install system-wide (requires admin)\n"
             "  %(prog)s --action UpdateConfig     # Only update configuration file\n"
-            "  %(prog)s --action ConvertJSONToTOML# Convert JSON config to TOML\n"
+            "  %(prog)s --fix-config             # Install and rewrite config if metadata mismatches\n"
             "  %(prog)s --pause                  # Pause for a keypress before exit\n"
             "  %(prog)s --help-extended          # Show detailed help and config examples\n"
         ),
@@ -2354,7 +2593,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--no-autoupdate-config",
         action="store_true",
         default=False,
-        help="Abort if configuration mismatches directory metadata (do not rewrite config)",
+        help="Deprecated (configs are no longer auto-updated by default)",
+    )
+
+    parser.add_argument(
+        "--fix-config",
+        action="store_true",
+        default=False,
+        help="If config metadata mismatches directory, rewrite pkg.toml instead of aborting",
+    )
+
+    parser.add_argument(
+        "--use-defaults",
+        action="store_true",
+        default=False,
+        help="Proceed with defaults if pkg.toml exists but cannot be parsed/validated",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force install: allow downgrade/reinstall by updating current even if newer is installed",
     )
 
     parser.add_argument(
@@ -2369,15 +2629,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     scope = Scope(args.scope)
     action = Action(args.action)
 
-    manager = PackageManager(scope=scope, pause=args.pause, no_autoupdate_config=args.no_autoupdate_config)
+    manager = PackageManager(
+        scope=scope,
+        pause=args.pause,
+        fix_config=args.fix_config,
+        use_defaults=args.use_defaults,
+        force=args.force,
+        no_autoupdate_config=args.no_autoupdate_config,
+    )
     package_path = Path(args.path).resolve()
 
     if action == Action.INSTALL:
         manager.install(package_path)
     elif action == Action.UPDATE_CONFIG:
         manager.update_config(package_path)
-    elif action == Action.CONVERT_JSON_TO_TOML:
-        manager.convert_json_to_toml(package_path)
     elif action == Action.COMPRESS:
         raise NotImplementedError("Compress action not yet implemented")
     else:
