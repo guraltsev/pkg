@@ -1,0 +1,4 @@
+[remote "github"]
+	url = git@github.com:guraltsev/pkg.git
+	fetch = +refs/heads/*:refs/remotes/github/*
+	puttykeyfile = C:\\Users\\guraltsev\\.ssh\\private_keys\\github.ed25519.priv.ppk
