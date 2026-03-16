@@ -1,0 +1,12 @@
+# Mismatch fixture: the surrounding comments should survive future metadata sync.
+# Name is stale on purpose.
+name = "MismatchApp-OLD"
+# Version is stale on purpose.
+version = "1.9.9"
+# Local version is stale on purpose.
+localVersion = 7
+only_portable = false
+
+[[shortcut]]
+name = "Mismatch App"
+targetPath = "$App\\Mismatch.exe"

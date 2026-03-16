@@ -167,89 +167,72 @@ Safety and scope
 
 from __future__ import annotations
 
+# =============================================================================
+# Imports and optional backend loaders
+# =============================================================================
+
 import argparse
 import importlib
 import importlib.util
 import json
 import os
 import re
-import site
 import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import winreg
+if os.name == "nt":
+    import winreg
+else:
+    winreg = None  # type: ignore[assignment]
 
 
-def get_deps_path() -> Path:
-    """Return the local dependency cache directory used by pkg.
-
-    Dependencies are installed under:
-    ``%USERPROFILE%\\AppData\\Local\\pkg\\_deps``.
-    """
-    userprofile = os.environ.get("USERPROFILE", str(Path.home()))
-    return Path(userprofile) / "AppData" / "Local" / "pkg" / "_deps"
-
-
-def _ensure_deps_on_path() -> Path:
-    """Ensure the local dependency cache is importable via ``sys.path``."""
-    deps_path = get_deps_path()
-    deps_path.mkdir(parents=True, exist_ok=True)
-    site.addsitedir(str(deps_path))
-    return deps_path
-
-
-def ensure_dependency(module_name: str, pip_package: str) -> bool:
-    """Import a dependency, auto-installing it into local deps if needed."""
-    _ensure_deps_on_path()
-
+def try_import(module_name: str) -> Optional[Any]:
+    """Import *module_name* if available, otherwise return ``None``."""
     try:
-        importlib.import_module(module_name)
-        return True
+        return importlib.import_module(module_name)
     except ImportError:
-        pass
+        return None
 
-    deps_path = get_deps_path()
 
-    # If pip is unavailable in this interpreter, auto-install is impossible.
-    if importlib.util.find_spec("pip") is None:
-        print(
-            f"Warning: dependency '{pip_package}' is missing and pip is not available "
-            f"for this Python interpreter ({sys.executable})."
-        )
-        return False
-
-    print(f"Dependency '{pip_package}' missing; installing to: {deps_path}")
+def has_module(module_name: str) -> bool:
+    """Return ``True`` when *module_name* is importable."""
     try:
-        subprocess.check_call(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-warn-script-location",
-                "--upgrade",
-                "--ignore-installed",
-                "--target",
-                str(deps_path),
-                pip_package,
-            ]
-        )
-    except Exception as exc:
-        print(f"Warning: failed to auto-install '{pip_package}': {exc}")
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
         return False
 
-    # Refresh import path and retry import.
-    _ensure_deps_on_path()
-    importlib.invalidate_caches()
-    try:
-        importlib.import_module(module_name)
-        return True
-    except ImportError:
-        return False
+
+def get_win32com_client() -> Optional[Any]:
+    """Return ``win32com.client`` when available without installing anything."""
+    return try_import("win32com.client")
+
+
+def require_winreg() -> Any:
+    """Return the ``winreg`` module or raise a clear platform error."""
+    if winreg is None:
+        raise OSError("winreg is only available on Windows.")
+    return winreg
+
+
+def load_toml_modules() -> Tuple[Optional[str], Optional[Any]]:
+    """Load an available TOML reader without mutating the runtime environment."""
+    tomllib_module = try_import("tomllib")
+    if tomllib_module is not None:
+        return "tomllib", tomllib_module
+
+    toml_module = try_import("toml")
+    if toml_module is not None:
+        return "toml", toml_module
+
+    return None, None
+
+
+# =============================================================================
+# User-facing documentation, version, and constants
+# =============================================================================
 
 __version__ = "0.10.0"
 __copyright__ = "Copyright (C) 2025 Gennady Uraltseev. All rights reserved."
@@ -397,6 +380,150 @@ Notes
 """
 
 
+# =============================================================================
+# Pure helpers
+#   - version parsing/comparison
+#   - path classification
+#   - atomic file helpers
+#   - reporting/result helpers
+# =============================================================================
+
+VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
+
+TOP_LEVEL_CONFIG_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "version": "version",
+    "localversion": "localVersion",
+    "local_version": "localVersion",
+    "description": "description",
+    "homepage": "homepage",
+    "downloadurl": "downloadURL",
+    "download_url": "downloadURL",
+    "environment": "environment",
+    "env": "environment",
+    "bin": "bin",
+    "path": "path",
+    "shortcut": "shortcut",
+    "shortcuts": "shortcut",
+    "only_portable": "only_portable",
+    "onlyportable": "only_portable",
+    "portable": "portable",
+    "main": "main",
+}
+MAIN_TABLE_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "version": "version",
+    "localversion": "localVersion",
+    "local_version": "localVersion",
+    "description": "description",
+    "homepage": "homepage",
+    "downloadurl": "downloadURL",
+    "download_url": "downloadURL",
+    "only_portable": "only_portable",
+    "onlyportable": "only_portable",
+    "portable": "portable",
+}
+ENVIRONMENT_KEY_ALIASES: Dict[str, str] = {"name": "Name", "value": "Value"}
+BIN_KEY_ALIASES: Dict[str, str] = {"name": "name", "content": "content"}
+SHORTCUT_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "targetpath": "targetPath",
+    "target_path": "targetPath",
+    "path": "targetPath",
+    "arguments": "arguments",
+    "args": "arguments",
+    "workingdirectory": "workingDirectory",
+    "working_directory": "workingDirectory",
+    "workdir": "workingDirectory",
+    "iconlocation": "iconLocation",
+    "icon_location": "iconLocation",
+    "description": "description",
+    "desc": "description",
+}
+PATH_ENTRY_KEY_ALIASES: Dict[str, str] = {"value": "value", "path": "value"}
+CONFIG_LIST_FIELDS = ("environment", "bin", "path", "shortcut")
+
+
+def is_version_directory_name(name: str) -> bool:
+    return VERSION_DIR_NAME_RE.match(name) is not None
+
+
+def split_package_version(version: str) -> Tuple[str, int]:
+    version = version.strip()
+    if version.startswith("v"):
+        version = version[1:]
+    if ".l" in version:
+        upstream_part, local_part = version.rsplit(".l", 1)
+        try:
+            local_revision = int(local_part)
+        except ValueError:
+            local_revision = 0
+    else:
+        upstream_part = version
+        local_revision = 0
+    return upstream_part, local_revision
+
+
+def compare_package_versions(version1: str, version2: str) -> int:
+    def parse_identifier(token: str) -> Union[int, str]:
+        token = token.strip()
+        if token.isdigit():
+            return int(token)
+        return token.lower()
+
+    def parse_upstream(upstream: str) -> Tuple[List[Union[int, str]], Optional[List[Union[int, str]]]]:
+        upstream = upstream.strip()
+        if "+" in upstream:
+            upstream = upstream.split("+", 1)[0]
+        if "-" in upstream:
+            main_part, prerelease_part = upstream.split("-", 1)
+            prerelease = [parse_identifier(part) for part in prerelease_part.split(".") if part != ""]
+        else:
+            main_part = upstream
+            prerelease = None
+        main = [parse_identifier(part) for part in main_part.split(".") if part != ""]
+        return main, prerelease
+
+    def compare_identifier_lists(left: List[Union[int, str]], right: List[Union[int, str]], *, pad_numeric: bool) -> int:
+        max_len = max(len(left), len(right))
+        for index in range(max_len):
+            left_value = left[index] if index < len(left) else (0 if pad_numeric else None)
+            right_value = right[index] if index < len(right) else (0 if pad_numeric else None)
+            if left_value == right_value:
+                continue
+            if left_value is None:
+                return -1
+            if right_value is None:
+                return 1
+            if isinstance(left_value, int) and isinstance(right_value, int):
+                return 1 if left_value > right_value else -1
+            if isinstance(left_value, int) and isinstance(right_value, str):
+                return -1
+            if isinstance(left_value, str) and isinstance(right_value, int):
+                return 1
+            return 1 if str(left_value) > str(right_value) else -1
+        return 0
+
+    upstream1, local1 = split_package_version(version1)
+    upstream2, local2 = split_package_version(version2)
+    main1, prerelease1 = parse_upstream(upstream1)
+    main2, prerelease2 = parse_upstream(upstream2)
+    main_comparison = compare_identifier_lists(main1, main2, pad_numeric=True)
+    if main_comparison != 0:
+        return main_comparison
+    if prerelease1 is None and prerelease2 is not None:
+        return 1
+    if prerelease1 is not None and prerelease2 is None:
+        return -1
+    if prerelease1 is not None and prerelease2 is not None:
+        prerelease_comparison = compare_identifier_lists(prerelease1, prerelease2, pad_numeric=False)
+        if prerelease_comparison != 0:
+            return prerelease_comparison
+    if local1 == local2:
+        return 0
+    return 1 if local1 > local2 else -1
+
+
 def normalize_path(path: Union[str, Path]) -> Path:
     r"""Normalize a filesystem path for reliable comparisons.
 
@@ -417,32 +544,15 @@ def normalize_path(path: Union[str, Path]) -> Path:
     return Path(path_str).resolve()
 
 
-# Auto-install optional dependencies into local deps cache.
-PYWIN32_AVAILABLE = ensure_dependency("win32com.client", "pywin32")
-if PYWIN32_AVAILABLE:
-    import win32com.client  # type: ignore
-
-# TOML parsing support:
-# - Prefer stdlib tomllib on Python 3.11+ (works even when pip is not available).
-# - Otherwise use the third-party toml package (auto-installed if possible).
-TOML_BACKEND: Optional[str] = None
-try:
-    import tomllib  # Python 3.11+
-    TOML_BACKEND = "tomllib"
-except ImportError:
-    tomllib = None  # type: ignore[assignment]
-
-if TOML_BACKEND is None:
-    try:
-        import toml  # type: ignore
-        TOML_BACKEND = "toml"
-    except ImportError:
-        if ensure_dependency("toml", "toml"):
-            import toml  # type: ignore
-            TOML_BACKEND = "toml"
-
+PYWIN32_AVAILABLE = has_module("win32com.client")
+TOML_BACKEND, _TOML_MODULE = load_toml_modules()
 TOML_AVAILABLE = TOML_BACKEND is not None
 
+
+
+# =============================================================================
+# Enums, dataclasses, and custom exceptions
+# =============================================================================
 
 class ConfigValidationError(ValueError):
     """Raised when pkg.toml configuration is invalid."""
@@ -467,6 +577,16 @@ class Action(Enum):
     UPDATE_CONFIG = "UpdateConfig"
     COMPRESS = "Compress"
 
+
+# =============================================================================
+# Package identity and scope paths
+# =============================================================================
+
+# Existing PackageMetadata remains the compatibility facade in this phase.
+
+# =============================================================================
+# Runtime config model and validation
+# =============================================================================
 
 class PackageMetadata:
     """Package metadata derived from the filesystem and configuration.
@@ -511,7 +631,6 @@ class PackageMetadata:
         self.version_string: str = ""
         self.is_current: bool = False
         self.scope: Scope = Scope.USER
-        self.component_paths: Dict[str, Path] = {}
         self.shortcut_dir: Path = Path()
         self.only_portable: bool = False
 
@@ -536,7 +655,6 @@ class PackageMetadata:
           - ``version`` (upstream)
           - ``local_version`` (local revision)
           - ``version_string`` (full directory name)
-          - ``component_paths`` (App/Icons/Shortcuts subdirectories)
           - ``only_portable`` (inferred from package name suffix ``-portable``)
 
         Raises:
@@ -544,7 +662,7 @@ class PackageMetadata:
         """
         version_dir_name = str(self.version_path.relative_to(self.pkg_path))
 
-        match = re.match(r'^v(.+)\.l(\d+)$', version_dir_name)
+        match = VERSION_DIR_NAME_RE.match(version_dir_name)
         if not match:
             raise ValueError(
                 f"Invalid version directory name: {version_dir_name}. "
@@ -558,11 +676,6 @@ class PackageMetadata:
         if self.name.lower().endswith("-portable"):
             self.only_portable = True
 
-        self.component_paths = {
-            "App": self.version_path / "App",
-            "Icons": self.version_path / "Icons",
-            "Shortcuts": self.version_path / "Shortcuts",
-        }
 
     def _fill_current(self) -> None:
         r"""Compute whether this version is the package's current version.
@@ -704,29 +817,11 @@ class PackageMetadata:
         if not isinstance(data, dict):
             raise ConfigValidationError(f"Configuration must be a dict, got: {type(data).__name__}")
 
-        top_map = {
-            # canonical schema keys (case-insensitive) + a few common aliases
-            "name": "name",
-            "version": "version",
-            "localversion": "localVersion",
-            "local_version": "localVersion",
-            "description": "description",
-            "homepage": "homepage",
-            "downloadurl": "downloadURL",
-            "download_url": "downloadURL",
-            "environment": "environment",
-            "env": "environment",
-            "bin": "bin",
-            "path": "path",
-            "shortcut": "shortcut",
-            "shortcuts": "shortcut",
-            "only_portable": "only_portable",
-            "onlyportable": "only_portable",
-            "portable": "portable",
-            "main": "main",
-        }
-
-        out = PackageMetadata._canonicalize_dict_keys(data, top_map, context="config")
+        out = PackageMetadata._canonicalize_dict_keys(
+            data,
+            TOP_LEVEL_CONFIG_KEY_ALIASES,
+            context="config",
+        )
 
         # Support a dedicated [[main]] TOML section for package-level metadata.
         main_block = out.pop("main", None)
@@ -740,25 +835,16 @@ class PackageMetadata:
                     raise ConfigValidationError(
                         f"'main[0]' must be a dict, got: {type(main_block[0]).__name__}"
                     )
-                main_map = {
-                    "name": "name",
-                    "version": "version",
-                    "localversion": "localVersion",
-                    "local_version": "localVersion",
-                    "description": "description",
-                    "homepage": "homepage",
-                    "downloadurl": "downloadURL",
-                    "download_url": "downloadURL",
-                    "only_portable": "only_portable",
-                    "onlyportable": "only_portable",
-                    "portable": "portable",
-                }
-                normalized_main = PackageMetadata._canonicalize_dict_keys(main_block[0], main_map, context="main[0]")
+                normalized_main = PackageMetadata._canonicalize_dict_keys(
+                    main_block[0],
+                    MAIN_TABLE_KEY_ALIASES,
+                    context="main[0]",
+                )
                 for key, value in normalized_main.items():
                     out[key] = value
 
         # Normalize absent/null list fields.
-        for k in ("environment", "bin", "path", "shortcut"):
+        for k in CONFIG_LIST_FIELDS:
             if out.get(k, None) is None:
                 out[k] = []
 
@@ -774,24 +860,6 @@ class PackageMetadata:
             )
 
         # Canonicalize list-of-dict blocks.
-        env_map = {"name": "Name", "value": "Value"}
-        bin_map = {"name": "name", "content": "content"}
-        shortcut_map = {
-            "name": "name",
-            "targetpath": "targetPath",
-            "target_path": "targetPath",
-            "path": "targetPath",  # user-friendly alias for targetPath
-            "arguments": "arguments",
-            "args": "arguments",
-            "workingdirectory": "workingDirectory",
-            "working_directory": "workingDirectory",
-            "workdir": "workingDirectory",
-            "iconlocation": "iconLocation",
-            "icon_location": "iconLocation",
-            "description": "description",
-            "desc": "description",
-        }
-
         def canonicalize_block(block_name: str, keymap: Dict[str, str]) -> List[Dict[str, Any]]:
             raw = out.get(block_name, [])
             if raw is None:
@@ -807,20 +875,16 @@ class PackageMetadata:
                 result.append(PackageMetadata._canonicalize_dict_keys(item, keymap, context=f"{block_name}[{i}]"))
             return result
 
-        out["environment"] = canonicalize_block("environment", env_map)
-        out["bin"] = canonicalize_block("bin", bin_map)
+        out["environment"] = canonicalize_block("environment", ENVIRONMENT_KEY_ALIASES)
+        out["bin"] = canonicalize_block("bin", BIN_KEY_ALIASES)
         for bw in out["bin"]:
             if "content" in bw:
                 bw["content"] = PackageMetadata._normalize_bin_content(bw.get("content", ""))
-        out["shortcut"] = canonicalize_block("shortcut", shortcut_map)
+        out["shortcut"] = canonicalize_block("shortcut", SHORTCUT_KEY_ALIASES)
 
         # Normalize path entries.
         # We canonicalize to List[str] internally regardless of whether the
         # config used [[path]] tables or a list of strings.
-        path_entry_map = {
-            "value": "value",
-            "path": "value",
-        }
         normalized_path: List[str] = []
         for i, entry in enumerate(out.get("path", [])):
             if entry is None:
@@ -829,7 +893,7 @@ class PackageMetadata:
                 normalized_path.append(entry)
                 continue
             if isinstance(entry, dict):
-                path_item = PackageMetadata._canonicalize_dict_keys(entry, path_entry_map, context=f"path[{i}]")
+                path_item = PackageMetadata._canonicalize_dict_keys(entry, PATH_ENTRY_KEY_ALIASES, context=f"path[{i}]")
                 value = path_item.get("value", None)
                 if value is None:
                     raise ConfigValidationError(
@@ -1107,10 +1171,10 @@ class PackageMetadata:
                 try:
                     if TOML_BACKEND == "tomllib":
                         with open(toml_path, "rb") as f:
-                            data = tomllib.load(f)  # type: ignore[union-attr]
+                            data = _TOML_MODULE.load(f)  # type: ignore[union-attr]
                     else:
                         with open(toml_path, "r", encoding="utf-8") as f:
-                            data = toml.load(f)  # type: ignore[name-defined]
+                            data = _TOML_MODULE.load(f)  # type: ignore[union-attr]
                 except Exception as e:
                     if not use_defaults:
                         raise RuntimeError(f"Error loading TOML config from {toml_path}: {e}") from e
@@ -1241,6 +1305,16 @@ class PackageMetadata:
         self.shortcut_dir.mkdir(parents=True, exist_ok=True)
 
 
+# =============================================================================
+# TOML document I/O and round-trip config updates
+# =============================================================================
+
+# Existing config file I/O remains dict-based in this phase.
+
+# =============================================================================
+# Variable expansion
+# =============================================================================
+
 class VariableExpander:
     """Expand $-style variables in config strings."""
 
@@ -1328,6 +1402,13 @@ class VariableExpander:
         """
         return {key: VariableExpander.expand_variables(value, metadata) for key, value in data.items()}
 
+
+# =============================================================================
+# Windows backends
+#   - junctions
+#   - shortcuts
+#   - registry env/path
+# =============================================================================
 
 class JunctionManager:
     """Create and inspect NTFS junctions used for version switching."""
@@ -1528,135 +1609,8 @@ class JunctionManager:
 
     @staticmethod
     def compare_versions(version1: str, version2: str) -> int:
-        """Compare two version strings of the form ``v<upstream>.l<local>``.
-
-        The prior implementation compared mixed int/string tokens
-        lexicographically, which can mis-order pre-releases.
-
-        Ordering rules (semver-ish):
-
-        1) Compare upstream *main* parts split by ``.``.
-           - Purely numeric identifiers are compared numerically.
-           - Missing numeric identifiers are treated as 0 (so ``1.2`` == ``1.2.0``).
-        2) If upstream contains a ``-`` prerelease part
-           (e.g. ``1.2.0-beta.1``), prereleases sort *before* the
-           corresponding release.
-        3) If upstreams are equal, compare the local revision (the ``lN`` part)
-           numerically.
-
-        This intentionally does **not** attempt full PEP 440 parsing; it provides
-        a stable, documented ordering for the directory naming convention used
-        by this project.
-
-        Args:
-            version1: Version string like ``v1.2.3.l4``.
-            version2: Another version string.
-
-        Returns:
-            1 if version1 > version2
-           -1 if version1 < version2
-            0 if equal
-
-        """
-
-        def split_version(v: str) -> Tuple[str, int]:
-            v = v.strip()
-            if v.startswith("v"):
-                v = v[1:]
-
-            if ".l" in v:
-                upstream_part, local_part = v.rsplit(".l", 1)
-                try:
-                    local_rev = int(local_part)
-                except ValueError:
-                    local_rev = 0
-            else:
-                upstream_part = v
-                local_rev = 0
-            return upstream_part, local_rev
-
-        def parse_identifier(token: str) -> Union[int, str]:
-            token = token.strip()
-            if token.isdigit():
-                return int(token)
-            return token.lower()
-
-        def parse_upstream(up: str) -> Tuple[List[Union[int, str]], Optional[List[Union[int, str]]]]:
-            # Ignore build metadata (anything after '+') for ordering.
-            up = up.split("+", 1)[0]
-            if "-" in up:
-                main_part, pre_part = up.split("-", 1)
-                pre = [parse_identifier(t) for t in pre_part.split(".") if t]
-            else:
-                main_part = up
-                pre = None
-            main = [parse_identifier(t) for t in main_part.split(".") if t]
-            return main, pre
-
-        def compare_main(a: Union[int, str], b: Union[int, str]) -> int:
-            if isinstance(a, int) and isinstance(b, int):
-                return (a > b) - (a < b)
-            if isinstance(a, str) and isinstance(b, str):
-                return (a > b) - (a < b)
-            # Main version: numeric identifiers sort after non-numeric.
-            if isinstance(a, int) and isinstance(b, str):
-                return 1
-            if isinstance(a, str) and isinstance(b, int):
-                return -1
-            return (str(a) > str(b)) - (str(a) < str(b))
-
-        def compare_prerelease(
-            pre_a: Optional[List[Union[int, str]]],
-            pre_b: Optional[List[Union[int, str]]],
-        ) -> int:
-            if pre_a is None and pre_b is None:
-                return 0
-            if pre_a is None:
-                return 1  # release > prerelease
-            if pre_b is None:
-                return -1
-
-            for i in range(max(len(pre_a), len(pre_b))):
-                if i >= len(pre_a):
-                    return -1  # shorter prerelease < longer
-                if i >= len(pre_b):
-                    return 1
-
-                a = pre_a[i]
-                b = pre_b[i]
-                if a == b:
-                    continue
-                if isinstance(a, int) and isinstance(b, int):
-                    return (a > b) - (a < b)
-                if isinstance(a, str) and isinstance(b, str):
-                    return (a > b) - (a < b)
-
-                # Semver prerelease: numeric identifiers have lower precedence
-                # than non-numeric identifiers.
-                if isinstance(a, int) and isinstance(b, str):
-                    return -1
-                if isinstance(a, str) and isinstance(b, int):
-                    return 1
-                return (str(a) > str(b)) - (str(a) < str(b))
-            return 0
-
-        up1, local1 = split_version(version1)
-        up2, local2 = split_version(version2)
-        main1, pre1 = parse_upstream(up1)
-        main2, pre2 = parse_upstream(up2)
-
-        for i in range(max(len(main1), len(main2))):
-            a: Union[int, str] = main1[i] if i < len(main1) else 0
-            b: Union[int, str] = main2[i] if i < len(main2) else 0
-            cmp_main = compare_main(a, b)
-            if cmp_main != 0:
-                return cmp_main
-
-        cmp_pre = compare_prerelease(pre1, pre2)
-        if cmp_pre != 0:
-            return cmp_pre
-
-        return (local1 > local2) - (local1 < local2)
+        """Compare two package version directory strings."""
+        return compare_package_versions(version1, version2)
 
     @staticmethod
     def update_current_junction_if_needed(metadata: PackageMetadata, *, force: bool = False) -> bool:
@@ -1730,6 +1684,10 @@ class JunctionManager:
         raise RuntimeError(f"Failed to create 'current' junction at {current_path}")
 
 
+# =============================================================================
+# Install steps
+# =============================================================================
+
 class ShortcutInstaller:
     """Create Windows Start Menu shortcuts (.lnk)."""
 
@@ -1759,7 +1717,10 @@ class ShortcutInstaller:
             # ensure the parent directory exists before creating the .lnk.
             shortcut_path.parent.mkdir(parents=True, exist_ok=True)
 
-            shell = win32com.client.Dispatch("WScript.Shell")  # type: ignore[name-defined]
+            win32_client = get_win32com_client()
+            if win32_client is None:
+                raise RuntimeError("pywin32 is not installed")
+            shell = win32_client.Dispatch("WScript.Shell")
             shortcut = shell.CreateShortcut(str(shortcut_path))
 
             shortcut.TargetPath = target_required
@@ -1886,9 +1847,10 @@ class EnvironmentVariableManager:
     @staticmethod
     def _get_registry_key(scope: Scope) -> Tuple[int, str]:
         """Return ``(root_hkey, subkey)`` appropriate for the scope."""
+        reg = require_winreg()
         if scope == Scope.USER:
-            return winreg.HKEY_CURRENT_USER, r"Environment"
-        return winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+            return reg.HKEY_CURRENT_USER, r"Environment"
+        return reg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 
     @staticmethod
     def broadcast_environment_change() -> None:
@@ -1950,9 +1912,10 @@ class EnvironmentVariableManager:
         """
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            with winreg.OpenKey(root, subkey, 0, winreg.KEY_SET_VALUE) as key:
-                reg_type = winreg.REG_EXPAND_SZ if expand else winreg.REG_SZ
-                winreg.SetValueEx(key, name, 0, reg_type, value)
+            reg = require_winreg()
+            with reg.OpenKey(root, subkey, 0, reg.KEY_SET_VALUE) as key:
+                reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
+                reg.SetValueEx(key, name, 0, reg_type, value)
 
             print(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
             EnvironmentVariableManager.broadcast_environment_change()
@@ -2017,9 +1980,10 @@ class PATHManager:
         """
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
-                value, reg_type = winreg.QueryValueEx(key, "Path")
-                if reg_type in (winreg.REG_EXPAND_SZ, winreg.REG_SZ):
+            reg = require_winreg()
+            with reg.OpenKey(root, subkey, 0, reg.KEY_READ) as key:
+                value, reg_type = reg.QueryValueEx(key, "Path")
+                if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
                     return [p.strip() for p in value.split(";") if p.strip()]
         except FileNotFoundError:
             pass
@@ -2043,8 +2007,9 @@ class PATHManager:
         try:
             path_value = ";".join(path_entries)
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            with winreg.OpenKey(root, subkey, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, path_value)
+            reg = require_winreg()
+            with reg.OpenKey(root, subkey, 0, reg.KEY_SET_VALUE) as key:
+                reg.SetValueEx(key, "Path", 0, reg.REG_EXPAND_SZ, path_value)
             EnvironmentVariableManager.broadcast_environment_change()
             return True
         except PermissionError:
@@ -2229,6 +2194,10 @@ class BinFileCreator:
             BinFileCreator.create_wrapper(wrapper_info, metadata)
 
 
+# =============================================================================
+# Orchestration
+# =============================================================================
+
 class PackageManager:
     """Orchestrate install/update operations for a package."""
 
@@ -2403,7 +2372,7 @@ class PackageManager:
 
         # Explicit version directories should be installed directly and must not
         # require sibling "current" junction discovery.
-        is_version_dir = bool(re.match(r"^v.+\.l\d+$", package_path.name))
+        is_version_dir = is_version_directory_name(package_path.name)
         if is_version_dir:
             return package_path, False
 
@@ -2508,6 +2477,10 @@ class PackageManager:
             except ImportError:
                 input("Press Enter to continue...")
 
+
+# =============================================================================
+# CLI
+# =============================================================================
 
 class _ExtendedHelpAction(argparse.Action):
     """Argparse action that prints standard help plus :data:`EXTENDED_HELP`."""

@@ -1,0 +1,27 @@
+# GoodApp fixture for round-trip config preservation work.
+# Keep the comments and general layout intact.
+name = "GoodApp"
+version = "1.2.3"
+localVersion = 1
+# This key is intentionally unknown to pkg.
+maintainer_note = "preserve me"
+only_portable = false
+
+[[environment]]
+# Environment variable comment.
+Name = "GOODAPP_HOME"
+Value = "$App"
+
+[[path]]
+value = "$App\\bin"
+
+[[shortcut]]
+name = "Good App"
+targetPath = "$App\\GoodApp.exe"
+workingDirectory = "$App"
+iconLocation = "$Icons\\goodapp.ico,0"
+description = "Launch GoodApp"
+
+[[bin]]
+name = "goodapp.cmd"
+content = "@echo off\n\"$App\\GoodApp.exe\" %*\n"

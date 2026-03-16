@@ -1,0 +1,6 @@
+name = "BadPathApp"
+version = "1.0.0"
+localVersion = 1
+
+[[path]]
+value = "$MISSING_VAR"

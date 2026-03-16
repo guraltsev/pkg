@@ -1,0 +1,11 @@
+name = "PwshApp"
+version = "5.4.3"
+localVersion = 2
+
+[[bin]]
+name = "pwshapp.ps1"
+content = '''
+$ErrorActionPreference = 'Stop'
+$app = Join-Path $PSScriptRoot 'PwshApp.exe'
+& $app @args
+'''
