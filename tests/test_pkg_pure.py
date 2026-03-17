@@ -3,11 +3,13 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,8 +68,9 @@ name = "Broken"
                 encoding="utf-8",
             )
             manager = module.PackageManager()
-            with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.install(version_dir)
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = manager.install(version_dir)
             self.assertFalse(result.ok)
             self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
 
@@ -103,8 +106,9 @@ name = "Broken"
                 module.BinFileCreator.install_wrappers = staticmethod(
                     lambda metadata, reporter=None: module.StepResult(ok=True, changed=False)
                 )
-                with contextlib.redirect_stdout(io.StringIO()):
-                    result = manager.install(version_dir)
+                with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        result = manager.install(version_dir)
             finally:
                 module.JunctionManager.update_current_junction_if_needed = original_update_current
                 module.ShortcutInstaller.install_shortcuts = original_install_shortcuts
@@ -152,6 +156,44 @@ name = "Broken"
             self.assertIn('localVersion = 3', updated)
             self.assertIn('only_portable = false', updated)
             self.assertIn('name = "MismatchApp-OLD"', backup)
+
+    def test_resolve_input_path_classifies_version_dir_without_resolving_first(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "GoodApp" / "v1.2.3.l1"
+            version_dir.mkdir(parents=True)
+            resolved = module.resolve_input_path(version_dir)
+            self.assertEqual(resolved.input_kind, "version")
+            self.assertEqual(resolved.version_path, version_dir)
+            self.assertFalse(resolved.installing_from_current)
+
+    def test_alias_heavy_runtime_config_normalizes_to_runtime_model(self) -> None:
+        module = load_pkg_module()
+        identity = module.PackageIdentity(
+            name="AliasApp",
+            version="1.0.0",
+            local_version=2,
+            version_string="v1.0.0.l2",
+            package_root=Path("C:/pkg/AliasApp"),
+            version_path=Path("C:/pkg/AliasApp/v1.0.0.l2"),
+            is_current=False,
+            only_portable_by_name=False,
+        )
+        raw = {
+            "NAME": "AliasApp",
+            "Version": "1.0.0",
+            "local_version": 2,
+            "ENV": [{"name": "HOME", "value": "$App"}],
+            "Shortcuts": [{"name": "Alias", "path": r"$App\Alias.exe"}],
+            "PATH": [{"path": r"$App\bin"}],
+            "BIN": [{"name": "alias.cmd", "content": "@echo off"}],
+        }
+        config = module.normalize_runtime_config(raw, identity)
+        module.validate_runtime_config(config)
+        self.assertEqual(config.environment[0].name, "HOME")
+        self.assertEqual(config.shortcut[0].target_path, r"$App\Alias.exe")
+        self.assertEqual(config.path, [r"$App\bin"])
+        self.assertEqual(config.bin[0].name, "alias.cmd")
 
 
 if __name__ == "__main__":

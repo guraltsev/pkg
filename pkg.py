@@ -678,6 +678,105 @@ class ActionResult:
     exit_code: int = EXIT_SUCCESS
 
 
+@dataclass(frozen=True)
+class ResolvedInput:
+    raw_path: Path
+    package_root: Path
+    version_path: Path
+    input_kind: str
+    installing_from_current: bool
+
+
+@dataclass(frozen=True)
+class PackageIdentity:
+    name: str
+    version: str
+    local_version: int
+    version_string: str
+    package_root: Path
+    version_path: Path
+    is_current: bool
+    only_portable_by_name: bool
+
+    @classmethod
+    def from_resolved_input(cls, resolved: "ResolvedInput") -> "PackageIdentity":
+        match = VERSION_DIR_NAME_RE.match(resolved.version_path.name)
+        if not match:
+            raise ValueError(
+                f"Invalid version directory name: {resolved.version_path.name}. Expected format: v<upstream>.l<local>"
+            )
+        package_root = resolved.package_root
+        version_path = resolved.version_path
+        current_path = package_root / "current"
+        is_current = False
+        if current_path.exists() and JunctionManager.is_junction(current_path):
+            target = JunctionManager.get_junction_target(current_path)
+            if target is not None:
+                try:
+                    is_current = normalize_path(target) == normalize_path(version_path)
+                except OSError:
+                    is_current = False
+        return cls(
+            name=package_root.name,
+            version=match.group(1),
+            local_version=int(match.group(2)),
+            version_string=version_path.name,
+            package_root=package_root,
+            version_path=version_path,
+            is_current=is_current,
+            only_portable_by_name=package_root.name.lower().endswith("-portable"),
+        )
+
+
+@dataclass(frozen=True)
+class ScopePaths:
+    scope: Scope
+    shortcut_root: Path
+    bin_dir: Path
+    env_root: Any
+    env_subkey: str
+
+
+@dataclass
+class ShortcutSpec:
+    name: str
+    target_path: str
+    arguments: str = ""
+    working_directory: str = ""
+    icon_location: str = ""
+    description: str = ""
+
+
+@dataclass
+class EnvVarSpec:
+    name: str
+    value: str
+
+
+@dataclass
+class BinSpec:
+    name: str
+    content: str
+
+
+@dataclass
+class PackageConfig:
+    description: Optional[str] = None
+    homepage: Optional[str] = None
+    download_url: Optional[str] = None
+    only_portable: bool = False
+    environment: List[EnvVarSpec] = field(default_factory=list)
+    shortcut: List[ShortcutSpec] = field(default_factory=list)
+    path: List[str] = field(default_factory=list)
+    bin: List[BinSpec] = field(default_factory=list)
+
+
+@dataclass
+class ExpansionResult:
+    value: str
+    unresolved: List[str] = field(default_factory=list)
+
+
 class Reporter:
     """Minimal console reporter used by the orchestration layer."""
 
@@ -714,59 +813,292 @@ def combine_step_results(*results: StepResult) -> StepResult:
 # Package identity and scope paths
 # =============================================================================
 
-# Existing PackageMetadata remains the compatibility facade in this phase.
+def resolve_input_path(raw_path: Path) -> ResolvedInput:
+    """Classify the user input path before resolving any junction targets."""
+    candidate = raw_path.expanduser()
+
+    if is_version_directory_name(candidate.name):
+        if not candidate.exists() or not candidate.is_dir():
+            raise ValueError(f"Version directory does not exist: {candidate}")
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=candidate.parent,
+            version_path=candidate,
+            input_kind="version",
+            installing_from_current=False,
+        )
+
+    if candidate.name.lower() == "current":
+        if not candidate.exists():
+            raise ValueError(f'"current" path does not exist: {candidate}')
+        if not JunctionManager.is_junction(candidate):
+            raise ValueError(
+                f'"current" path exists but is not a valid junction: {candidate}; '
+                f"exists={candidate.exists()}, is_dir={candidate.is_dir()}, parent={candidate.parent}"
+            )
+        target = JunctionManager.get_junction_target(candidate)
+        if target is None:
+            raise ValueError(f'Could not resolve "current" junction target: {candidate}')
+        resolved_target = normalize_path(target)
+        if not resolved_target.is_dir():
+            raise ValueError(
+                f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
+            )
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=candidate.parent,
+            version_path=resolved_target,
+            input_kind="current",
+            installing_from_current=True,
+        )
+
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError(f"Package root does not exist: {candidate}")
+    current_path = candidate / "current"
+    if not current_path.exists():
+        raise ValueError(
+            f'No "current" directory exists in package root: {candidate}; '
+            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
+        )
+    if not JunctionManager.is_junction(current_path):
+        raise ValueError(
+            f'"current" path exists but is not a valid junction: {current_path}; '
+            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
+        )
+    target = JunctionManager.get_junction_target(current_path)
+    if target is None:
+        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
+    resolved_target = normalize_path(target)
+    if not resolved_target.is_dir():
+        raise ValueError(
+            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
+        )
+    return ResolvedInput(
+        raw_path=candidate,
+        package_root=candidate,
+        version_path=resolved_target,
+        input_kind="package_root",
+        installing_from_current=True,
+    )
+
+
+def compute_scope_paths(scope: Scope) -> ScopePaths:
+    registry = winreg
+    if scope == Scope.USER:
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            raise ValueError("APPDATA is not set; cannot compute User-scope shortcut directory.")
+        userprofile = os.environ.get("USERPROFILE")
+        if not userprofile:
+            raise ValueError("USERPROFILE is not set; cannot compute User-scope bin directory.")
+        return ScopePaths(
+            scope=scope,
+            shortcut_root=Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+            bin_dir=Path(userprofile) / "bin",
+            env_root=(registry.HKEY_CURRENT_USER if registry is not None else None),
+            env_subkey="Environment",
+        )
+
+    programdata = os.environ.get("PROGRAMDATA")
+    if not programdata:
+        raise ValueError("PROGRAMDATA is not set; cannot compute Machine-scope shortcut directory.")
+    systemdrive = os.environ.get("SYSTEMDRIVE")
+    if not systemdrive:
+        raise ValueError("SYSTEMDRIVE is not set; cannot compute Machine-scope bin directory.")
+    return ScopePaths(
+        scope=scope,
+        shortcut_root=Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+        bin_dir=Path(systemdrive) / "bin",
+        env_root=(registry.HKEY_LOCAL_MACHINE if registry is not None else None),
+        env_subkey=r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    )
+
 
 # =============================================================================
 # Runtime config model and validation
 # =============================================================================
 
+def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConfig:
+    """Normalize runtime config into a dedicated runtime model."""
+    default_data: Dict[str, Any] = {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "description": None,
+        "homepage": None,
+        "downloadURL": None,
+        "environment": [],
+        "bin": [],
+        "path": [],
+        "shortcut": [],
+        "only_portable": identity.only_portable_by_name,
+    }
+    merged = dict(default_data)
+    if raw is not None:
+        if not isinstance(raw, dict):
+            raise ConfigValidationError(f"Configuration must be a dict, got: {type(raw).__name__}")
+        merged.update(PackageMetadata._canonicalize_config_dict(dict(raw)))
+    normalized = PackageMetadata._canonicalize_config_dict(merged)
+    return PackageConfig(
+        description=normalized.get("description"),
+        homepage=normalized.get("homepage"),
+        download_url=normalized.get("downloadURL"),
+        only_portable=bool(normalized.get("only_portable", identity.only_portable_by_name)),
+        environment=[
+            EnvVarSpec(name=str(item.get("Name", "")), value=str(item.get("Value", "")))
+            for item in normalized.get("environment", [])
+        ],
+        shortcut=[
+            ShortcutSpec(
+                name=str(item.get("name", "")),
+                target_path=str(item.get("targetPath", "")),
+                arguments=str(item.get("arguments", "")),
+                working_directory=str(item.get("workingDirectory", "")),
+                icon_location=str(item.get("iconLocation", "")),
+                description=str(item.get("description", "")),
+            )
+            for item in normalized.get("shortcut", [])
+        ],
+        path=[str(item) for item in normalized.get("path", [])],
+        bin=[
+            BinSpec(name=str(item.get("name", "")), content=str(item.get("content", "")))
+            for item in normalized.get("bin", [])
+        ],
+    )
+
+
+def validate_runtime_config(config: PackageConfig) -> None:
+    errors: List[str] = []
+    for i, shortcut in enumerate(config.shortcut):
+        missing = []
+        if not shortcut.name.strip():
+            missing.append("name")
+        if not shortcut.target_path.strip():
+            missing.append("targetPath")
+        if missing:
+            errors.append(f"shortcut[{i}] missing required key(s): {', '.join(missing)}")
+    for i, env in enumerate(config.environment):
+        missing = []
+        if not env.name.strip():
+            missing.append("Name")
+        if env.value == "":
+            missing.append("Value")
+        if missing:
+            errors.append(f"environment[{i}] missing required key(s): {', '.join(missing)}")
+    for i, wrapper in enumerate(config.bin):
+        missing = []
+        if not wrapper.name.strip():
+            missing.append("name")
+        if wrapper.content == "":
+            missing.append("content")
+        if missing:
+            errors.append(f"bin[{i}] missing required key(s): {', '.join(missing)}")
+    if errors:
+        PLACEHOLDER
+
+
+def package_config_to_dict(config: PackageConfig, identity: PackageIdentity) -> Dict[str, Any]:
+    return {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "description": config.description,
+        "homepage": config.homepage,
+        "downloadURL": config.download_url,
+        "only_portable": config.only_portable,
+        "environment": [{"Name": item.name, "Value": item.value} for item in config.environment],
+        "shortcut": [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ],
+        "path": list(config.path),
+        "bin": [{"name": item.name, "content": item.content} for item in config.bin],
+    }
+
+
+def check_metadata_consistency(identity: PackageIdentity, raw_or_config: Any) -> List[str]:
+    if isinstance(raw_or_config, PackageConfig):
+        data = {
+            "name": identity.name,
+            "version": identity.version,
+            "localVersion": identity.local_version,
+            "only_portable": raw_or_config.only_portable,
+        }
+    elif isinstance(raw_or_config, dict):
+        data = PackageMetadata._canonicalize_config_dict(dict(raw_or_config))
+    else:
+        raise TypeError("raw_or_config must be a PackageConfig or dict")
+
+    inconsistencies: List[str] = []
+    if "name" in data and data.get("name") not in (None, "") and str(data.get("name")) != identity.name:
+        inconsistencies.append(f"Name mismatch: directory='{identity.name}', config='{data.get('name')}'")
+    if "version" in data and data.get("version") not in (None, "") and str(data.get("version")) != identity.version:
+        inconsistencies.append(f"Version mismatch: directory='{identity.version}', config='{data.get('version')}'")
+    if "localVersion" in data and data.get("localVersion") not in (None, "") and str(data.get("localVersion")) != str(identity.local_version):
+        inconsistencies.append(
+            f"LocalVersion mismatch: directory='{identity.local_version}', config='{data.get('localVersion')}'"
+        )
+    if "only_portable" in data and data.get("only_portable") is not None and bool(data.get("only_portable")) != identity.only_portable_by_name:
+        inconsistencies.append(
+            f"Portable flag mismatch: directory='{identity.only_portable_by_name}', config='{bool(data.get('only_portable'))}'"
+        )
+    return inconsistencies
+
+
+def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[PackageConfig, Dict[str, Any], List[str]]:
+    warnings: List[str] = []
+    toml_path = identity.version_path / "pkg.toml"
+    if toml_path.exists():
+        try:
+            loaded = read_toml_file(toml_path)
+            config = normalize_runtime_config(loaded, identity)
+            validate_runtime_config(config)
+            return config, PackageMetadata._canonicalize_config_dict(dict(loaded)), warnings
+        except DependencyError:
+            if not use_defaults:
+                raise
+            warnings.append(
+                "No TOML reader is available for pkg.toml parsing. Proceeding with defaults because --use-defaults was provided."
+            )
+        except ConfigValidationError:
+            raise
+        except Exception as e:
+            if not use_defaults:
+                raise RuntimeError(f"Error loading TOML config from {toml_path}: {e}") from e
+            warnings.append(f"Error loading TOML config from {toml_path}: {e}")
+            warnings.append("Proceeding with defaults because --use-defaults was provided.")
+    config = normalize_runtime_config({}, identity)
+    validate_runtime_config(config)
+    warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
+    return config, package_config_to_dict(config, identity), warnings
+
+
 class PackageMetadata:
-    """Package metadata derived from the filesystem and configuration.
-
-    Instances are created from a *version directory* (``v<upstream>.l<local>``)
-    or from a ``current`` junction that points to such a directory.
-
-    Public attributes are populated from:
-      1) directory structure, and
-      2) configuration file (TOML).
-
-    """
+    """Compatibility facade over the newer resolved-input, identity, and config helpers."""
 
     def __init__(self, version_path: Path):
-        """Initialize package metadata.
-
-        Args:
-            version_path:
-                Either the path to a version directory (e.g. ``...\v1.0.0.l1``)
-                or the path to the ``current`` junction inside the package root.
-
-        Raises:
-            ValueError: If the path does not represent a valid version directory
-                (directly or via ``current``).
-        """
-        self.input_path = Path(version_path)
-
-        # Resolve "current" junction inputs to the actual version directory.
-        if self.input_path.name.lower() == "current" and JunctionManager.is_junction(self.input_path):
-            target = JunctionManager.get_junction_target(self.input_path)
-            if not target:
-                raise ValueError(f'"current" junction target is not resolvable: {self.input_path}')
-            self.version_path = target
-            self.pkg_path = self.input_path.parent
-        else:
-            self.version_path = self.input_path
-            self.pkg_path = self.version_path.parent
-
-        self.name = self.pkg_path.name
-        self.version: str = ""
-        self.local_version: str = ""
-        self.version_string: str = ""
-        self.is_current: bool = False
+        resolved = resolve_input_path(Path(version_path))
+        self.resolved_input = resolved
+        self.identity = PackageIdentity.from_resolved_input(resolved)
+        self.input_path = resolved.raw_path
+        self.version_path = self.identity.version_path
+        self.pkg_path = self.identity.package_root
+        self.name = self.identity.name
+        self.version = self.identity.version
+        self.local_version = str(self.identity.local_version)
+        self.version_string = self.identity.version_string
+        self.is_current = self.identity.is_current
         self.scope: Scope = Scope.USER
+        self.scope_paths: Optional[ScopePaths] = None
         self.shortcut_dir: Path = Path()
-        self.only_portable: bool = False
-
-        # Fields from configuration (optional)
+        self.only_portable: bool = self.identity.only_portable_by_name
         self.description: Optional[str] = None
         self.homepage: Optional[str] = None
         self.download_url: Optional[str] = None
@@ -774,102 +1106,16 @@ class PackageMetadata:
         self.bin: List[Dict[str, str]] = []
         self.path: List[str] = []
         self.shortcut: List[Dict[str, str]] = []
-
-        self._fill_from_directory()
-        self._fill_current()
+        self.runtime_config: Optional[PackageConfig] = None
 
     def _fill_from_directory(self) -> None:
-        """Extract package metadata from directory structure.
-
-        Expected version directory name format: ``v<upstream>.l<local>``.
-
-        Populates:
-          - ``version`` (upstream)
-          - ``local_version`` (local revision)
-          - ``version_string`` (full directory name)
-          - ``only_portable`` (inferred from package name suffix ``-portable``)
-
-        Raises:
-            ValueError: If the version directory does not match the naming scheme.
-        """
-        version_dir_name = str(self.version_path.relative_to(self.pkg_path))
-
-        match = VERSION_DIR_NAME_RE.match(version_dir_name)
-        if not match:
-            raise ValueError(
-                f"Invalid version directory name: {version_dir_name}. "
-                "Expected format: v<upstream>.l<local>"
-            )
-
-        self.version = match.group(1)  # Upstream version
-        self.local_version = match.group(2)  # Local revision
-        self.version_string = version_dir_name
-
-        if self.name.lower().endswith("-portable"):
-            self.only_portable = True
-
+        return None
 
     def _fill_current(self) -> None:
-        r"""Compute whether this version is the package's current version.
+        return None
 
-        The package is considered "current" if ``<pkg_path>\current`` exists
-        and is a junction pointing to this instance's ``version_path``.
-        """
-        current_path = self.pkg_path / "current"
-        if not (current_path.exists() and JunctionManager.is_junction(current_path)):
-            return
-
-        try:
-            target = JunctionManager.get_junction_target(current_path)
-            if target:
-                self.is_current = target.resolve() == self.version_path.resolve()
-        except OSError:
-            # If the target can't be read, treat as not current.
-            self.is_current = False
-
-    def check_metadata_consistency(self, config_data: Dict) -> List[str]:
-        """Check consistency between directory-derived and config-derived metadata.
-
-        This is used primarily to detect cases where the config file has stale
-        values for ``name``, ``version``, ``localVersion``, or portability flags.
-
-        Args:
-            config_data: Parsed configuration dict (from TOML).
-
-        Returns:
-            A list of human-readable inconsistency messages. An empty list means
-            the config is consistent with the directory structure.
-
-        """
-        inconsistencies: List[str] = []
-
-        config_name = config_data.get("name", "")
-        if config_name and config_name != self.name:
-            inconsistencies.append(f"Name mismatch: directory='{self.name}', config='{config_name}'")
-
-        config_version = config_data.get("version", "")
-        if config_version and config_version != self.version:
-            inconsistencies.append(
-                f"Version mismatch: directory='{self.version}', config='{config_version}'"
-            )
-
-        config_local_version = config_data.get("localVersion", "")
-        if config_local_version and str(config_local_version) != self.local_version:
-            inconsistencies.append(
-                f"LocalVersion mismatch: directory='{self.local_version}', config='{config_local_version}'"
-            )
-
-        # Support both 'only_portable' (current) and 'portable' (legacy)
-        cfg_only_portable = config_data.get("only_portable", None)
-        if cfg_only_portable is None and "portable" in config_data:
-            cfg_only_portable = bool(config_data["portable"])
-
-        if cfg_only_portable is not None and bool(cfg_only_portable) != self.only_portable:
-            inconsistencies.append(
-                f"Portable flag mismatch: directory='{self.only_portable}', config='{bool(cfg_only_portable)}'"
-            )
-
-        return inconsistencies
+    def check_metadata_consistency(self, config_data: Dict[str, Any]) -> List[str]:
+        return check_metadata_consistency(self.identity, config_data)
 
 
     # ---------------------------------------------------------------------
@@ -1182,84 +1428,50 @@ class PackageMetadata:
         return main_block[0]
 
     def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
-        """Load configuration from ``pkg.toml``.
+        config, _raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
+        self.runtime_config = config
+        self.description = config.description
+        self.homepage = config.homepage
+        self.download_url = config.download_url
+        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
+        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
+        self.path = list(config.path)
+        self.shortcut = [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ]
+        self.only_portable = config.only_portable
+        return package_config_to_dict(config, self.identity), warnings
 
-        Returns:
-            ``(config_dict, warnings)``. When no config exists, defaults are
-            used and no file is created as a side effect.
-
-        Raises:
-            DependencyError: When a required TOML reader backend is unavailable.
-            RuntimeError: If ``pkg.toml`` exists but cannot be loaded/validated
-                and ``use_defaults`` is False.
-        """
-        default_data: Dict[str, Any] = {
-            "name": self.name,
-            "version": self.version,
-            "localVersion": self.local_version,
-            "description": None,
-            "homepage": None,
-            "downloadURL": None,
-            "environment": [],
-            "bin": [],
-            "path": [],
-            "shortcut": [],
-            "only_portable": self.only_portable,
-        }
-        warnings: List[str] = []
-        toml_path = self.version_path / "pkg.toml"
-
-        if toml_path.exists():
-            try:
-                loaded_data = read_toml_file(toml_path)
-                data = self._canonicalize_config_dict(loaded_data)
-                self._validate_config_dict(data)
-            except DependencyError:
-                if not use_defaults:
-                    raise
-                warnings.append(
-                    "No TOML reader is available for pkg.toml parsing. Proceeding with defaults because --use-defaults was provided."
-                )
-                data = default_data
-            except Exception as e:
-                if not use_defaults:
-                    raise RuntimeError(f"Error loading TOML config from {toml_path}: {e}") from e
-                warnings.append(f"Error loading TOML config from {toml_path}: {e}")
-                warnings.append("Proceeding with defaults because --use-defaults was provided.")
-                data = default_data
-
-            data = self._canonicalize_config_dict(data)
-            self._validate_config_dict(data)
-            self._load_from_dict(data)
-            return data, warnings
-
-        default_data = self._canonicalize_config_dict(default_data)
-        self._validate_config_dict(default_data)
-        self._load_from_dict(default_data)
-        warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
-        return default_data, warnings
-
-    def _load_from_dict(self, data: Dict) -> None:
-        """Populate instance fields from a configuration dictionary.
-
-        This method is intentionally permissive: missing keys leave the existing
-        value unchanged, and it supports both legacy ``portable`` and current
-        ``only_portable`` flags.
-        """
-        self.description = data.get("description", self.description)
-        self.homepage = data.get("homepage", self.homepage)
-        self.download_url = data.get("downloadURL", self.download_url)
-        self.environment = data.get("environment", self.environment)
-        self.bin = data.get("bin", self.bin)
-        self.path = data.get("path", self.path) or []
-        self.shortcut = data.get("shortcut", self.shortcut)
-
-        if "only_portable" in data:
-            self.only_portable = bool(data["only_portable"])
-        elif "portable" in data:
-            self.only_portable = bool(data["portable"])
-        elif self.name.lower().endswith("-portable"):
-            self.only_portable = True
+    def _load_from_dict(self, data: Dict[str, Any]) -> None:
+        config = normalize_runtime_config(data, self.identity)
+        validate_runtime_config(config)
+        self.runtime_config = config
+        self.description = config.description
+        self.homepage = config.homepage
+        self.download_url = config.download_url
+        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
+        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
+        self.path = list(config.path)
+        self.shortcut = [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ]
+        self.only_portable = config.only_portable
 
     def update_config(self, data: Optional[Dict] = None, reporter: Optional[Reporter] = None) -> StepResult:
         """Synchronize owned metadata back to ``pkg.toml``.
@@ -1331,15 +1543,11 @@ class PackageMetadata:
         return result
 
     def set_scope(self, scope: Scope) -> None:
-        """Set installation scope and compute the Start Menu target directory."""
+        """Set installation scope and compute shared scope paths."""
         self.scope = scope
+        self.scope_paths = compute_scope_paths(scope)
+        self.shortcut_dir = self.scope_paths.shortcut_root
 
-        if scope == Scope.USER:
-            appdata = os.environ.get("APPDATA", "")
-            self.shortcut_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt"
-        else:
-            programdata = os.environ.get("PROGRAMDATA", "")
-            self.shortcut_dir = Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt"
 
 
 # =============================================================================
@@ -2389,38 +2597,9 @@ class PackageManager:
 
     def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
         """Resolve install input into a version directory path."""
-        current_path = package_path
+        resolved = resolve_input_path(package_path)
+        return resolved.version_path, resolved.installing_from_current
 
-        if is_version_directory_name(package_path.name):
-            if not package_path.exists() or not package_path.is_dir():
-                raise ValueError(f"Version directory does not exist: {package_path}")
-            return package_path, False
-
-        if package_path.name.lower() != "current":
-            current_path = package_path / "current"
-            if not current_path.exists():
-                raise ValueError(
-                    f'No "current" directory exists in package root: {package_path}; '
-                    f"looked for {current_path}; root_exists={package_path.exists()}, root_is_dir={package_path.is_dir()}"
-                )
-
-        if current_path.name.lower() == "current":
-            if not JunctionManager.is_junction(current_path):
-                raise ValueError(
-                    f'"current" path exists but is not a valid junction: {current_path}; '
-                    f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
-                )
-            target = JunctionManager.get_junction_target(current_path)
-            if target is None:
-                raise ValueError(f'Could not resolve "current" junction target: {current_path}')
-            resolved_target = target.resolve()
-            if not resolved_target.is_dir():
-                raise ValueError(
-                    f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
-                )
-            return resolved_target, True
-
-        return package_path, False
 
     def _install_components(self, metadata: PackageMetadata) -> StepResult:
         """Install all components declared in config for the given package."""
