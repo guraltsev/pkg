@@ -1,230 +1,47 @@
 #!/usr/bin/env python3
-r"""gurlatsev/pkg — Local Package Manager for Windows
+"""Single-file implementation of ``pkg``.
 
-User-facing functionality
--------------------------
+The package manager implementation now lives entirely in ``pkg.py`` while still
+keeping Windows-specific mutation code strictly isolated from package-management
+logic through clearly labeled sections in this file.
 
-``pkg`` installs and configures locally cached Windows applications that follow
-the package layout used by this project. From a user perspective, it does three
-main things:
+Documentation map
+-----------------
 
-1) Picks the version to activate by updating the package-level ``current``
-   junction to the selected version directory.
-2) Applies package configuration from ``pkg.toml``, including Start Menu
-   shortcuts, environment variables, PATH entries, and wrapper files in a
-   per-scope ``bin`` directory.
-3) Supports both ``User`` and ``Machine`` installation scopes, so packages can
-   be installed per-user or system-wide (with admin rights for Machine scope).
+- ``README.md`` explains the tool from a user perspective.
+- ``docs/README.md`` is the documentation index.
+- ``docs/architecture.md`` describes the single-file section boundaries.
+- ``docs/configuration.md`` documents ``pkg.toml``.
+- ``docs/api.md`` summarizes the public API.
+- ``docs/review.md`` records the review findings and applied changes.
 
-The default action is ``Install``. ``Install`` does not auto-create ``pkg.toml`` when it is missing; it uses runtime defaults only. ``UpdateConfig`` is the explicit action that creates a starter config or synchronizes filesystem-derived metadata while preserving comments and unknown keys.
+Section guide
+-------------
 
-Examples
---------
-
-Typical invocations:
-
-::
-
-    pkg
-    pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
-    pkg C:\opt\pkgs\Ripgrep
-
-Expected package layout:
-
-::
-
-    <pkg_name>/
-      current/                (NTFS junction)
-      v1.2.3.l1/
-        App/
-        Icons/
-        Shortcuts/
-        pkg.toml
-
-Minimal ``pkg.toml`` snippet (note that ``${VAR}`` is the recommended environment-expansion syntax):
-
-::
-
-    name = "Ripgrep"
-    version = "14.1.0"
-    localVersion = 1
-
-    [[shortcut]]
-    name = "Ripgrep"
-    targetPath = "$App\\rg.exe"
-
-    [[environment]]
-    Name = "RIPGREP_HOME"
-    Value = "$App"
-
-    [[path]]
-    value = "$App"
-
-Architecture and design
------------------------
-
-This script installs *locally cached* Windows applications from a standardized
-directory layout. An installation typically:
-
-1) Updates the package-level ``current`` *junction* so it points at the chosen
-   version directory.
-2) Creates Start Menu shortcuts for the package.
-3) Sets package-specific environment variables.
-4) Ensures a per-scope ``bin`` directory exists and is on ``PATH``.
-5) Writes small executable/wrapper files into that ``bin`` directory.
-
-The code is organized as a set of small, single-purpose components coordinated
-by :class:`PackageManager`. Startup is side-effect free: help/version do not create folders or install dependencies.
-
-
-- :class:`PackageMetadata`
-    Parses the directory naming convention (``v<upstream>.l<local>``) and loads
-    the per-version config file (``pkg.toml``). It also computes paths used
-    throughout installation.
-
-- :class:`JunctionManager`
-    Creates/validates NTFS junctions and compares version strings to decide
-    whether ``current`` should be moved to a newer version.
-
-- :class:`VariableExpander`
-    Performs variable expansion in configuration strings. It supports package
-    variables (``$App``, ``$Icons``, ``$Shortcuts``) everywhere, supports
-    ``${VAR}`` environment expansion everywhere, and keeps plain ``$VAR``
-    expansion restricted to general config fields so wrapper scripts preserve
-    shell-native variables like PowerShell's ``$PSScriptRoot`` and ``$args``.
-    In script content, plain ``$VAR`` is treated as literal text unless it is a
-    package variable such as ``$App``.
-
-
-- :class:`ShortcutInstaller`
-    Creates ``.lnk`` shortcuts in the Start Menu. Uses ``pywin32`` if available,
-    otherwise falls back to PowerShell automation.
-
-- :class:`EnvironmentVariableManager`
-    Writes environment variables to the Windows registry (User or Machine scope).
-
-- :class:`PATHManager`
-    Reads/writes the registry-backed ``Path`` value and appends entries
-    idempotently (avoiding duplicates).
-
-- :class:`BinFileCreator`
-    Creates simple wrapper files inside a per-scope ``bin`` directory.
-
-Execution flow
-~~~~~~~~~~~~~~
-
-``main()`` parses CLI arguments, constructs :class:`PackageManager`, normalizes
-the provided path, then performs one of the actions:
-
-- ``Install`` (default): update ``current`` junction if needed, then run the install pipeline for shortcuts/env/PATH/bin wrappers. Missing ``pkg.toml`` uses defaults and writes nothing.
-- ``UpdateConfig``: sync filesystem-derived metadata into ``pkg.toml`` while
-  preserving comments and unknown keys when an existing file is updated.
-
-
-Directory layout
-~~~~~~~~~~~~~~~~
-
-A package lives under a *package directory* ``<pkg_name>`` with one or more
-*version directories*:
-
-::
-
-    <pkg_name>/
-      current/                (NTFS junction)
-      v1.2.3.l1/
-        App/
-        Icons/
-        Shortcuts/
-        pkg.toml
-
-Version directories must be named ``v<upstream>.l<local>``, for example:
-``v1.2.3.l1`` or ``v1.2-beta.3.l4``.
-
-Configuration schema (pkg.toml)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Top-level keys used by this tool:
-
-- ``name`` (str): must match the directory name.
-- ``version`` (str): upstream part (without leading ``v`` or local revision).
-- ``localVersion`` (int|str): local revision (the ``lN`` part).
-- ``only_portable`` (bool): if true, disallow Machine installs.
-- ``environment`` (list[dict]): items with keys ``Name`` and ``Value``.
-- ``path`` (list[dict]): extra directories to append to PATH.
-  Use repeated ``[[path]]`` tables with a required ``value`` key.
-- ``shortcut`` (list[dict]): shortcut definitions (see extended help).
-- ``bin`` (list[dict]): wrapper definitions with keys ``name`` and ``content``.
-
-Safety and scope
-~~~~~~~~~~~~~~~~
-
-Exit codes:
-- ``0`` success (including no-op success)
-- ``2`` user/config/input/dependency problem
-- ``3`` system mutation failure
-- ``4`` unexpected internal failure
-
-
-- Machine scope modifies HKLM environment variables and requires Administrator
-  privileges.
-- Start Menu shortcuts are installed under the per-scope Start Menu directory:
-  ``%APPDATA%\...\Start Menu\opt`` (User) or
-  ``%PROGRAMDATA%\...\Start Menu\opt`` (Machine).
-- PATH modifications are made in the registry and may require a logoff/logon for
-  all processes to observe them.
-
+- ``Shared models and pure helpers`` contains shared data models, validation
+  helpers, text expansion, version comparison, and atomic file writers.
+- ``Windows integration boundary`` contains every direct Windows interaction,
+  including shortcut creation, registry updates, junction management, and PATH
+  mutation.
+- ``Package-management logic and CLI`` contains config normalization, metadata
+  synchronization, runtime validation, and command-line orchestration.
 """
 
 from __future__ import annotations
 
-# =============================================================================
-# Imports and optional backend loaders
-# =============================================================================
-
-import argparse
+#------------------------------------------
+# Section: Shared models and pure helpers
+#------------------------------------------
 import importlib
 import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
-if os.name == "nt":
-    import winreg
-else:
-    winreg = None  # type: ignore[assignment]
-
-
-def try_import(module_name: str) -> Optional[Any]:
-    """Import *module_name* if available, otherwise return ``None``."""
-    try:
-        return importlib.import_module(module_name)
-    except ImportError:
-        return None
-
-
-def get_win32com_client() -> Optional[Any]:
-    """Return ``win32com.client`` when available without installing anything."""
-    return try_import("win32com.client")
-
-
-def require_winreg() -> Any:
-    """Return the ``winreg`` module or raise a clear platform error."""
-    if winreg is None:
-        raise OSError("winreg is only available on Windows.")
-    return winreg
-
-
-# =============================================================================
-# User-facing documentation, version, and constants
-# =============================================================================
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 __version__ = "0.12.0"
 __copyright__ = "Copyright (C) 2025 Gennady Uraltseev. All rights reserved."
@@ -235,247 +52,519 @@ EXIT_USER_ERROR = 2
 EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
-
-EXTENDED_HELP = r"""
-Extended help
--------------
-
-Quick start
-~~~~~~~~~~~
-
-Notes:
-  - ``pkg --help`` and ``pkg --version`` do not install dependencies or write files.
-  - ``Install`` does not auto-create ``pkg.toml``.
-  - ``UpdateConfig`` preserves comments, unknown keys, and existing TOML structure when updating an existing file.
-
-Run the tool from inside a *version directory*:
-
-  pkg                 # installs from the current working directory
-
-Or pass a path to a version directory:
-
-  pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
-
-You may also pass the *package root* (the directory that contains ``current``);
-in that case the tool installs from the ``current`` junction:
-
-  pkg C:\opt\pkgs\Ripgrep
-
-Scopes
-~~~~~~
-
-User scope:
-  - shortcuts: %APPDATA%\Microsoft\Windows\Start Menu\opt
-  - PATH/env: HKCU\Environment
-  - bin dir:  %USERPROFILE%\bin
-
-Machine scope (requires admin):
-  - shortcuts: %PROGRAMDATA%\Microsoft\Windows\Start Menu\opt
-  - PATH/env:  HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment
-  - bin dir:   <SYSTEMDRIVE>\bin
-
-Config keys and examples
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-1) Shortcuts (``shortcut`` list)
-   Each entry is a dict. Supported keys:
-
-   - name (required): file name without extension or with .lnk
-   - targetPath (required; alias: path): executable path
-   - arguments (optional)
-   - workingDirectory (optional)
-   - iconLocation (optional): e.g. "C:\path\icon.ico,0"
-   - description (optional)
-
-   Example (TOML):
-
-     [[shortcut]]
-     name = "My App"
-     targetPath = "$App\\MyApp.exe"
-     arguments = ""
-     workingDirectory = "$App"
-     iconLocation = "$Icons\\myapp.ico,0"
-     description = "Launch My App"
-
-2) Environment variables (``environment`` list)
-   Keys are case-insensitive (canonical: ``Name`` and ``Value``):
-
-     [[environment]]
-     Name = "MYAPP_HOME"
-     Value = "$App"
-
-3) PATH additions (``path`` list)
-   Each entry is appended (if not already present). Entries may include $-vars.
-   Use repeated ``[[path]]`` tables (only):
-
-     [[path]]
-     value = "$App"
-
-     [[path]]
-     value = "$App\\bin"
-
-4) Bin wrappers (``bin`` list)
-   Each entry is a dict with keys:
-
-   - name (required): file name under the bin dir (e.g. "myapp.cmd")
-   - content (required): full file content after variable expansion
-
-   Syntax notes:
-
-   - ``content`` is the full script text written to the wrapper file.
-   - Use a TOML multi-line *literal* string (triple single quotes) for scripts
-     that include newlines, quotes, and backslashes.
-   - Package variables like ``$App`` are expanded before writing the file.
-   - Plain ``$VAR`` stays literal inside wrapper content (except package
-     variables). Use ``${VAR}`` when you explicitly want environment expansion
-     inside a script.
-
-   Example (CMD wrapper with expanded ``$App``):
-
-     [[bin]]
-     name = "myapp.cmd"
-     content = '''
-@echo off
-python "$App\\app_script_name.py" %*
-'''
-
-   If you use TOML basic strings instead, escape quotes and backslashes
-   explicitly (e.g. ``\"`` and ``\\``).
-   In particular, Windows paths like ``$App\bin\gh.exe`` must be written as
-   ``$App\\bin\\gh.exe`` in basic strings, or placed inside a literal
-   multi-line string to avoid TOML "reserved escape sequence" parse errors.
-   Also, if you keep content on one line (TOML basic string), use
-   escaped newlines (``\n``), which pkg now normalizes to real line breaks.
-
-   PowerShell example:
-
-     [[bin]]
-     name = "myapp.ps1"
-     content = "\"\"\"
-$ErrorActionPreference = 'Stop'
-$app = Join-Path $PSScriptRoot '..\opt\MyApp\MyApp.exe'
-& $app @args
-\"\"\"
-
-Variable expansion rules
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-- Package variables are expanded everywhere:
-    $App, $Icons, $Shortcuts
-  These resolve through the stable ``current`` junction path (e.g.
-  ``<pkg>\current\App``). The junction does not need to exist for simple
-  string substitution.
-
-- Environment variables use two modes:
-    - ``${VAR}`` is supported everywhere.
-    - plain ``$VAR`` is supported only in general config fields such as
-      shortcuts, environment values, and PATH entries.
-    - plain ``$VAR`` inside wrapper content stays literal unless it is one of
-      the package variables above.
-
-- Unresolved variables are treated as failures for mutable steps. In
-  particular, missing variables in PATH entries, shortcut fields, and registry
-  environment values are not silently rewritten to empty strings.
-
-- Escaping:
-    Use ``$$`` to produce a literal ``$`` (for example, ``$$App`` becomes
-    the literal text ``$App`` rather than expanding to a path).
-
-Notes
-~~~~~
-
-- After registry PATH changes, existing terminals won't automatically see the
-  new PATH. Open a new terminal or log off/on.
-- TOML support:
-    - No Python packages are auto-installed by pkg.
-    - Read-only config parsing prefers stdlib ``tomllib`` on Python 3.11+, then ``tomlkit``, then ``toml``.
-    - Updating an existing ``pkg.toml`` while preserving comments and formatting requires ``tomlkit``.
-    - If ``pkg.toml`` is missing during Install, pkg uses defaults and does not create a file.
-- Exit codes:
-    - ``0`` success (including no-op success)
-    - ``2`` user/config/input/dependency problem
-    - ``3`` system mutation failure
-    - ``4`` unexpected internal failure
-"""
-
-
-# =============================================================================
-# Pure helpers
-#   - version parsing/comparison
-#   - path classification
-#   - atomic file helpers
-#   - reporting/result helpers
-# =============================================================================
-
 VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
-
-TOP_LEVEL_CONFIG_KEY_ALIASES: Dict[str, str] = {
-    "name": "name",
-    "version": "version",
-    "localversion": "localVersion",
-    "local_version": "localVersion",
-    "description": "description",
-    "homepage": "homepage",
-    "downloadurl": "downloadURL",
-    "download_url": "downloadURL",
-    "environment": "environment",
-    "env": "environment",
-    "bin": "bin",
-    "path": "path",
-    "shortcut": "shortcut",
-    "shortcuts": "shortcut",
-    "only_portable": "only_portable",
-    "onlyportable": "only_portable",
-    "portable": "portable",
-    "main": "main",
-}
-MAIN_TABLE_KEY_ALIASES: Dict[str, str] = {
-    "name": "name",
-    "version": "version",
-    "localversion": "localVersion",
-    "local_version": "localVersion",
-    "description": "description",
-    "homepage": "homepage",
-    "downloadurl": "downloadURL",
-    "download_url": "downloadURL",
-    "only_portable": "only_portable",
-    "onlyportable": "only_portable",
-    "portable": "portable",
-}
-ENVIRONMENT_KEY_ALIASES: Dict[str, str] = {"name": "Name", "value": "Value"}
-BIN_KEY_ALIASES: Dict[str, str] = {"name": "name", "content": "content"}
-SHORTCUT_KEY_ALIASES: Dict[str, str] = {
-    "name": "name",
-    "targetpath": "targetPath",
-    "target_path": "targetPath",
-    "path": "targetPath",
-    "arguments": "arguments",
-    "args": "arguments",
-    "workingdirectory": "workingDirectory",
-    "working_directory": "workingDirectory",
-    "workdir": "workingDirectory",
-    "iconlocation": "iconLocation",
-    "icon_location": "iconLocation",
-    "description": "description",
-    "desc": "description",
-}
-PATH_ENTRY_KEY_ALIASES: Dict[str, str] = {"value": "value", "path": "value"}
-CONFIG_LIST_FIELDS = ("environment", "bin", "path", "shortcut")
-OWNED_METADATA_FIELDS = ("name", "version", "localVersion", "only_portable")
-OWNED_METADATA_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "name": ("name",),
-    "version": ("version",),
-    "localVersion": ("localVersion", "localversion", "local_version"),
-    "only_portable": ("only_portable", "onlyportable", "portable"),
-}
 PACKAGE_VARIABLE_NAMES = ("App", "Icons", "Shortcuts")
 
 
+class ConfigValidationError(ValueError):
+    """Raised when ``pkg.toml`` content is structurally invalid.
+
+    The exception is used for problems the caller can usually fix by editing the
+    package configuration, such as missing required keys or invalid value
+    shapes.
+    """
+
+
+class DependencyError(RuntimeError):
+    """Raised when an optional dependency is required but unavailable.
+
+    ``pkg`` deliberately delays importing TOML and Windows integration backends
+    until they are needed. This exception makes those failures explicit and easy
+    to classify as user-actionable dependency problems.
+    """
+
+
+class Scope(Enum):
+    """Installation scope supported by ``pkg``.
+
+    ``USER`` targets per-user configuration locations. ``MACHINE`` targets
+    machine-wide configuration locations and therefore usually requires
+    Administrator privileges.
+    """
+
+    USER = "User"
+    MACHINE = "Machine"
+
+
+class Action(Enum):
+    """CLI actions supported by the tool.
+
+    ``INSTALL`` applies the package to the selected scope. ``UPDATE_CONFIG``
+    only synchronizes configuration metadata back to ``pkg.toml``.
+    """
+
+    INSTALL = "Install"
+    UPDATE_CONFIG = "UpdateConfig"
+
+
+@dataclass(frozen=True)
+class TomlReader:
+    """Descriptor for a read-only TOML backend.
+
+    Attributes:
+        name: Human-readable backend name, such as ``tomllib`` or ``tomlkit``.
+        module: Imported Python module that implements the reader.
+    """
+
+    name: str
+    module: Any
+
+
+@dataclass(frozen=True)
+class RoundTripBackend:
+    """Descriptor for a round-trip TOML backend.
+
+    Attributes:
+        name: Human-readable backend name.
+        module: Imported module that can preserve formatting/comments when
+            parsing and writing TOML documents.
+    """
+
+    name: str
+    module: Any
+
+
+@dataclass
+class TextConfigDocument:
+    """Fallback representation for metadata-only TOML editing.
+
+    When ``tomlkit`` is unavailable, ``pkg`` falls back to a narrowly scoped
+    text editor that only updates the metadata fields owned by the tool. This
+    lightweight wrapper keeps the interface compatible with ``tomlkit``'s
+    ``as_string()`` API.
+
+    Attributes:
+        text: Raw TOML text being edited.
+    """
+
+    text: str
+
+    def as_string(self) -> str:
+        """Return the document text.
+
+        Returns:
+            The serialized TOML text stored in :attr:`text`.
+        """
+
+        return self.text
+
+
+@dataclass
+class StepResult:
+    """Outcome of a single mutation step.
+
+    Attributes:
+        ok: ``True`` when the step succeeded.
+        changed: ``True`` when the step made a filesystem/registry change.
+        warnings: Non-fatal issues emitted while performing the step.
+        errors: Fatal issues encountered by the step.
+    """
+
+    ok: bool
+    changed: bool = False
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ActionResult:
+    """Outcome of a high-level CLI action.
+
+    Attributes:
+        ok: ``True`` when the action completed successfully.
+        changed: ``True`` when the action made one or more changes.
+        warnings: Non-fatal warnings accumulated during the action.
+        errors: Fatal errors accumulated during the action.
+        exit_code: Process exit code that should be returned to the caller.
+    """
+
+    ok: bool
+    changed: bool = False
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    exit_code: int = EXIT_SUCCESS
+
+
+@dataclass(frozen=True)
+class ResolvedInput:
+    """Normalized interpretation of a user-supplied package path.
+
+    Attributes:
+        raw_path: Path as supplied by the caller after ``expanduser()``.
+        package_root: Directory that owns the ``current`` junction and version
+            directories.
+        version_path: Concrete version directory that should be operated on.
+        input_kind: Classification of the input path, such as ``version``,
+            ``current``, or ``package_root``.
+        installing_from_current: ``True`` when the user pointed at ``current``
+            or the package root and the current junction was already resolved.
+        version_is_current: ``True`` when :attr:`version_path` is already the
+            active ``current`` target for the package.
+    """
+
+    raw_path: Path
+    package_root: Path
+    version_path: Path
+    input_kind: str
+    installing_from_current: bool
+    version_is_current: bool = False
+
+
+@dataclass(frozen=True)
+class PackageIdentity:
+    """Directory-derived identity for a package version.
+
+    Attributes:
+        name: Package name derived from the package-root directory name.
+        version: Upstream version string derived from the version directory.
+        local_version: Local revision number derived from the ``.lN`` suffix.
+        version_string: Original version-directory name, e.g. ``v1.2.3.l4``.
+        package_root: Parent directory that contains all versions and
+            ``current``.
+        version_path: Concrete version directory represented by the identity.
+        is_current: ``True`` when the version already matches ``current``.
+        only_portable_by_name: ``True`` when the package name convention marks
+            it as portable (``*-portable``).
+    """
+
+    name: str
+    version: str
+    local_version: int
+    version_string: str
+    package_root: Path
+    version_path: Path
+    is_current: bool
+    only_portable_by_name: bool
+
+    @classmethod
+    def from_resolved_input(cls, resolved: ResolvedInput) -> "PackageIdentity":
+        """Construct an identity object from a resolved package path.
+
+        Args:
+            resolved: Classified path information produced by the platform path
+                resolver.
+
+        Returns:
+            A :class:`PackageIdentity` derived from the version directory name
+            and package-root location.
+
+        Raises:
+            ValueError: If :attr:`ResolvedInput.version_path` does not follow
+                the ``v<upstream>.l<local>`` naming convention.
+        """
+
+        match = VERSION_DIR_NAME_RE.match(resolved.version_path.name)
+        if not match:
+            raise ValueError(
+                f"Invalid version directory name: {resolved.version_path.name}. Expected format: v<upstream>.l<local>"
+            )
+        package_root = resolved.package_root
+        version_path = resolved.version_path
+        return cls(
+            name=package_root.name,
+            version=match.group(1),
+            local_version=int(match.group(2)),
+            version_string=version_path.name,
+            package_root=package_root,
+            version_path=version_path,
+            is_current=resolved.version_is_current,
+            only_portable_by_name=package_root.name.lower().endswith("-portable"),
+        )
+
+
+@dataclass(frozen=True)
+class ScopePaths:
+    """Resolved filesystem and registry locations for one installation scope.
+
+    Attributes:
+        scope: Installation scope the paths belong to.
+        shortcut_root: Directory under which Start Menu shortcuts are created.
+        bin_dir: Directory where wrapper files should be written.
+        env_root: Registry hive object/constant for environment updates.
+        env_subkey: Registry subkey path for environment updates.
+    """
+
+    scope: Scope
+    shortcut_root: Path
+    bin_dir: Path
+    env_root: Any
+    env_subkey: str
+
+
+@dataclass
+class ShortcutSpec:
+    """Runtime model for one shortcut declaration.
+
+    Attributes:
+        name: Display name or file name for the shortcut.
+        target_path: Executable path the shortcut should launch.
+        arguments: Optional command-line arguments.
+        working_directory: Optional working directory.
+        icon_location: Optional ``path,index`` icon reference.
+        description: Optional description shown by Windows.
+    """
+
+    name: str
+    target_path: str
+    arguments: str = ""
+    working_directory: str = ""
+    icon_location: str = ""
+    description: str = ""
+
+
+@dataclass
+class EnvVarSpec:
+    """Runtime model for one environment-variable declaration.
+
+    Attributes:
+        name: Environment variable name.
+        value: Value to write to the registry.
+    """
+
+    name: str
+    value: str
+
+
+@dataclass
+class BinSpec:
+    """Runtime model for one wrapper-file declaration.
+
+    Attributes:
+        name: File name that should be created in the scope bin directory.
+        content: Wrapper script or batch content to write.
+    """
+
+    name: str
+    content: str
+
+
+@dataclass
+class PackageConfig:
+    """Normalized runtime configuration for a package version.
+
+    Attributes:
+        description: Optional package description.
+        homepage: Optional homepage URL.
+        download_url: Optional download URL.
+        only_portable: Package-level portability restriction.
+        environment: Environment variables to write.
+        shortcut: Shortcuts to create.
+        path: Extra PATH entries to add.
+        bin: Wrapper files to create.
+    """
+
+    description: Optional[str] = None
+    homepage: Optional[str] = None
+    download_url: Optional[str] = None
+    only_portable: bool = False
+    environment: List[EnvVarSpec] = field(default_factory=list)
+    shortcut: List[ShortcutSpec] = field(default_factory=list)
+    path: List[str] = field(default_factory=list)
+    bin: List[BinSpec] = field(default_factory=list)
+
+
+@dataclass
+class ExpansionResult:
+    """Result of variable expansion.
+
+    Attributes:
+        value: Expanded text.
+        unresolved: Ordered list of unresolved variable tokens left in the
+            output, for example ``${MISSING}``.
+    """
+
+    value: str
+    unresolved: List[str] = field(default_factory=list)
+
+
+class ExpansionMode(Enum):
+    """Ruleset to use when expanding ``$`` variables.
+
+    ``GENERAL`` expands package variables, ``${VAR}``, and plain ``$VAR``
+    environment references. ``SCRIPT`` expands package variables and braced
+    references, but preserves plain ``$VAR`` tokens so script languages such as
+    PowerShell keep their native variable syntax.
+    """
+
+    GENERAL = "general"
+    SCRIPT = "script"
+
+
+@dataclass(frozen=True)
+class PreparedShortcut:
+    """Fully expanded shortcut data ready for backend-specific creation.
+
+    Attributes:
+        name: Final shortcut name without any unresolved variables.
+        shortcut_path: Full ``.lnk`` path to create.
+        target_path: Executable path to launch.
+        arguments: Final argument string.
+        working_directory: Final working directory.
+        icon_location: Final icon reference.
+        description: Final description string.
+    """
+
+    name: str
+    shortcut_path: Path
+    target_path: str
+    arguments: str = ""
+    working_directory: str = ""
+    icon_location: str = ""
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class InstallContext:
+    """Immutable context shared by install steps.
+
+    Attributes:
+        identity: Identity of the package version being installed.
+        config: Normalized runtime configuration.
+        scope_paths: Filesystem and registry locations for the chosen scope.
+        reporter: Reporter used for user-visible logging.
+        force: Whether the install should ignore downgrade protection.
+    """
+
+    identity: PackageIdentity
+    config: PackageConfig
+    scope_paths: ScopePaths
+    reporter: Any
+    force: bool
+
+
+class Reporter:
+    """Minimal console reporter used by the orchestration layer.
+
+    The reporter intentionally keeps formatting simple so unit tests and humans
+    can both understand the output without additional adapters.
+    """
+
+    def info(self, msg: str) -> None:
+        """Emit an informational message.
+
+        Args:
+            msg: Text to print verbatim.
+        """
+
+        print(msg)
+
+    def warn(self, msg: str) -> None:
+        """Emit a warning message.
+
+        Args:
+            msg: Warning text. The ``WARNING:`` prefix is added automatically if
+                the caller did not provide it.
+        """
+
+        if msg.startswith("WARNING:"):
+            print(msg)
+        else:
+            print(f"WARNING: {msg}")
+
+    def error(self, msg: str) -> None:
+        """Emit an error message.
+
+        Args:
+            msg: Error text. The ``ERROR:`` prefix is added automatically if the
+                caller did not provide it.
+        """
+
+        if msg.startswith("ERROR:"):
+            print(msg)
+        else:
+            print(f"ERROR: {msg}")
+
+
+class VariableExpander:
+    """Compatibility wrapper around :func:`expand_text`.
+
+    Existing code and tests refer to the older ``VariableExpander`` helper. The
+    implementation stays as a thin compatibility layer while the newer API uses
+    :func:`expand_text` directly.
+    """
+
+    @staticmethod
+    def expand_variables(
+        text: str,
+        metadata: Any,
+        mode: ExpansionMode = ExpansionMode.GENERAL,
+    ) -> ExpansionResult:
+        """Expand one string using a :class:`PackageMetadata` object.
+
+        Args:
+            text: Text that may contain package or environment variables.
+            metadata: Metadata object whose :attr:`identity` supplies package
+                paths.
+            mode: Expansion ruleset to apply.
+
+        Returns:
+            The expanded value and any unresolved variable tokens.
+        """
+
+        return expand_text(text, metadata.identity, mode)
+
+    @staticmethod
+    def expand_dict(
+        data: Dict[str, str],
+        metadata: Any,
+        mode: ExpansionMode = ExpansionMode.GENERAL,
+    ) -> Dict[str, ExpansionResult]:
+        """Expand every value in a dictionary.
+
+        Args:
+            data: Mapping of field names to raw text values.
+            metadata: Metadata object whose :attr:`identity` supplies package
+                paths.
+            mode: Expansion ruleset to apply to every value.
+
+        Returns:
+            A new mapping whose values are :class:`ExpansionResult` objects.
+        """
+
+        return {key: expand_text(value, metadata.identity, mode) for key, value in data.items()}
+
+
+def try_import(module_name: str) -> Optional[Any]:
+    """Import a module only when it is available.
+
+    Args:
+        module_name: Fully qualified module name to import.
+
+    Returns:
+        The imported module object, or ``None`` when the import fails with
+        :class:`ImportError`.
+    """
+
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        return None
+
+
 def is_version_directory_name(name: str) -> bool:
+    """Return whether a directory name matches the package version pattern.
+
+    Args:
+        name: Directory name to validate.
+
+    Returns:
+        ``True`` when *name* matches ``v<upstream>.l<local>``.
+    """
+
     return VERSION_DIR_NAME_RE.match(name) is not None
 
 
 def split_package_version(version: str) -> Tuple[str, int]:
+    """Split a package version string into upstream and local components.
+
+    Args:
+        version: Version text such as ``v1.2.3.l4`` or ``1.2.3``.
+
+    Returns:
+        A tuple ``(upstream_version, local_revision)``. Missing or malformed
+        local revisions are treated as ``0``.
+    """
+
     version = version.strip()
     if version.startswith("v"):
         version = version[1:]
@@ -492,13 +581,47 @@ def split_package_version(version: str) -> Tuple[str, int]:
 
 
 def compare_package_versions(version1: str, version2: str) -> int:
+    """Compare two package version directory strings.
+
+    The comparison understands upstream semantic-ish version segments,
+    prerelease suffixes, and the package-local ``.lN`` revision component.
+
+    Args:
+        version1: Left-hand version string.
+        version2: Right-hand version string.
+
+    Returns:
+        ``1`` if *version1* is newer, ``-1`` if *version2* is newer, or ``0``
+        if they represent the same version.
+    """
+
     def parse_identifier(token: str) -> Union[int, str]:
+        """Parse one dotted version token into a comparable value.
+
+        Args:
+            token: One version token, for example ``42`` or ``beta``.
+
+        Returns:
+            An ``int`` when the token is numeric; otherwise a lower-cased
+            string.
+        """
+
         token = token.strip()
         if token.isdigit():
             return int(token)
         return token.lower()
 
     def parse_upstream(upstream: str) -> Tuple[List[Union[int, str]], Optional[List[Union[int, str]]]]:
+        """Parse the upstream portion of a version string.
+
+        Args:
+            upstream: Upstream version without the ``.lN`` local revision.
+
+        Returns:
+            A tuple ``(main_identifiers, prerelease_identifiers)`` where the
+            prerelease part is ``None`` for stable releases.
+        """
+
         upstream = upstream.strip()
         if "+" in upstream:
             upstream = upstream.split("+", 1)[0]
@@ -511,7 +634,25 @@ def compare_package_versions(version1: str, version2: str) -> int:
         main = [parse_identifier(part) for part in main_part.split(".") if part != ""]
         return main, prerelease
 
-    def compare_identifier_lists(left: List[Union[int, str]], right: List[Union[int, str]], *, pad_numeric: bool) -> int:
+    def compare_identifier_lists(
+        left: List[Union[int, str]],
+        right: List[Union[int, str]],
+        *,
+        pad_numeric: bool,
+    ) -> int:
+        """Compare parsed identifier lists.
+
+        Args:
+            left: Parsed identifiers for the left-hand version.
+            right: Parsed identifiers for the right-hand version.
+            pad_numeric: Whether to treat missing trailing numeric identifiers as
+                zero when one side runs out of tokens.
+
+        Returns:
+            ``1`` if *left* is newer, ``-1`` if *right* is newer, or ``0`` if
+            they compare equal.
+        """
+
         max_len = max(len(left), len(right))
         for index in range(max_len):
             left_value = left[index] if index < len(left) else (0 if pad_numeric else None)
@@ -554,30 +695,30 @@ def compare_package_versions(version1: str, version2: str) -> int:
 def normalize_path(path: Union[str, Path]) -> Path:
     r"""Normalize a filesystem path for reliable comparisons.
 
-    On Windows, junction/symlink targets may be returned in extended-length form
-    (``\\?\`` prefix). This helper strips that prefix (if present) and
-    returns a resolved :class:`~pathlib.Path`.
-
     Args:
-        path: Input path as a string or :class:`~pathlib.Path`.
+        path: Input path as a string or :class:`~pathlib.Path` instance.
 
     Returns:
-        A resolved :class:`~pathlib.Path` without the extended-length prefix.
-
+        A resolved path with any Windows extended-length prefix (``\\?\``)
+        removed.
     """
+
     path_str = str(path)
     if path_str.startswith('\\\\?\\'):
         path_str = path_str[4:]
     return Path(path_str).resolve()
 
 
-def get_shortcut_backend() -> str:
-    """Return the shortcut backend that should be used at runtime."""
-    return "pywin32" if get_win32com_client() is not None else "powershell"
-
-
 def load_toml_reader() -> TomlReader:
-    """Load a read-only TOML backend lazily when config parsing is needed."""
+    """Select a read-only TOML backend lazily.
+
+    Returns:
+        A :class:`TomlReader` describing the chosen backend.
+
+    Raises:
+        DependencyError: If no supported TOML reader backend is available.
+    """
+
     tomllib_module = try_import("tomllib")
     if tomllib_module is not None:
         return TomlReader("tomllib", tomllib_module)
@@ -597,7 +738,19 @@ def load_toml_reader() -> TomlReader:
 
 
 def load_roundtrip_toml_backend(require: bool) -> Optional[RoundTripBackend]:
-    """Load the round-trip TOML backend lazily when existing configs are updated."""
+    """Select a round-trip TOML backend lazily.
+
+    Args:
+        require: Compatibility parameter retained for older callers. The current
+            implementation always returns ``None`` instead of raising when no
+            round-trip backend is available.
+
+    Returns:
+        A :class:`RoundTripBackend` when ``tomlkit`` is installed; otherwise
+        ``None``.
+    """
+
+    _ = require
     tomlkit_module = try_import("tomlkit")
     if tomlkit_module is not None:
         return RoundTripBackend("tomlkit", tomlkit_module)
@@ -605,29 +758,53 @@ def load_roundtrip_toml_backend(require: bool) -> Optional[RoundTripBackend]:
 
 
 def read_toml_file(path: Path) -> Dict[str, Any]:
-    """Read TOML into plain Python data using a lazily selected backend."""
+    """Read a TOML file into plain Python data.
+
+    Args:
+        path: TOML file to load.
+
+    Returns:
+        A dictionary-like tree of plain Python values.
+
+    Raises:
+        DependencyError: If no TOML reader backend is available.
+        OSError: If the file cannot be read.
+        Exception: Backend-specific parse errors.
+    """
+
     reader = load_toml_reader()
     if reader.name == "tomllib":
-        with open(path, "rb") as f:
-            return reader.module.load(f)
+        with open(path, "rb") as file_handle:
+            return reader.module.load(file_handle)
     if reader.name == "tomlkit":
         return reader.module.parse(path.read_text(encoding="utf-8")).unwrap()
-    with open(path, "r", encoding="utf-8") as f:
-        return reader.module.load(f)
+    with open(path, "r", encoding="utf-8") as file_handle:
+        return reader.module.load(file_handle)
 
 
 def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
-    """Atomically write text to *path*, optionally creating ``.bak`` first."""
+    """Write text atomically to a file.
+
+    Args:
+        path: Destination file path.
+        text: Text content to write.
+        backup: Whether to create ``<path>.bak`` before replacing an existing
+            file.
+
+    Raises:
+        OSError: If the temporary file or final replacement cannot be written.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd: Optional[int] = None
     tmp_path: Optional[str] = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as fh:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as file_handle:
             tmp_fd = None
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
+            file_handle.write(text)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
         if backup and path.exists():
             shutil.copy2(path, path.with_name(path.name + ".bak"))
         os.replace(tmp_path, path)
@@ -640,17 +817,26 @@ def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
 
 
 def write_bytes_atomic(path: Path, content: bytes) -> None:
-    """Atomically write bytes to *path*."""
+    """Write bytes atomically to a file.
+
+    Args:
+        path: Destination file path.
+        content: Raw bytes to write.
+
+    Raises:
+        OSError: If the temporary file or final replacement cannot be written.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd: Optional[int] = None
     tmp_path: Optional[str] = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-        with os.fdopen(tmp_fd, "wb") as fh:
+        with os.fdopen(tmp_fd, "wb") as file_handle:
             tmp_fd = None
-            fh.write(content)
-            fh.flush()
-            os.fsync(fh.fileno())
+            file_handle.write(content)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
         os.replace(tmp_path, path)
         tmp_path = None
     finally:
@@ -660,225 +846,17 @@ def write_bytes_atomic(path: Path, content: bytes) -> None:
             os.unlink(tmp_path)
 
 
-# =============================================================================
-# Enums, dataclasses, and custom exceptions
-# =============================================================================
+def combine_step_results(*results: StepResult) -> StepResult:
+    """Merge several step outcomes into a single aggregate outcome.
 
-class ConfigValidationError(ValueError):
-    """Raised when pkg.toml configuration is invalid."""
+    Args:
+        *results: Step results to combine.
 
-
-class DependencyError(RuntimeError):
-    """Raised when an optional backend is required but unavailable."""
-
-
-class Scope(Enum):
-    """Installation scope.
-
-    - ``USER``: per-user install (registry under HKCU, Start Menu under APPDATA)
-    - ``MACHINE``: system-wide install (registry under HKLM, Start Menu under PROGRAMDATA)
-
+    Returns:
+        A :class:`StepResult` whose flags and message lists reflect all supplied
+        results.
     """
 
-    USER = "User"
-    MACHINE = "Machine"
-
-
-class Action(Enum):
-    """CLI actions supported by this tool."""
-
-    INSTALL = "Install"
-    UPDATE_CONFIG = "UpdateConfig"
-
-
-@dataclass(frozen=True)
-class TomlReader:
-    """Lazy TOML reader backend."""
-
-    name: str
-    module: Any
-
-
-@dataclass(frozen=True)
-class RoundTripBackend:
-    """Lazy round-trip TOML backend."""
-
-    name: str
-    module: Any
-
-
-@dataclass
-class TextConfigDocument:
-    """Fallback metadata-only TOML editor used when tomlkit is unavailable."""
-
-    text: str
-
-    def as_string(self) -> str:
-        return self.text
-
-
-@dataclass
-class StepResult:
-    ok: bool
-    changed: bool = False
-    warnings: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-
-@dataclass
-class ActionResult:
-    ok: bool
-    changed: bool = False
-    warnings: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    exit_code: int = EXIT_SUCCESS
-
-
-@dataclass(frozen=True)
-class ResolvedInput:
-    raw_path: Path
-    package_root: Path
-    version_path: Path
-    input_kind: str
-    installing_from_current: bool
-
-
-@dataclass(frozen=True)
-class PackageIdentity:
-    name: str
-    version: str
-    local_version: int
-    version_string: str
-    package_root: Path
-    version_path: Path
-    is_current: bool
-    only_portable_by_name: bool
-
-    @classmethod
-    def from_resolved_input(cls, resolved: "ResolvedInput") -> "PackageIdentity":
-        match = VERSION_DIR_NAME_RE.match(resolved.version_path.name)
-        if not match:
-            raise ValueError(
-                f"Invalid version directory name: {resolved.version_path.name}. Expected format: v<upstream>.l<local>"
-            )
-        package_root = resolved.package_root
-        version_path = resolved.version_path
-        current_path = package_root / "current"
-        is_current = False
-        if current_path.exists() and JunctionManager.is_junction(current_path):
-            target = JunctionManager.get_junction_target(current_path)
-            if target is not None:
-                try:
-                    is_current = normalize_path(target) == normalize_path(version_path)
-                except OSError:
-                    is_current = False
-        return cls(
-            name=package_root.name,
-            version=match.group(1),
-            local_version=int(match.group(2)),
-            version_string=version_path.name,
-            package_root=package_root,
-            version_path=version_path,
-            is_current=is_current,
-            only_portable_by_name=package_root.name.lower().endswith("-portable"),
-        )
-
-
-@dataclass(frozen=True)
-class ScopePaths:
-    scope: Scope
-    shortcut_root: Path
-    bin_dir: Path
-    env_root: Any
-    env_subkey: str
-
-
-@dataclass
-class ShortcutSpec:
-    name: str
-    target_path: str
-    arguments: str = ""
-    working_directory: str = ""
-    icon_location: str = ""
-    description: str = ""
-
-
-@dataclass
-class EnvVarSpec:
-    name: str
-    value: str
-
-
-@dataclass
-class BinSpec:
-    name: str
-    content: str
-
-
-@dataclass
-class PackageConfig:
-    description: Optional[str] = None
-    homepage: Optional[str] = None
-    download_url: Optional[str] = None
-    only_portable: bool = False
-    environment: List[EnvVarSpec] = field(default_factory=list)
-    shortcut: List[ShortcutSpec] = field(default_factory=list)
-    path: List[str] = field(default_factory=list)
-    bin: List[BinSpec] = field(default_factory=list)
-
-
-@dataclass
-class ExpansionResult:
-    value: str
-    unresolved: List[str] = field(default_factory=list)
-
-
-class ExpansionMode(Enum):
-    GENERAL = "general"
-    SCRIPT = "script"
-
-
-@dataclass(frozen=True)
-class PreparedShortcut:
-    name: str
-    shortcut_path: Path
-    target_path: str
-    arguments: str = ""
-    working_directory: str = ""
-    icon_location: str = ""
-    description: str = ""
-
-
-@dataclass(frozen=True)
-class InstallContext:
-    identity: PackageIdentity
-    config: PackageConfig
-    scope_paths: ScopePaths
-    reporter: Any
-    force: bool
-
-
-class Reporter:
-    """Minimal console reporter used by the orchestration layer."""
-
-    def info(self, msg: str) -> None:
-        print(msg)
-
-    def warn(self, msg: str) -> None:
-        if msg.startswith("WARNING:"):
-            print(msg)
-        else:
-            print(f"WARNING: {msg}")
-
-    def error(self, msg: str) -> None:
-        if msg.startswith("ERROR:"):
-            print(msg)
-        else:
-            print(f"ERROR: {msg}")
-
-
-def combine_step_results(*results: StepResult) -> StepResult:
-    """Combine several step results into one aggregate result."""
     combined = StepResult(ok=True, changed=False)
     for result in results:
         combined.ok = combined.ok and result.ok
@@ -890,848 +868,16 @@ def combine_step_results(*results: StepResult) -> StepResult:
     return combined
 
 
-# =============================================================================
-# Package identity and scope paths
-# =============================================================================
-
-def resolve_input_path(raw_path: Path) -> ResolvedInput:
-    """Classify the user input path before resolving any junction targets."""
-    candidate = raw_path.expanduser()
-
-    if is_version_directory_name(candidate.name):
-        if not candidate.exists() or not candidate.is_dir():
-            raise ValueError(f"Version directory does not exist: {candidate}")
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=candidate.parent,
-            version_path=candidate,
-            input_kind="version",
-            installing_from_current=False,
-        )
-
-    if candidate.name.lower() == "current":
-        if not candidate.exists():
-            raise ValueError(f'"current" path does not exist: {candidate}')
-        if not JunctionManager.is_junction(candidate):
-            raise ValueError(
-                f'"current" path exists but is not a valid junction: {candidate}; '
-                f"exists={candidate.exists()}, is_dir={candidate.is_dir()}, parent={candidate.parent}"
-            )
-        target = JunctionManager.get_junction_target(candidate)
-        if target is None:
-            raise ValueError(f'Could not resolve "current" junction target: {candidate}')
-        resolved_target = normalize_path(target)
-        if not resolved_target.is_dir():
-            raise ValueError(
-                f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
-            )
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=candidate.parent,
-            version_path=resolved_target,
-            input_kind="current",
-            installing_from_current=True,
-        )
-
-    if not candidate.exists() or not candidate.is_dir():
-        raise ValueError(f"Package root does not exist: {candidate}")
-    current_path = candidate / "current"
-    if not current_path.exists():
-        raise ValueError(
-            f'No "current" directory exists in package root: {candidate}; '
-            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
-        )
-    if not JunctionManager.is_junction(current_path):
-        raise ValueError(
-            f'"current" path exists but is not a valid junction: {current_path}; '
-            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
-        )
-    target = JunctionManager.get_junction_target(current_path)
-    if target is None:
-        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
-    resolved_target = normalize_path(target)
-    if not resolved_target.is_dir():
-        raise ValueError(
-            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
-        )
-    return ResolvedInput(
-        raw_path=candidate,
-        package_root=candidate,
-        version_path=resolved_target,
-        input_kind="package_root",
-        installing_from_current=True,
-    )
-
-
-def compute_scope_paths(scope: Scope) -> ScopePaths:
-    registry = winreg
-    if scope == Scope.USER:
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            raise ValueError("APPDATA is not set; cannot compute User-scope shortcut directory.")
-        userprofile = os.environ.get("USERPROFILE")
-        if not userprofile:
-            raise ValueError("USERPROFILE is not set; cannot compute User-scope bin directory.")
-        return ScopePaths(
-            scope=scope,
-            shortcut_root=Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
-            bin_dir=Path(userprofile) / "bin",
-            env_root=(registry.HKEY_CURRENT_USER if registry is not None else None),
-            env_subkey="Environment",
-        )
-
-    programdata = os.environ.get("PROGRAMDATA")
-    if not programdata:
-        raise ValueError("PROGRAMDATA is not set; cannot compute Machine-scope shortcut directory.")
-    systemdrive = os.environ.get("SYSTEMDRIVE")
-    if not systemdrive:
-        raise ValueError("SYSTEMDRIVE is not set; cannot compute Machine-scope bin directory.")
-    return ScopePaths(
-        scope=scope,
-        shortcut_root=Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
-        bin_dir=Path(systemdrive) / "bin",
-        env_root=(registry.HKEY_LOCAL_MACHINE if registry is not None else None),
-        env_subkey=r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-    )
-
-
-# =============================================================================
-# Runtime config model and validation
-# =============================================================================
-
-def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConfig:
-    """Normalize runtime config into a dedicated runtime model."""
-    default_data: Dict[str, Any] = {
-        "name": identity.name,
-        "version": identity.version,
-        "localVersion": identity.local_version,
-        "description": None,
-        "homepage": None,
-        "downloadURL": None,
-        "environment": [],
-        "bin": [],
-        "path": [],
-        "shortcut": [],
-        "only_portable": identity.only_portable_by_name,
-    }
-    merged = dict(default_data)
-    if raw is not None:
-        if not isinstance(raw, dict):
-            raise ConfigValidationError(f"Configuration must be a dict, got: {type(raw).__name__}")
-        merged.update(PackageMetadata._canonicalize_config_dict(dict(raw)))
-    normalized = PackageMetadata._canonicalize_config_dict(merged)
-    return PackageConfig(
-        description=normalized.get("description"),
-        homepage=normalized.get("homepage"),
-        download_url=normalized.get("downloadURL"),
-        only_portable=bool(normalized.get("only_portable", identity.only_portable_by_name)),
-        environment=[
-            EnvVarSpec(name=str(item.get("Name", "")), value=str(item.get("Value", "")))
-            for item in normalized.get("environment", [])
-        ],
-        shortcut=[
-            ShortcutSpec(
-                name=str(item.get("name", "")),
-                target_path=str(item.get("targetPath", "")),
-                arguments=str(item.get("arguments", "")),
-                working_directory=str(item.get("workingDirectory", "")),
-                icon_location=str(item.get("iconLocation", "")),
-                description=str(item.get("description", "")),
-            )
-            for item in normalized.get("shortcut", [])
-        ],
-        path=[str(item) for item in normalized.get("path", [])],
-        bin=[
-            BinSpec(name=str(item.get("name", "")), content=str(item.get("content", "")))
-            for item in normalized.get("bin", [])
-        ],
-    )
-
-
-def validate_runtime_config(config: PackageConfig) -> None:
-    errors: List[str] = []
-    for i, shortcut in enumerate(config.shortcut):
-        missing = []
-        if not shortcut.name.strip():
-            missing.append("name")
-        if not shortcut.target_path.strip():
-            missing.append("targetPath")
-        if missing:
-            errors.append(f"shortcut[{i}] missing required key(s): {', '.join(missing)}")
-    for i, env in enumerate(config.environment):
-        missing = []
-        if not env.name.strip():
-            missing.append("Name")
-        if env.value == "":
-            missing.append("Value")
-        if missing:
-            errors.append(f"environment[{i}] missing required key(s): {', '.join(missing)}")
-    for i, wrapper in enumerate(config.bin):
-        missing = []
-        if not wrapper.name.strip():
-            missing.append("name")
-        if wrapper.content == "":
-            missing.append("content")
-        if missing:
-            errors.append(f"bin[{i}] missing required key(s): {', '.join(missing)}")
-    if errors:
-        joined = "\n  - " + "\n  - ".join(errors)
-        raise ConfigValidationError(f"Invalid configuration:{joined}")
-
-
-def package_config_to_dict(config: PackageConfig, identity: PackageIdentity) -> Dict[str, Any]:
-    return {
-        "name": identity.name,
-        "version": identity.version,
-        "localVersion": identity.local_version,
-        "description": config.description,
-        "homepage": config.homepage,
-        "downloadURL": config.download_url,
-        "only_portable": config.only_portable,
-        "environment": [{"Name": item.name, "Value": item.value} for item in config.environment],
-        "shortcut": [
-            {
-                "name": item.name,
-                "targetPath": item.target_path,
-                "arguments": item.arguments,
-                "workingDirectory": item.working_directory,
-                "iconLocation": item.icon_location,
-                "description": item.description,
-            }
-            for item in config.shortcut
-        ],
-        "path": list(config.path),
-        "bin": [{"name": item.name, "content": item.content} for item in config.bin],
-    }
-
-
-def check_metadata_consistency(identity: PackageIdentity, raw_or_config: Any) -> List[str]:
-    if isinstance(raw_or_config, PackageConfig):
-        data = {
-            "name": identity.name,
-            "version": identity.version,
-            "localVersion": identity.local_version,
-            "only_portable": raw_or_config.only_portable,
-        }
-    elif isinstance(raw_or_config, dict):
-        data = PackageMetadata._canonicalize_config_dict(dict(raw_or_config))
-    else:
-        raise TypeError("raw_or_config must be a PackageConfig or dict")
-
-    inconsistencies: List[str] = []
-    if "name" in data and data.get("name") not in (None, "") and str(data.get("name")) != identity.name:
-        inconsistencies.append(f"Name mismatch: directory='{identity.name}', config='{data.get('name')}'")
-    if "version" in data and data.get("version") not in (None, "") and str(data.get("version")) != identity.version:
-        inconsistencies.append(f"Version mismatch: directory='{identity.version}', config='{data.get('version')}'")
-    if "localVersion" in data and data.get("localVersion") not in (None, "") and str(data.get("localVersion")) != str(identity.local_version):
-        inconsistencies.append(
-            f"LocalVersion mismatch: directory='{identity.local_version}', config='{data.get('localVersion')}'"
-        )
-    if "only_portable" in data and data.get("only_portable") is not None and bool(data.get("only_portable")) != identity.only_portable_by_name:
-        inconsistencies.append(
-            f"Portable flag mismatch: directory='{identity.only_portable_by_name}', config='{bool(data.get('only_portable'))}'"
-        )
-    return inconsistencies
-
-
-def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[PackageConfig, Dict[str, Any], List[str]]:
-    warnings: List[str] = []
-    toml_path = identity.version_path / "pkg.toml"
-    if toml_path.exists():
-        try:
-            loaded = read_toml_file(toml_path)
-            config = normalize_runtime_config(loaded, identity)
-            validate_runtime_config(config)
-            return config, PackageMetadata._canonicalize_config_dict(dict(loaded)), warnings
-        except DependencyError:
-            if not use_defaults:
-                raise
-            warnings.append(
-                "No TOML reader is available for pkg.toml parsing. Proceeding with defaults because --use-defaults was provided."
-            )
-        except ConfigValidationError:
-            raise
-        except Exception as e:
-            if not use_defaults:
-                raise RuntimeError(f"Error loading TOML config from {toml_path}: {e}") from e
-            warnings.append(f"Error loading TOML config from {toml_path}: {e}")
-            warnings.append("Proceeding with defaults because --use-defaults was provided.")
-    config = normalize_runtime_config({}, identity)
-    validate_runtime_config(config)
-    warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
-    return config, package_config_to_dict(config, identity), warnings
-
-
-class PackageMetadata:
-    """Compatibility facade over the newer resolved-input, identity, and config helpers."""
-
-    def __init__(self, version_path: Path):
-        resolved = resolve_input_path(Path(version_path))
-        self.resolved_input = resolved
-        self.identity = PackageIdentity.from_resolved_input(resolved)
-        self.input_path = resolved.raw_path
-        self.version_path = self.identity.version_path
-        self.pkg_path = self.identity.package_root
-        self.name = self.identity.name
-        self.version = self.identity.version
-        self.local_version = str(self.identity.local_version)
-        self.version_string = self.identity.version_string
-        self.is_current = self.identity.is_current
-        self.scope: Scope = Scope.USER
-        self.scope_paths: Optional[ScopePaths] = None
-        self.shortcut_dir: Path = Path()
-        self.only_portable: bool = self.identity.only_portable_by_name
-        self.description: Optional[str] = None
-        self.homepage: Optional[str] = None
-        self.download_url: Optional[str] = None
-        self.environment: List[Dict[str, str]] = []
-        self.bin: List[Dict[str, str]] = []
-        self.path: List[str] = []
-        self.shortcut: List[Dict[str, str]] = []
-        self.runtime_config: Optional[PackageConfig] = None
-
-    def _fill_from_directory(self) -> None:
-        return None
-
-    def _fill_current(self) -> None:
-        return None
-
-    def check_metadata_consistency(self, config_data: Dict[str, Any]) -> List[str]:
-        return check_metadata_consistency(self.identity, config_data)
-
-
-    # ---------------------------------------------------------------------
-    # Configuration normalization and validation
-    # ---------------------------------------------------------------------
-
-    @staticmethod
-    def _canonicalize_dict_keys(data: Dict[str, Any], keymap: Dict[str, str], *, context: str) -> Dict[str, Any]:
-        """Return a copy of *data* with keys normalized in a case-insensitive way.
-
-        Keys are matched by ``str(key).lower()`` against *keymap* and rewritten to
-        the canonical spelling stored in *keymap*. Unknown keys are preserved.
-
-        This function also detects collisions such as ``{"Name": ..., "name": ...}``
-        that would map to the same canonical key.
-
-        Args:
-            data: Input dictionary.
-            keymap: Mapping from lower-cased key -> canonical key name.
-            context: Human-readable context string used in error messages.
-
-        Returns:
-            A new dictionary with canonicalized keys.
-
-        Raises:
-            ConfigValidationError: If two different original keys map to the same
-                canonical key.
-        """
-        out: Dict[str, Any] = {}
-        seen_from: Dict[str, str] = {}
-
-        for k, v in data.items():
-            k_str = str(k)
-            canonical = keymap.get(k_str.lower(), k_str)
-
-            if canonical in out and seen_from.get(canonical) != k_str:
-                raise ConfigValidationError(
-                    f"Duplicate keys differing only by case/alias in {context}: "
-                    f"'{seen_from.get(canonical)}' and '{k_str}' both map to '{canonical}'."
-                )
-
-            out[canonical] = v
-            seen_from[canonical] = k_str
-
-        return out
-
-    @staticmethod
-    def _normalize_bin_content(value: Any) -> str:
-        """Normalize wrapper content so escaped newlines behave as users expect.
-
-        If a value contains literal escape sequences like ``\n``/``\r\n`` but no
-        actual newline characters, convert those escapes to real newlines. This
-        keeps one-line TOML strings usable for multi-line wrapper scripts.
-        """
-        text = str(value or "")
-        if "\n" in text:
-            return text
-        return text.replace("\\r\\n", "\n").replace("\\n", "\n")
-
-    @staticmethod
-    def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Canonicalize known config keys (case-insensitive) and normalize shapes.
-
-        This makes TOML keys case-insensitive for the supported schema. In
-        particular it normalizes:
-
-        - top-level keys like ``Name``/``NAME`` -> ``name``
-        - shortcut entry keys like ``TargetPath``/``path`` -> ``targetPath``
-        - environment entry keys like ``name`` -> ``Name`` and ``value`` -> ``Value``
-
-        Returns:
-            A new dict with canonicalized keys and list fields normalized to lists.
-
-        Raises:
-            ConfigValidationError: If the config structure is not as expected.
-        """
-        if not isinstance(data, dict):
-            raise ConfigValidationError(f"Configuration must be a dict, got: {type(data).__name__}")
-
-        out = PackageMetadata._canonicalize_dict_keys(
-            data,
-            TOP_LEVEL_CONFIG_KEY_ALIASES,
-            context="config",
-        )
-
-        # Support a dedicated [[main]] TOML section for package-level metadata.
-        main_block = out.pop("main", None)
-        if main_block is not None:
-            if not isinstance(main_block, list):
-                raise ConfigValidationError(f"'main' must be a list, got: {type(main_block).__name__}")
-            if len(main_block) > 1:
-                raise ConfigValidationError("'main' must contain a single table")
-            if len(main_block) == 1:
-                if not isinstance(main_block[0], dict):
-                    raise ConfigValidationError(
-                        f"'main[0]' must be a dict, got: {type(main_block[0]).__name__}"
-                    )
-                normalized_main = PackageMetadata._canonicalize_dict_keys(
-                    main_block[0],
-                    MAIN_TABLE_KEY_ALIASES,
-                    context="main[0]",
-                )
-                for key, value in normalized_main.items():
-                    out[key] = value
-
-        # Normalize absent/null list fields.
-        for k in CONFIG_LIST_FIELDS:
-            if out.get(k, None) is None:
-                out[k] = []
-
-        # Be tolerant in what we accept:
-        #   - canonical TOML form: repeated [[path]] tables
-        #   - legacy/internal form: list[str]
-        #   - convenience form: a single string
-        if isinstance(out.get("path", None), str):
-            out["path"] = [out["path"]]
-        elif not isinstance(out.get("path", []), list):
-            raise ConfigValidationError(
-                f"'path' must be a list of strings or [[path]] tables, got: {type(out['path']).__name__}"
-            )
-
-        # Canonicalize list-of-dict blocks.
-        def canonicalize_block(block_name: str, keymap: Dict[str, str]) -> List[Dict[str, Any]]:
-            raw = out.get(block_name, [])
-            if raw is None:
-                return []
-            if not isinstance(raw, list):
-                raise ConfigValidationError(f"'{block_name}' must be a list, got: {type(raw).__name__}")
-            result: List[Dict[str, Any]] = []
-            for i, item in enumerate(raw):
-                if not isinstance(item, dict):
-                    raise ConfigValidationError(
-                        f"'{block_name}[{i}]' must be a dict, got: {type(item).__name__}"
-                    )
-                result.append(PackageMetadata._canonicalize_dict_keys(item, keymap, context=f"{block_name}[{i}]"))
-            return result
-
-        out["environment"] = canonicalize_block("environment", ENVIRONMENT_KEY_ALIASES)
-        out["bin"] = canonicalize_block("bin", BIN_KEY_ALIASES)
-        for bw in out["bin"]:
-            if "content" in bw:
-                bw["content"] = PackageMetadata._normalize_bin_content(bw.get("content", ""))
-        out["shortcut"] = canonicalize_block("shortcut", SHORTCUT_KEY_ALIASES)
-
-        # Normalize path entries.
-        # We canonicalize to List[str] internally regardless of whether the
-        # config used [[path]] tables or a list of strings.
-        normalized_path: List[str] = []
-        for i, entry in enumerate(out.get("path", [])):
-            if entry is None:
-                continue
-            if isinstance(entry, str):
-                normalized_path.append(entry)
-                continue
-            if isinstance(entry, dict):
-                path_item = PackageMetadata._canonicalize_dict_keys(entry, PATH_ENTRY_KEY_ALIASES, context=f"path[{i}]")
-                value = path_item.get("value", None)
-                if value is None:
-                    raise ConfigValidationError(
-                        f"'path[{i}]' table is missing required key: value (present keys: {', '.join(sorted(str(k) for k in path_item.keys()))})"
-                    )
-                if not isinstance(value, str):
-                    raise ConfigValidationError(f"'path[{i}].value' must be a string, got: {type(value).__name__}")
-                normalized_path.append(value)
-                continue
-            raise ConfigValidationError(
-                f"'path[{i}]' must be a string or a dict ([[path]] table), got: {type(entry).__name__}"
-            )
-        out["path"] = normalized_path
-
-        return out
-
-    @staticmethod
-    def _validate_config_dict(data: Dict[str, Any]) -> None:
-        """Validate mandatory keys for list entries (shortcuts/env/bin).
-
-        This is a *sanity check* to prevent subtle bugs (e.g. creating an
-        ``opt.lnk`` shortcut when ``name`` is missing). See
-        :class:`ShortcutInstaller` for additional runtime guards.
-
-        Raises:
-            ConfigValidationError: If required fields are missing.
-        """
-        errors: List[str] = []
-
-        def keys_str(d: Dict[str, Any]) -> str:
-            return ", ".join(sorted(str(k) for k in d.keys()))
-
-        # Shortcuts: require name + targetPath
-        shortcuts = data.get("shortcut", [])
-        if isinstance(shortcuts, list):
-            for i, sc in enumerate(shortcuts):
-                if not isinstance(sc, dict):
-                    errors.append(f"shortcut[{i}] must be a dict")
-                    continue
-                name = str(sc.get("name", "") or "").strip()
-                target = str(sc.get("targetPath", "") or "").strip()
-                if not name or not target:
-                    missing = []
-                    if not name:
-                        missing.append("name")
-                    if not target:
-                        missing.append("targetPath")
-                    errors.append(
-                        f"shortcut[{i}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(sc)})"
-                    )
-
-        # Environment variables: require Name + Value
-        envs = data.get("environment", [])
-        if isinstance(envs, list):
-            for i, ev in enumerate(envs):
-                if not isinstance(ev, dict):
-                    errors.append(f"environment[{i}] must be a dict")
-                    continue
-                n = str(ev.get("Name", "") or "").strip()
-                v = str(ev.get("Value", "") or "").strip()
-                if not n or v == "":
-                    missing = []
-                    if not n:
-                        missing.append("Name")
-                    if v == "":
-                        missing.append("Value")
-                    errors.append(
-                        f"environment[{i}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(ev)})"
-                    )
-
-        # Bin wrappers: require name + content
-        bins = data.get("bin", [])
-        if isinstance(bins, list):
-            for i, bw in enumerate(bins):
-                if not isinstance(bw, dict):
-                    errors.append(f"bin[{i}] must be a dict")
-                    continue
-                n = str(bw.get("name", "") or "").strip()
-                c = str(bw.get("content", "") or "")
-                if not n or c == "":
-                    missing = []
-                    if not n:
-                        missing.append("name")
-                    if c == "":
-                        missing.append("content")
-                    errors.append(
-                        f"bin[{i}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(bw)})"
-                    )
-
-        if errors:
-            joined = "\n  - " + "\n  - ".join(errors)
-            raise ConfigValidationError(f"Invalid configuration:{joined}")
-
-    @staticmethod
-    def _to_toml_scalar(value: Any) -> str:
-        """Compatibility wrapper around the shared TOML rendering helper."""
-        return _to_toml_scalar(value)
-
-    def _metadata_sync_payload(self) -> Dict[str, Any]:
-        """Compatibility wrapper around the shared metadata sync payload helper."""
-        return metadata_sync_payload(self.identity)
-
-    def _create_starter_config_text(self, data: Optional[Dict[str, Any]] = None) -> str:
-        """Compatibility wrapper around the shared starter-config helper."""
-        return create_starter_config(self.identity)
-
-    @staticmethod
-    def _locate_metadata_container(doc: Any) -> Any:
-        """Compatibility wrapper around the shared document-location helper."""
-        return locate_metadata_container(doc)
-
-    def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
-        config, _raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
-        self.runtime_config = config
-        self.description = config.description
-        self.homepage = config.homepage
-        self.download_url = config.download_url
-        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
-        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
-        self.path = list(config.path)
-        self.shortcut = [
-            {
-                "name": item.name,
-                "targetPath": item.target_path,
-                "arguments": item.arguments,
-                "workingDirectory": item.working_directory,
-                "iconLocation": item.icon_location,
-                "description": item.description,
-            }
-            for item in config.shortcut
-        ]
-        self.only_portable = config.only_portable
-        return package_config_to_dict(config, self.identity), warnings
-
-    def _load_from_dict(self, data: Dict[str, Any]) -> None:
-        config = normalize_runtime_config(data, self.identity)
-        validate_runtime_config(config)
-        self.runtime_config = config
-        self.description = config.description
-        self.homepage = config.homepage
-        self.download_url = config.download_url
-        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
-        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
-        self.path = list(config.path)
-        self.shortcut = [
-            {
-                "name": item.name,
-                "targetPath": item.target_path,
-                "arguments": item.arguments,
-                "workingDirectory": item.working_directory,
-                "iconLocation": item.icon_location,
-                "description": item.description,
-            }
-            for item in config.shortcut
-        ]
-        self.only_portable = config.only_portable
-
-    def update_config(self, reporter: Optional[Reporter] = None) -> StepResult:
-        """Synchronize only the owned metadata fields back to ``pkg.toml``.
-
-        Existing files are edited in place with a round-trip TOML backend so
-        comments, unknown keys, and existing table structure are preserved.
-        Missing files are created only for this explicit action.
-        """
-        reporter = reporter or Reporter()
-        toml_path = self.version_path / "pkg.toml"
-        json_path = self.version_path / "pkg.json"
-        warnings: List[str] = []
-
-        if toml_path.exists():
-            doc, original_text = load_config_document(toml_path)
-            changed = sync_document_metadata(doc, self.identity)
-            rendered = doc.as_string()
-            if not changed or rendered == original_text:
-                reporter.info(f"Configuration already up to date: {toml_path}")
-                result = StepResult(ok=True, changed=False)
-            else:
-                write_text_atomic(toml_path, rendered, backup=True)
-                reporter.info(f"Updated: {toml_path}")
-                result = StepResult(ok=True, changed=True)
-        else:
-            rendered = create_starter_config(self.identity)
-            write_text_atomic(toml_path, rendered, backup=False)
-            reporter.info(f"Created: {toml_path}")
-            result = StepResult(ok=True, changed=True)
-
-        if json_path.exists():
-            try:
-                json_path.unlink()
-                reporter.info(f"Removed: {json_path} (legacy config; TOML-only)")
-                result.changed = True
-            except OSError as e:
-                warning = f"Failed to remove legacy JSON config {json_path}: {e}"
-                reporter.warn(warning)
-                warnings.append(warning)
-
-        result.warnings.extend(warnings)
-        return result
-
-    def set_scope(self, scope: Scope) -> None:
-        """Set installation scope and compute shared scope paths."""
-        self.scope = scope
-        self.scope_paths = compute_scope_paths(scope)
-        self.shortcut_dir = self.scope_paths.shortcut_root
-
-
-
-# =============================================================================
-# TOML document I/O and round-trip config updates
-# =============================================================================
-
-# Runtime config parsing still normalizes to dicts; existing-file updates use tomlkit round-trip edits.
-
-
-def _to_toml_scalar(value: Any) -> str:
-    """Render a scalar value as TOML literal text."""
-    if value is None:
-        return '""'
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_to_toml_scalar(v) for v in value) + "]"
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
-    """Return the directory-derived metadata owned by pkg."""
-    return {
-        "name": identity.name,
-        "version": identity.version,
-        "localVersion": identity.local_version,
-        "only_portable": identity.only_portable_by_name,
-    }
-
-
-def load_config_document(path: Path) -> Tuple[Any, str]:
-    """Load an existing ``pkg.toml`` with a round-trip backend when available.
-
-    If ``tomlkit`` is unavailable, fall back to a narrow metadata-only text editor
-    that preserves comments, unknown keys, and overall layout while syncing only
-    the owned metadata keys.
-    """
-    original_text = path.read_text(encoding="utf-8")
-    backend = load_roundtrip_toml_backend(require=False)
-    if backend is not None:
-        try:
-            return backend.module.parse(original_text), original_text
-        except Exception as e:
-            raise ConfigValidationError(
-                f"pkg.toml is structurally invalid and cannot be updated safely: {e}. Edit the config manually."
-            ) from e
-    return TextConfigDocument(original_text), original_text
-
-
-def locate_metadata_container(doc: Any) -> Any:
-    """Return the TOML object whose keys should be metadata-synced."""
-    if isinstance(doc, TextConfigDocument):
-        return doc
-    main_block = doc.get("main", None)
-    if main_block is None:
-        return doc
-    if not isinstance(main_block, list):
-        raise ConfigValidationError(
-            "Existing pkg.toml uses a malformed [[main]] section. Edit the config manually."
-        )
-    if len(main_block) != 1:
-        raise ConfigValidationError(
-            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
-        )
-    return main_block[0]
-
-
-def _find_existing_metadata_key(container: Any, canonical_key: str) -> Optional[str]:
-    """Find the existing key spelling/alias for a metadata field if present."""
-    aliases = {alias.lower() for alias in OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))}
-    exact_match: Optional[str] = None
-    alias_match: Optional[str] = None
-    for key in container.keys():
-        key_text = str(key)
-        key_lower = key_text.lower()
-        if key_text == canonical_key:
-            exact_match = key_text
-            break
-        if key_lower in aliases and alias_match is None:
-            alias_match = key_text
-    return exact_match or alias_match
-
-
-def _sync_text_metadata(doc: TextConfigDocument, identity: PackageIdentity) -> bool:
-    text = doc.text
-    changed = False
-    metadata = metadata_sync_payload(identity)
-
-    main_matches = list(re.finditer(r'(?mi)^\s*\[\[main\]\]\s*$', text))
-    if len(main_matches) > 1:
-        raise ConfigValidationError(
-            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
-        )
-
-    if main_matches:
-        start = main_matches[0].end()
-        next_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text[start:])
-        end = start + next_table.start() if next_table else len(text)
-        container_text = text[start:end]
-        container_offset = start
-    else:
-        first_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text)
-        end = first_table.start() if first_table else len(text)
-        container_text = text[:end]
-        container_offset = 0
-
-    for canonical_key, value in metadata.items():
-        aliases = OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))
-        alias_pattern = "|".join(re.escape(a) for a in aliases)
-        pattern = re.compile(
-            rf'(?mi)^(?P<indent>\s*)(?P<key>{alias_pattern})\s*=\s*(?P<value>[^\n#]*)(?P<comment>\s*(?:#.*)?)$'
-        )
-        match = pattern.search(container_text)
-        rendered_value = _to_toml_scalar(value)
-        if match:
-            existing_value = match.group('value').strip()
-            if existing_value != rendered_value:
-                replacement_line = (
-                    f"{match.group('indent')}{match.group('key')} = {rendered_value}{match.group('comment')}"
-                )
-                container_text = container_text[:match.start()] + replacement_line + container_text[match.end():]
-                changed = True
-        else:
-            insertion = f"{canonical_key} = {rendered_value}\n"
-            if container_text and not container_text.endswith(("\n", "\r")):
-                container_text += "\n"
-            container_text += insertion
-            changed = True
-
-    if changed:
-        if container_offset == 0:
-            doc.text = container_text + text[end:]
-        else:
-            doc.text = text[:container_offset] + container_text + text[end:]
-    return changed
-
-def sync_document_metadata(doc: Any, identity: PackageIdentity) -> bool:
-    """Mutate only the owned metadata fields in an existing TOML document."""
-    if isinstance(doc, TextConfigDocument):
-        return _sync_text_metadata(doc, identity)
-    container = locate_metadata_container(doc)
-    changed = False
-    for canonical_key, value in metadata_sync_payload(identity).items():
-        existing_key = _find_existing_metadata_key(container, canonical_key)
-        target_key = existing_key or canonical_key
-        if container.get(target_key) != value:
-            container[target_key] = value
-            changed = True
-    return changed
-
-
-def create_starter_config(identity: PackageIdentity) -> str:
-    """Create a minimal future-facing starter ``pkg.toml``."""
-    metadata = metadata_sync_payload(identity)
-    lines = [
-        f"name = {_to_toml_scalar(metadata['name'])}"
-        f"version = {_to_toml_scalar(metadata['version'])}"
-        f"localVersion = {_to_toml_scalar(metadata['localVersion'])}"
-        f"only_portable = {_to_toml_scalar(metadata['only_portable'])}"
-    ]
-    return "\n".join(lines).rstrip() + "\n"
-
-# =============================================================================
-# Variable expansion
-# =============================================================================
-
 def _deduplicate_preserving_order(values: List[str]) -> List[str]:
-    """Return *values* without duplicates while preserving first-seen order."""
+    """Remove duplicates from a list while preserving the first occurrence.
+
+    Args:
+        values: Sequence of strings that may contain duplicates.
+
+    Returns:
+        A new list containing only the first occurrence of each value.
+    """
+
     seen = set()
     out: List[str] = []
     for value in values:
@@ -1743,7 +889,15 @@ def _deduplicate_preserving_order(values: List[str]) -> List[str]:
 
 
 def _package_variable_map(identity: PackageIdentity) -> Dict[str, str]:
-    """Return the package-variable expansion map for an identity."""
+    """Build the package-variable expansion map for one package identity.
+
+    Args:
+        identity: Package identity whose ``current`` tree should be referenced.
+
+    Returns:
+        Mapping from package variable name to filesystem path.
+    """
+
     pkg_base = identity.package_root / "current"
     return {
         "App": str(pkg_base / "App"),
@@ -1753,16 +907,28 @@ def _package_variable_map(identity: PackageIdentity) -> Dict[str, str]:
 
 
 def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> ExpansionResult:
-    """Expand package/environment variables according to the selected mode.
+    """Expand package and environment variables in text.
 
-    Rules:
-    - ``$App``, ``$Icons``, and ``$Shortcuts`` expand everywhere.
-    - ``${VAR}`` expands everywhere and is an error when unresolved.
-    - plain ``$VAR`` expands only in :class:`ExpansionMode.GENERAL`.
-    - plain ``$VAR`` remains literal in :class:`ExpansionMode.SCRIPT`, except
-      for the package variables listed above.
+    Expansion rules:
+
+    - ``$App``, ``$Icons``, and ``$Shortcuts`` expand in every mode.
+    - ``${VAR}`` expands in every mode and is tracked as unresolved when the
+      environment variable does not exist.
+    - Plain ``$VAR`` expands only in :class:`ExpansionMode.GENERAL`.
+    - Plain ``$VAR`` stays literal in :class:`ExpansionMode.SCRIPT`, except for
+      package variables.
     - ``$$`` becomes a literal ``$``.
+
+    Args:
+        text: Source text that may contain variables.
+        identity: Package identity used to resolve package-variable paths.
+        mode: Expansion ruleset to apply.
+
+    Returns:
+        An :class:`ExpansionResult` containing the expanded text and any
+        unresolved variable tokens.
     """
+
     if text is None:
         return ExpansionResult("")
 
@@ -1827,50 +993,76 @@ def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> Ex
     return ExpansionResult("".join(out), _deduplicate_preserving_order(unresolved))
 
 
-class VariableExpander:
-    """Compatibility wrappers around the newer expansion API."""
+#------------------------------------------
+# Section: Windows integration boundary
+#------------------------------------------
+import os
+import subprocess
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-    @staticmethod
-    def expand_variables(
-        text: str,
-        metadata: PackageMetadata,
-        mode: ExpansionMode = ExpansionMode.GENERAL,
-    ) -> ExpansionResult:
-        return expand_text(text, metadata.identity, mode)
+if os.name == "nt":
+    import winreg
+else:
+    winreg = None  # type: ignore[assignment]
 
-    @staticmethod
-    def expand_dict(
-        data: Dict[str, str],
-        metadata: PackageMetadata,
-        mode: ExpansionMode = ExpansionMode.GENERAL,
-    ) -> Dict[str, ExpansionResult]:
-        return {key: expand_text(value, metadata.identity, mode) for key, value in data.items()}
+InstallStep = Callable[["PackageMetadata", InstallContext], StepResult]
 
 
-# =============================================================================
-# Windows backends
-#   - junctions
-#   - shortcuts
-#   - registry env/path
-# =============================================================================
+def get_win32com_client() -> Optional[Any]:
+    """Return ``win32com.client`` when it is available.
+
+    Returns:
+        The imported ``win32com.client`` module, or ``None`` when ``pywin32``
+        is not installed.
+    """
+
+    return try_import("win32com.client")
+
+
+def require_winreg() -> Any:
+    """Return the :mod:`winreg` module or raise a platform error.
+
+    Returns:
+        The imported :mod:`winreg` module.
+
+    Raises:
+        OSError: If the current interpreter does not provide :mod:`winreg`.
+    """
+
+    if winreg is None:
+        raise OSError("winreg is only available on Windows.")
+    return winreg
+
+
+def get_shortcut_backend() -> str:
+    """Choose the runtime backend used for ``.lnk`` creation.
+
+    Returns:
+        ``"pywin32"`` when ``pywin32`` is available; otherwise ``"powershell"``.
+    """
+
+    return "pywin32" if get_win32com_client() is not None else "powershell"
+
 
 class JunctionManager:
-    """Create and inspect NTFS junctions used for version switching."""
+    """Create, inspect, and replace NTFS junctions used by ``pkg``."""
 
     @staticmethod
     def create_junction(source: Path, target: Path) -> bool:
         r"""Create or replace an NTFS junction.
 
-        This uses ``cmd /c mklink /J`` under the hood.
-
         Args:
-            source: Path where the junction will be created (e.g. ``...\current``).
-            target: Existing directory that the junction should point to.
+            source: Path where the junction should be created, usually the
+                package ``current`` path or a temporary sibling.
+            target: Existing directory that the junction should reference.
 
         Returns:
-            True if the junction was created successfully, False otherwise.
-
+            ``True`` when the junction was created successfully, otherwise
+            ``False``.
         """
+
         try:
             if not target.exists() or not target.is_dir():
                 print(f"JUNCTION error: target does not exist or is not a directory: {target}")
@@ -1879,11 +1071,9 @@ class JunctionManager:
             if os.path.lexists(str(source)):
                 if JunctionManager.is_junction(source):
                     try:
-                        # Junctions are directory reparse points. Use rmdir for
-                        # consistent removal across Python/Windows versions.
                         os.rmdir(str(source))
-                    except OSError as e:
-                        print(f"JUNCTION error: failed to remove existing junction {source}: {e}")
+                    except OSError as exc:
+                        print(f"JUNCTION error: failed to remove existing junction {source}: {exc}")
                         return False
                 else:
                     print(
@@ -1903,44 +1093,43 @@ class JunctionManager:
                 print(f"JUNCTION: created: {source.name} -> {target}")
                 return True
 
-            err = (result.stderr or "").strip()
-            out = (result.stdout or "").strip()
-            if err:
-                print(f"JUNCTION error: {err}")
-            if out:
-                print(f"JUNCTION output: {out}")
+            stderr_text = (result.stderr or "").strip()
+            stdout_text = (result.stdout or "").strip()
+            if stderr_text:
+                print(f"JUNCTION error: {stderr_text}")
+            if stdout_text:
+                print(f"JUNCTION output: {stdout_text}")
             return False
 
-        except Exception as e:
-            print(f"JUNCTION error creating {source}: {e}")
+        except Exception as exc:
+            print(f"JUNCTION error creating {source}: {exc}")
             return False
 
     @staticmethod
     def _win_get_reparse_tag(path: Path) -> Optional[int]:
-        """Return the reparse tag for *path* using Windows APIs.
+        """Read the reparse tag for a filesystem entry.
 
-        This avoids parsing localized/human output such as ``dir``.
+        Args:
+            path: Filesystem entry to inspect.
 
         Returns:
-            The integer reparse tag, or ``None`` if it cannot be determined.
-
+            The integer reparse tag, or ``None`` when the tag cannot be read.
         """
+
         try:
             import ctypes
             from ctypes import wintypes
 
-            # CreateFileW flags for opening a directory reparse point.
             FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
             FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
             OPEN_EXISTING = 3
             FILE_SHARE_READ = 0x00000001
             FILE_SHARE_WRITE = 0x00000002
             FILE_SHARE_DELETE = 0x00000004
-
             FSCTL_GET_REPARSE_POINT = 0x000900A8
 
-            CreateFileW = ctypes.windll.kernel32.CreateFileW
-            CreateFileW.argtypes = [
+            create_file = ctypes.windll.kernel32.CreateFileW
+            create_file.argtypes = [
                 wintypes.LPCWSTR,
                 wintypes.DWORD,
                 wintypes.DWORD,
@@ -1949,10 +1138,10 @@ class JunctionManager:
                 wintypes.DWORD,
                 wintypes.HANDLE,
             ]
-            CreateFileW.restype = wintypes.HANDLE
+            create_file.restype = wintypes.HANDLE
 
-            DeviceIoControl = ctypes.windll.kernel32.DeviceIoControl
-            DeviceIoControl.argtypes = [
+            device_io_control = ctypes.windll.kernel32.DeviceIoControl
+            device_io_control.argtypes = [
                 wintypes.HANDLE,
                 wintypes.DWORD,
                 wintypes.LPVOID,
@@ -1962,13 +1151,13 @@ class JunctionManager:
                 ctypes.POINTER(wintypes.DWORD),
                 wintypes.LPVOID,
             ]
-            DeviceIoControl.restype = wintypes.BOOL
+            device_io_control.restype = wintypes.BOOL
 
-            CloseHandle = ctypes.windll.kernel32.CloseHandle
-            CloseHandle.argtypes = [wintypes.HANDLE]
-            CloseHandle.restype = wintypes.BOOL
+            close_handle = ctypes.windll.kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
 
-            handle = CreateFileW(
+            handle = create_file(
                 str(path),
                 0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -1977,48 +1166,42 @@ class JunctionManager:
                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
                 None,
             )
-            INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
-            if handle == INVALID_HANDLE_VALUE:
+            invalid_handle_value = wintypes.HANDLE(-1).value
+            if handle == invalid_handle_value:
                 return None
 
             try:
-                buf = ctypes.create_string_buffer(16 * 1024)
+                buffer = ctypes.create_string_buffer(16 * 1024)
                 returned = wintypes.DWORD(0)
-                ok = DeviceIoControl(
+                ok = device_io_control(
                     handle,
                     FSCTL_GET_REPARSE_POINT,
                     None,
                     0,
-                    buf,
-                    len(buf),
+                    buffer,
+                    len(buffer),
                     ctypes.byref(returned),
                     None,
                 )
                 if not ok:
                     return None
-                # REPARSE_DATA_BUFFER starts with ULONG ReparseTag.
-                return int.from_bytes(buf.raw[0:4], "little", signed=False)
+                return int.from_bytes(buffer.raw[0:4], "little", signed=False)
             finally:
-                CloseHandle(handle)
+                close_handle(handle)
         except Exception:
             return None
 
     @staticmethod
     def is_junction(path: Path) -> bool:
-        """Return True if *path* is an NTFS junction (reparse point).
+        """Return whether a path is an NTFS junction.
 
         Args:
-            path: Directory path to test.
+            path: Directory path to inspect.
 
         Returns:
-            True if the path exists and is detected as a junction; False otherwise.
-
-        Notes:
-            - On Python 3.12+, ``os.path.isjunction`` is used if available.
-            - On older versions, this function queries the reparse tag via
-              Windows APIs (ctypes + ``FSCTL_GET_REPARSE_POINT``).
-
+            ``True`` when *path* exists and is a junction; otherwise ``False``.
         """
+
         try:
             if hasattr(os.path, "isjunction"):
                 return os.path.isjunction(str(path))  # type: ignore[attr-defined]
@@ -2026,25 +1209,24 @@ class JunctionManager:
             if not os.path.isdir(str(path)):
                 return False
 
-            # IO_REPARSE_TAG_MOUNT_POINT indicates an NTFS junction/mount point.
-            IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+            io_reparse_tag_mount_point = 0xA0000003
             tag = JunctionManager._win_get_reparse_tag(path)
-            return tag == IO_REPARSE_TAG_MOUNT_POINT
-
+            return tag == io_reparse_tag_mount_point
         except Exception:
             return False
 
     @staticmethod
     def get_junction_target(path: Path) -> Optional[Path]:
-        """Return the target directory of a junction, if readable.
+        """Resolve the target of a junction.
 
         Args:
-            path: Junction path.
+            path: Junction path to inspect.
 
         Returns:
-            The resolved target :class:`~pathlib.Path` if available; otherwise None.
-
+            The normalized target path, or ``None`` when the target cannot be
+            read.
         """
+
         try:
             target = os.readlink(str(path))
             return normalize_path(target)
@@ -2053,16 +1235,46 @@ class JunctionManager:
 
     @staticmethod
     def compare_versions(version1: str, version2: str) -> int:
-        """Compare two package version directory strings."""
+        """Compare two package version directory names.
+
+        Args:
+            version1: Left-hand version string.
+            version2: Right-hand version string.
+
+        Returns:
+            ``1`` when *version1* is newer, ``-1`` when *version2* is newer, or
+            ``0`` when they match.
+        """
+
         return compare_package_versions(version1, version2)
 
     @staticmethod
     def _temp_junction_path(base: Path, label: str) -> Path:
+        """Build a unique temporary sibling path for junction replacement.
+
+        Args:
+            base: Path being replaced.
+            label: Human-readable label embedded in the temporary file name.
+
+        Returns:
+            A unique temporary path next to *base*.
+        """
+
         suffix = uuid.uuid4().hex[:8]
         return base.with_name(f"{base.name}.{label}.{suffix}")
 
     @staticmethod
     def _replace_current_junction_atomic(current_path: Path, target_path: Path) -> None:
+        """Atomically repoint ``current`` to a new version directory.
+
+        Args:
+            current_path: Existing or future ``current`` junction path.
+            target_path: Version directory that should become the new target.
+
+        Raises:
+            RuntimeError: If the replacement cannot be completed safely.
+        """
+
         if not target_path.exists() or not target_path.is_dir():
             raise RuntimeError(f"Junction target does not exist or is not a directory: {target_path}")
 
@@ -2111,12 +1323,24 @@ class JunctionManager:
                     pass
 
     @staticmethod
-    def update_current_junction_if_needed(metadata: PackageMetadata, *, force: bool = False) -> bool:
-        r"""Update ``<pkg_path>\current`` if the supplied version is not older.
+    def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
+        r"""Update ``<package>\current`` when the chosen version should win.
 
-        If ``current`` already exists and points to a newer version, no change is
-        made unless ``force=True``.
+        Args:
+            metadata: Package metadata describing the version being installed.
+            force: Whether to allow downgrades or reinstalls even when ``current``
+                already points to a newer version.
+
+        Returns:
+            ``True`` when the junction changed; ``False`` when ``current`` was
+            intentionally left untouched because a newer version was already
+            active.
+
+        Raises:
+            ValueError: If the existing ``current`` path is unsafe or malformed.
+            RuntimeError: If the junction replacement fails.
         """
+
         current_path = metadata.pkg_path / "current"
 
         if os.path.lexists(str(current_path)):
@@ -2155,10 +1379,161 @@ class JunctionManager:
         return True
 
 
+def _current_version_matches(package_root: Path, version_path: Path) -> bool:
+    """Return whether ``package_root/current`` points at ``version_path``.
 
-# =============================================================================
-# Install steps
-# =============================================================================
+    Args:
+        package_root: Package root that may contain the ``current`` junction.
+        version_path: Concrete version directory to compare against.
+
+    Returns:
+        ``True`` when ``current`` exists, is a junction, and resolves to
+        *version_path*.
+    """
+
+    current_path = package_root / "current"
+    if not current_path.exists() or not JunctionManager.is_junction(current_path):
+        return False
+    target = JunctionManager.get_junction_target(current_path)
+    if target is None:
+        return False
+    try:
+        return normalize_path(target) == normalize_path(version_path)
+    except OSError:
+        return False
+
+
+def resolve_input_path(raw_path: Path) -> ResolvedInput:
+    """Classify a user-supplied path using Windows package-layout rules.
+
+    Args:
+        raw_path: User-supplied path that may point at a version directory, a
+            ``current`` junction, or the package root.
+
+    Returns:
+        A :class:`ResolvedInput` describing the package root, concrete version
+        directory, and whether the path was resolved via ``current``.
+
+    Raises:
+        ValueError: If the path does not match a supported package layout.
+    """
+
+    candidate = raw_path.expanduser()
+
+    if is_version_directory_name(candidate.name):
+        if not candidate.exists() or not candidate.is_dir():
+            raise ValueError(f"Version directory does not exist: {candidate}")
+        package_root = candidate.parent
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=package_root,
+            version_path=candidate,
+            input_kind="version",
+            installing_from_current=False,
+            version_is_current=_current_version_matches(package_root, candidate),
+        )
+
+    if candidate.name.lower() == "current":
+        if not candidate.exists():
+            raise ValueError(f'"current" path does not exist: {candidate}')
+        if not JunctionManager.is_junction(candidate):
+            raise ValueError(
+                f'"current" path exists but is not a valid junction: {candidate}; '
+                f"exists={candidate.exists()}, is_dir={candidate.is_dir()}, parent={candidate.parent}"
+            )
+        target = JunctionManager.get_junction_target(candidate)
+        if target is None:
+            raise ValueError(f'Could not resolve "current" junction target: {candidate}')
+        resolved_target = normalize_path(target)
+        if not resolved_target.is_dir():
+            raise ValueError(
+                f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
+            )
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=candidate.parent,
+            version_path=resolved_target,
+            input_kind="current",
+            installing_from_current=True,
+            version_is_current=True,
+        )
+
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError(f"Package root does not exist: {candidate}")
+    current_path = candidate / "current"
+    if not current_path.exists():
+        raise ValueError(
+            f'No "current" directory exists in package root: {candidate}; '
+            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
+        )
+    if not JunctionManager.is_junction(current_path):
+        raise ValueError(
+            f'"current" path exists but is not a valid junction: {current_path}; '
+            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
+        )
+    target = JunctionManager.get_junction_target(current_path)
+    if target is None:
+        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
+    resolved_target = normalize_path(target)
+    if not resolved_target.is_dir():
+        raise ValueError(
+            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
+        )
+    return ResolvedInput(
+        raw_path=candidate,
+        package_root=candidate,
+        version_path=resolved_target,
+        input_kind="package_root",
+        installing_from_current=True,
+        version_is_current=True,
+    )
+
+
+def compute_scope_paths(scope: Scope) -> ScopePaths:
+    """Resolve the Windows filesystem and registry locations for one scope.
+
+    Args:
+        scope: Installation scope for which paths should be calculated.
+
+    Returns:
+        A :class:`ScopePaths` object describing the relevant directories and
+        registry location.
+
+    Raises:
+        ValueError: If required environment variables such as ``APPDATA`` or
+            ``PROGRAMDATA`` are missing.
+    """
+
+    registry = winreg
+    if scope == Scope.USER:
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            raise ValueError("APPDATA is not set; cannot compute User-scope shortcut directory.")
+        userprofile = os.environ.get("USERPROFILE")
+        if not userprofile:
+            raise ValueError("USERPROFILE is not set; cannot compute User-scope bin directory.")
+        return ScopePaths(
+            scope=scope,
+            shortcut_root=Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+            bin_dir=Path(userprofile) / "bin",
+            env_root=(registry.HKEY_CURRENT_USER if registry is not None else None),
+            env_subkey="Environment",
+        )
+
+    programdata = os.environ.get("PROGRAMDATA")
+    if not programdata:
+        raise ValueError("PROGRAMDATA is not set; cannot compute Machine-scope shortcut directory.")
+    systemdrive = os.environ.get("SYSTEMDRIVE")
+    if not systemdrive:
+        raise ValueError("SYSTEMDRIVE is not set; cannot compute Machine-scope bin directory.")
+    return ScopePaths(
+        scope=scope,
+        shortcut_root=Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+        bin_dir=Path(systemdrive) / "bin",
+        env_root=(registry.HKEY_LOCAL_MACHINE if registry is not None else None),
+        env_subkey=r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    )
+
 
 def _expanded_text_or_error(
     text: str,
@@ -2167,7 +1542,21 @@ def _expanded_text_or_error(
     *,
     field_label: str,
 ) -> str:
-    """Return expanded text or raise a clear unresolved-variable error."""
+    """Expand text or raise a clear unresolved-variable error.
+
+    Args:
+        text: Source text to expand.
+        identity: Package identity that supplies package-variable paths.
+        mode: Expansion ruleset to use.
+        field_label: Human-readable label used in error messages.
+
+    Returns:
+        Fully expanded text.
+
+    Raises:
+        ValueError: If the expansion leaves unresolved variable tokens.
+    """
+
     expansion = expand_text(text, identity, mode)
     if expansion.unresolved:
         unresolved = ", ".join(expansion.unresolved)
@@ -2180,7 +1569,23 @@ def prepare_shortcut_spec(
     identity: PackageIdentity,
     scope_paths: ScopePaths,
 ) -> PreparedShortcut:
-    """Expand, validate, and materialize a shortcut definition."""
+    """Expand, validate, and materialize one shortcut definition.
+
+    Args:
+        spec: Normalized shortcut declaration.
+        identity: Package identity used for variable expansion.
+        scope_paths: Scope-specific paths used to determine the Start Menu
+            destination.
+
+    Returns:
+        A :class:`PreparedShortcut` ready to be passed to a backend-specific
+        shortcut writer.
+
+    Raises:
+        ValueError: If required fields are empty after expansion or variables
+            remain unresolved.
+    """
+
     raw_display_name = spec.name or "<unnamed>"
     expanded_name = _expanded_text_or_error(
         spec.name,
@@ -2247,11 +1652,20 @@ def prepare_shortcut_spec(
 
 
 class ShortcutInstaller:
-    """Create Windows Start Menu shortcuts (.lnk)."""
+    """Create Windows Start Menu shortcuts."""
 
     @staticmethod
-    def _prepare_shortcut(shortcut_info: Dict[str, str], metadata: PackageMetadata) -> PreparedShortcut:
-        """Expand and validate shortcut metadata before backend-specific writing."""
+    def _prepare_shortcut(shortcut_info: Dict[str, str], metadata: "PackageMetadata") -> PreparedShortcut:
+        """Normalize and expand shortcut data before backend-specific writing.
+
+        Args:
+            shortcut_info: Raw shortcut dictionary from the runtime config.
+            metadata: Package metadata for the package being installed.
+
+        Returns:
+            A fully expanded :class:`PreparedShortcut` object.
+        """
+
         scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
         metadata.scope_paths = scope_paths
         metadata.shortcut_dir = scope_paths.shortcut_root
@@ -2268,9 +1682,18 @@ class ShortcutInstaller:
     @staticmethod
     def _create_shortcut_with_pywin32(
         shortcut_info: Dict[str, str],
-        metadata: PackageMetadata,
+        metadata: "PackageMetadata",
     ) -> Tuple[bool, Optional[str]]:
-        """Create a shortcut using pywin32 (COM)."""
+        """Create a shortcut using ``pywin32``.
+
+        Args:
+            shortcut_info: Raw shortcut dictionary from the runtime config.
+            metadata: Package metadata for the package being installed.
+
+        Returns:
+            ``(True, None)`` on success; otherwise ``(False, error_message)``.
+        """
+
         try:
             prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
             win32_client = get_win32com_client()
@@ -2287,21 +1710,39 @@ class ShortcutInstaller:
             shortcut.Save()
             print(f"SHORTCUT: created: {prepared.shortcut_path.name}")
             return True, None
-        except Exception as e:
+        except Exception as exc:
             name = shortcut_info.get("name", "unknown")
-            print(f"SHORTCUT error creating {name}: {e}")
-            return False, f"Failed to create shortcut '{name}': {e}"
+            print(f"SHORTCUT error creating {name}: {exc}")
+            return False, f"Failed to create shortcut '{name}': {exc}"
 
     @staticmethod
     def _create_shortcut_with_powershell(
         shortcut_info: Dict[str, str],
-        metadata: PackageMetadata,
+        metadata: "PackageMetadata",
     ) -> Tuple[bool, Optional[str]]:
-        """Create a shortcut using PowerShell (fallback)."""
+        """Create a shortcut using PowerShell automation.
+
+        Args:
+            shortcut_info: Raw shortcut dictionary from the runtime config.
+            metadata: Package metadata for the package being installed.
+
+        Returns:
+            ``(True, None)`` on success; otherwise ``(False, error_message)``.
+        """
+
         try:
             prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
 
             def esc(value: str) -> str:
+                """Escape single quotes for PowerShell single-quoted strings.
+
+                Args:
+                    value: Text that will be embedded in a PowerShell literal.
+
+                Returns:
+                    The same text with single quotes doubled.
+                """
+
                 return value.replace("'", "''")
 
             shortcut_path_text = esc(str(prepared.shortcut_path))
@@ -2333,26 +1774,48 @@ $Shortcut.Save()
             error_text = (result.stderr or result.stdout or "unknown PowerShell shortcut error").strip()
             print(f"SHORTCUT PowerShell error: {error_text}")
             return False, f"Failed to create shortcut '{prepared.name}': {error_text}"
-        except Exception as e:
+        except Exception as exc:
             name = shortcut_info.get("name", "unknown")
-            print(f"SHORTCUT error creating {name}: {e}")
-            return False, f"Failed to create shortcut '{name}': {e}"
+            print(f"SHORTCUT error creating {name}: {exc}")
+            return False, f"Failed to create shortcut '{name}': {exc}"
 
     @staticmethod
     def create_shortcut(
         shortcut_info: Dict[str, str],
-        metadata: PackageMetadata,
+        metadata: "PackageMetadata",
         backend: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """Create a Windows shortcut (.lnk)."""
+        """Create a single ``.lnk`` shortcut.
+
+        Args:
+            shortcut_info: Raw shortcut dictionary from the runtime config.
+            metadata: Package metadata for the package being installed.
+            backend: Explicit backend override. When omitted, the preferred
+                runtime backend is selected automatically.
+
+        Returns:
+            ``(True, None)`` on success; otherwise ``(False, error_message)``.
+        """
+
         backend = backend or get_shortcut_backend()
         if backend == "pywin32":
             return ShortcutInstaller._create_shortcut_with_pywin32(shortcut_info, metadata)
         return ShortcutInstaller._create_shortcut_with_powershell(shortcut_info, metadata)
 
     @staticmethod
-    def install_shortcuts(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
-        """Install all shortcuts defined in ``metadata.shortcut`` and aggregate failures."""
+    def install_shortcuts(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+        """Install every shortcut declared by a package.
+
+        Args:
+            metadata: Package metadata whose ``shortcut`` field contains the
+                shortcut declarations.
+            reporter: Optional reporter used for user-visible warnings and
+                errors.
+
+        Returns:
+            A :class:`StepResult` summarizing the shortcut step.
+        """
+
         reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         if not metadata.shortcut:
@@ -2378,11 +1841,19 @@ $Shortcut.Save()
 
 
 class EnvironmentVariableManager:
-    """Set environment variables in the Windows registry."""
+    """Write environment variables to the Windows registry."""
 
     @staticmethod
     def _get_registry_key(scope: Scope) -> Tuple[int, str]:
-        """Return ``(root_hkey, subkey)`` appropriate for the scope."""
+        """Return the registry location used for environment updates.
+
+        Args:
+            scope: Target installation scope.
+
+        Returns:
+            A tuple ``(root_hkey, subkey)``.
+        """
+
         reg = require_winreg()
         if scope == Scope.USER:
             return reg.HKEY_CURRENT_USER, r"Environment"
@@ -2390,24 +1861,23 @@ class EnvironmentVariableManager:
 
     @staticmethod
     def broadcast_environment_change() -> None:
-        """Broadcast an environment-change notification (WM_SETTINGCHANGE).
+        """Notify Windows that environment values changed.
 
-        Writing environment values to the registry does not immediately update
-        existing processes. Broadcasting improves the odds that new shells and
-        some listeners observe updated variables without requiring logoff.
-
-        This is best-effort: failures are reported as warnings.
+        Returns:
+            ``None``. Failures are reported to stdout as warnings because the
+            registry write may still have succeeded.
         """
+
         try:
             import ctypes
             from ctypes import wintypes
 
-            HWND_BROADCAST = 0xFFFF
-            WM_SETTINGCHANGE = 0x001A
-            SMTO_ABORTIFHUNG = 0x0002
+            hwnd_broadcast = 0xFFFF
+            wm_settingchange = 0x001A
+            smto_abortifhung = 0x0002
 
-            SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
-            SendMessageTimeoutW.argtypes = [
+            send_message_timeout = ctypes.windll.user32.SendMessageTimeoutW
+            send_message_timeout.argtypes = [
                 wintypes.HWND,
                 wintypes.UINT,
                 wintypes.WPARAM,
@@ -2416,38 +1886,37 @@ class EnvironmentVariableManager:
                 wintypes.UINT,
                 ctypes.POINTER(wintypes.ULONG_PTR),
             ]
-            SendMessageTimeoutW.restype = wintypes.LPARAM
+            send_message_timeout.restype = wintypes.LPARAM
 
             result = wintypes.ULONG_PTR(0)
-            ok = SendMessageTimeoutW(
-                HWND_BROADCAST,
-                WM_SETTINGCHANGE,
+            ok = send_message_timeout(
+                hwnd_broadcast,
+                wm_settingchange,
                 0,
                 ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
-                SMTO_ABORTIFHUNG,
+                smto_abortifhung,
                 5000,
                 ctypes.byref(result),
             )
             if not ok:
                 raise OSError("SendMessageTimeoutW failed")
-        except Exception as e:
-            print(f"Warning: failed to broadcast environment change notification: {e}")
+        except Exception as exc:
+            print(f"Warning: failed to broadcast environment change notification: {exc}")
 
     @staticmethod
     def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
-        """Set an environment variable in the registry.
+        """Set one environment variable in the Windows registry.
 
         Args:
             name: Variable name.
             value: Variable value.
-            scope: User or Machine scope.
-            expand: If True, write as ``REG_EXPAND_SZ`` (so references like
-                ``%SystemRoot%`` are expandable); otherwise ``REG_SZ``.
+            scope: Target installation scope.
+            expand: Whether to store the value as ``REG_EXPAND_SZ``.
 
         Returns:
-            True on success; False on failure (including permissions errors).
-
+            ``True`` on success; ``False`` on failure.
         """
+
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
             reg = require_winreg()
@@ -2462,13 +1931,24 @@ class EnvironmentVariableManager:
         except PermissionError:
             print(f"ERROR: Insufficient permissions to set {scope.value} environment variable: {name}")
             return False
-        except Exception as e:
-            print(f"ENVIRONMENT error setting {name}: {e}")
+        except Exception as exc:
+            print(f"ENVIRONMENT error setting {name}: {exc}")
             return False
 
     @staticmethod
-    def install_environment_variables(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
-        """Install all environment variables defined in configuration and aggregate failures."""
+    def install_environment_variables(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+        """Install every environment variable declared by a package.
+
+        Args:
+            metadata: Package metadata whose ``environment`` field contains the
+                variable declarations.
+            reporter: Optional reporter used for user-visible warnings and
+                errors.
+
+        Returns:
+            A :class:`StepResult` summarizing the environment-variable step.
+        """
+
         reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         for env_var in metadata.environment:
@@ -2505,39 +1985,41 @@ class PATHManager:
     """Read and update the registry-backed PATH value."""
 
     @staticmethod
-    def _path_key(p: str) -> str:
-        """Return a normalized comparison key for PATH de-duplication.
+    def _path_key(path_value: str) -> str:
+        """Normalize a PATH entry for de-duplication.
 
-        Windows paths are case-insensitive and tolerate mixed separators.
-        We normalize for comparisons while preserving original formatting in the
-        stored PATH where possible.
+        Args:
+            path_value: Original PATH entry.
+
+        Returns:
+            A normalized, case-insensitive comparison key.
         """
-        # normpath collapses \ and /; normcase lowercases on Windows.
-        key = os.path.normcase(os.path.normpath(p))
+
+        key = os.path.normcase(os.path.normpath(path_value))
         return key.rstrip("\\/")
 
     @staticmethod
     def get_current_path(scope: Scope) -> List[str]:
-        """Read the current PATH entries from the registry.
+        """Read PATH entries from the Windows registry.
 
         Args:
-            scope: User or Machine scope.
+            scope: Installation scope whose PATH should be read.
 
         Returns:
-            A list of PATH entries (strings). Missing/empty PATH returns [].
-
+            A list of PATH components. Missing values return an empty list.
         """
+
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
             reg = require_winreg()
             with reg.OpenKey(root, subkey, 0, reg.KEY_READ) as key:
                 value, reg_type = reg.QueryValueEx(key, "Path")
                 if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
-                    return [p.strip() for p in value.split(";") if p.strip()]
+                    return [item.strip() for item in value.split(";") if item.strip()]
         except FileNotFoundError:
             pass
-        except Exception as e:
-            print(f"PATH error reading {scope.value} PATH: {e}")
+        except Exception as exc:
+            print(f"PATH error reading {scope.value} PATH: {exc}")
 
         return []
 
@@ -2546,13 +2028,13 @@ class PATHManager:
         """Write PATH entries to the registry.
 
         Args:
-            path_entries: List of PATH components.
-            scope: User or Machine scope.
+            path_entries: Ordered PATH components to store.
+            scope: Installation scope whose PATH should be updated.
 
         Returns:
-            True on success; False on failure.
-
+            ``True`` on success; otherwise ``False``.
         """
+
         try:
             path_value = ";".join(path_entries)
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
@@ -2564,13 +2046,25 @@ class PATHManager:
         except PermissionError:
             print(f"ERROR: Insufficient permissions to set {scope.value} PATH")
             return False
-        except Exception as e:
-            print(f"PATH error setting {scope.value} PATH: {e}")
+        except Exception as exc:
+            print(f"PATH error setting {scope.value} PATH: {exc}")
             return False
 
     @staticmethod
-    def add_to_path(new_entries: List[str], metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
-        """Append directories to PATH, avoiding duplicates and surfacing failures."""
+    def add_to_path(new_entries: List[str], metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+        """Append directories to PATH while avoiding duplicates.
+
+        Args:
+            new_entries: Candidate directories to add.
+            metadata: Package metadata used for variable expansion and scope
+                selection.
+            reporter: Optional reporter used for user-visible warnings and
+                errors.
+
+        Returns:
+            A :class:`StepResult` summarizing the PATH update.
+        """
+
         reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         valid_entries: List[str] = []
@@ -2608,7 +2102,7 @@ class PATHManager:
 
         current_path = PATHManager.get_current_path(metadata.scope)
         updated_path = current_path.copy()
-        existing_keys = {PATHManager._path_key(p) for p in current_path if p}
+        existing_keys = {PATHManager._path_key(item) for item in current_path if item}
         added_entries: List[str] = []
 
         for entry in valid_entries:
@@ -2634,15 +2128,30 @@ class PATHManager:
 
     @staticmethod
     def _system_drive_root() -> str:
-        """Return a system drive root like ``C:\\``."""
+        """Return the system drive root, defaulting to ``C:\\``.
+
+        Returns:
+            A drive-root string ending with a trailing backslash.
+        """
+
         system_drive = os.environ.get("SYSTEMDRIVE", "C:")
         if not system_drive.endswith("\\"):
             system_drive += "\\"
         return system_drive
 
     @staticmethod
-    def ensure_bin_in_path(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
-        """Ensure the per-scope bin directory exists and is on PATH."""
+    def ensure_bin_in_path(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+        """Ensure the per-scope ``bin`` directory exists and is on PATH.
+
+        Args:
+            metadata: Package metadata that determines the target scope.
+            reporter: Optional reporter used for user-visible warnings and
+                errors.
+
+        Returns:
+            A :class:`StepResult` summarizing the bin-directory and PATH work.
+        """
+
         reporter = reporter or Reporter()
         scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
         metadata.scope_paths = scope_paths
@@ -2653,13 +2162,13 @@ class PATHManager:
             existed_before = bin_dir.exists()
             bin_dir.mkdir(parents=True, exist_ok=True)
             changed = not existed_before
-        except OSError as e:
-            return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {e}"])
+        except OSError as exc:
+            return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"])
 
         current_path = PATHManager.get_current_path(metadata.scope)
         bin_dir_str = str(bin_dir)
         bin_key = PATHManager._path_key(bin_dir_str)
-        current_keys = {PATHManager._path_key(p) for p in current_path if p}
+        current_keys = {PATHManager._path_key(item) for item in current_path if item}
         if bin_key not in current_keys:
             path_result = PATHManager.add_to_path([bin_dir_str], metadata, reporter=reporter)
             path_result.changed = path_result.changed or changed
@@ -2669,18 +2178,37 @@ class PATHManager:
 
 
 class BinFileCreator:
-    """Create executable wrapper files in the per-scope ``bin`` directory."""
+    """Create wrapper files inside the per-scope ``bin`` directory."""
 
     @staticmethod
     def get_bin_dir(scope: Scope) -> Path:
-        """Return the bin directory for a given scope."""
+        """Return the scope-specific ``bin`` directory.
+
+        Args:
+            scope: Installation scope for which to compute the bin directory.
+
+        Returns:
+            The path to the user or machine bin directory.
+        """
+
         if scope == Scope.USER:
             return Path.home() / "bin"
         return Path(PATHManager._system_drive_root()) / "bin"
 
     @staticmethod
-    def create_wrapper(wrapper_info: Dict[str, str], metadata: PackageMetadata) -> Tuple[bool, Optional[str]]:
-        """Create a wrapper file in the bin directory."""
+    def create_wrapper(wrapper_info: Dict[str, str], metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
+        """Create one wrapper file.
+
+        Args:
+            wrapper_info: Raw wrapper dictionary from the runtime config.
+            metadata: Package metadata for the package being installed.
+
+        Returns:
+            ``(True, None)`` when the wrapper changed, ``(True, "unchanged")``
+            when it was already up to date, or ``(False, error_message)`` on
+            failure.
+        """
+
         try:
             raw_name = str(wrapper_info.get("name", "") or "")
             raw_content = str(wrapper_info.get("content", "") or "")
@@ -2709,13 +2237,13 @@ class BinFileCreator:
             wrapper_path = bin_dir / expanded_name
             wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
-            ext = wrapper_path.suffix.lower()
-            if ext in (".cmd", ".bat"):
+            extension = wrapper_path.suffix.lower()
+            if extension in (".cmd", ".bat"):
                 try:
                     desired_bytes = expanded_content.encode("ascii")
                 except UnicodeEncodeError:
                     print(
-                        f"Warning: non-ASCII content in {ext} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+                        f"Warning: non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
                     )
                     desired_bytes = expanded_content.encode("utf-8-sig")
             else:
@@ -2735,14 +2263,25 @@ class BinFileCreator:
             print(f"BIN: {action}: {wrapper_path}")
             return True, None
 
-        except Exception as e:
+        except Exception as exc:
             name = wrapper_info.get("name", "unknown")
-            print(f"BIN error creating {name}: {e}")
-            return False, f"Failed to create wrapper '{name}': {e}"
+            print(f"BIN error creating {name}: {exc}")
+            return False, f"Failed to create wrapper '{name}': {exc}"
 
     @staticmethod
-    def install_wrappers(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
-        """Install all wrapper files defined in ``metadata.bin`` and aggregate failures."""
+    def install_wrappers(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+        """Install every wrapper declared by a package.
+
+        Args:
+            metadata: Package metadata whose ``bin`` field contains wrapper
+                declarations.
+            reporter: Optional reporter used for user-visible warnings and
+                errors.
+
+        Returns:
+            A :class:`StepResult` summarizing the wrapper-install step.
+        """
+
         reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         for wrapper_info in metadata.bin:
@@ -2758,7 +2297,17 @@ class BinFileCreator:
         return result
 
 
-def install_shortcuts_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+def install_shortcuts_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+    """Run the shortcut-install step for one package.
+
+    Args:
+        metadata: Package metadata to install.
+        context: Shared install context.
+
+    Returns:
+        A :class:`StepResult` describing the shortcut step outcome.
+    """
+
     if not metadata.shortcut:
         return StepResult(ok=True, changed=False)
     context.reporter.info("")
@@ -2766,7 +2315,17 @@ def install_shortcuts_step(metadata: PackageMetadata, context: InstallContext) -
     return ShortcutInstaller.install_shortcuts(metadata, reporter=context.reporter)
 
 
-def install_environment_variables_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+def install_environment_variables_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+    """Run the environment-variable step for one package.
+
+    Args:
+        metadata: Package metadata to install.
+        context: Shared install context.
+
+    Returns:
+        A :class:`StepResult` describing the environment-variable step outcome.
+    """
+
     if not metadata.environment:
         return StepResult(ok=True, changed=False)
     context.reporter.info("")
@@ -2774,19 +2333,49 @@ def install_environment_variables_step(metadata: PackageMetadata, context: Insta
     return EnvironmentVariableManager.install_environment_variables(metadata, reporter=context.reporter)
 
 
-def ensure_bin_in_path_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+def ensure_bin_in_path_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+    """Run the scope ``bin`` directory/PATH bootstrap step.
+
+    Args:
+        metadata: Package metadata to install.
+        context: Shared install context.
+
+    Returns:
+        A :class:`StepResult` describing the bin-directory/PATH step outcome.
+    """
+
     context.reporter.info("")
     context.reporter.info("Managing PATH...")
     return PATHManager.ensure_bin_in_path(metadata, reporter=context.reporter)
 
 
-def install_extra_path_entries_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+def install_extra_path_entries_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+    """Run the package-specific extra PATH entry step.
+
+    Args:
+        metadata: Package metadata to install.
+        context: Shared install context.
+
+    Returns:
+        A :class:`StepResult` describing the extra PATH entry step outcome.
+    """
+
     if not metadata.path:
         return StepResult(ok=True, changed=False)
     return PATHManager.add_to_path(metadata.path, metadata, reporter=context.reporter)
 
 
-def install_wrappers_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+def install_wrappers_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+    """Run the wrapper-install step for one package.
+
+    Args:
+        metadata: Package metadata to install.
+        context: Shared install context.
+
+    Returns:
+        A :class:`StepResult` describing the wrapper step outcome.
+    """
+
     if not metadata.bin:
         return StepResult(ok=True, changed=False)
     context.reporter.info("")
@@ -2794,21 +2383,1221 @@ def install_wrappers_step(metadata: PackageMetadata, context: InstallContext) ->
     return BinFileCreator.install_wrappers(metadata, reporter=context.reporter)
 
 
-INSTALL_STEPS = [
+INSTALL_STEPS: Tuple[InstallStep, ...] = (
     install_shortcuts_step,
     install_environment_variables_step,
     ensure_bin_in_path_step,
     install_extra_path_entries_step,
     install_wrappers_step,
-]
+)
 
 
-# =============================================================================
-# Orchestration
-# =============================================================================
+class WindowsPlatform:
+    """Facade that owns all Windows-specific side effects.
+
+    The package-management layer depends on this class rather than directly on
+    ``winreg``, COM automation, or junction-manipulation details. This keeps the
+    Windows boundary explicit and easy to discover.
+    """
+
+    junction_manager = JunctionManager
+    shortcut_installer = ShortcutInstaller
+    environment_manager = EnvironmentVariableManager
+    path_manager = PATHManager
+    bin_creator = BinFileCreator
+
+    def resolve_input_path(self, raw_path: Path) -> ResolvedInput:
+        """Delegate path resolution to :func:`resolve_input_path`.
+
+        Args:
+            raw_path: User-supplied package path.
+
+        Returns:
+            A :class:`ResolvedInput` describing the chosen version directory.
+        """
+
+        return resolve_input_path(raw_path)
+
+    def compute_scope_paths(self, scope: Scope) -> ScopePaths:
+        """Delegate scope-path resolution to :func:`compute_scope_paths`.
+
+        Args:
+            scope: Installation scope whose paths should be resolved.
+
+        Returns:
+            A :class:`ScopePaths` object.
+        """
+
+        return compute_scope_paths(scope)
+
+    def is_admin(self) -> bool:
+        """Return whether the current process has Administrator privileges.
+
+        Returns:
+            ``True`` when the current process is elevated; otherwise ``False``.
+        """
+
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def pause_if_requested(self, pause: bool) -> None:
+        """Pause for a keypress when requested by the CLI.
+
+        Args:
+            pause: Whether the pause should happen.
+        """
+
+        if not pause:
+            return
+        print()
+        print("Press any key to continue...")
+        try:
+            import msvcrt
+
+            msvcrt.getch()
+        except ImportError:
+            input("Press Enter to continue...")
+
+    def update_current_junction_if_needed(self, metadata: "PackageMetadata", *, force: bool = False) -> bool:
+        """Delegate junction updates to :class:`JunctionManager`.
+
+        Args:
+            metadata: Package metadata describing the version being installed.
+            force: Whether downgrades/reinstalls should be allowed.
+
+        Returns:
+            ``True`` when ``current`` changed.
+        """
+
+        return self.junction_manager.update_current_junction_if_needed(metadata, force=force)
+
+    def install_steps(self) -> Tuple[InstallStep, ...]:
+        """Return the ordered install-step pipeline.
+
+        Returns:
+            Tuple of step callables to execute for an install action.
+        """
+
+        return INSTALL_STEPS
+
+
+DEFAULT_PLATFORM = WindowsPlatform()
+
+
+def pause_if_requested(pause: bool) -> None:
+    """Pause for a keypress using the default Windows platform facade.
+
+    Args:
+        pause: Whether the pause should happen.
+    """
+
+    DEFAULT_PLATFORM.pause_if_requested(pause)
+
+
+#------------------------------------------
+# Section: Package-management logic and CLI
+#------------------------------------------
+import argparse
+import json
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+EXTENDED_HELP = r"""
+Extended help
+-------------
+
+Quick start
+~~~~~~~~~~~
+
+Notes:
+  - ``pkg --help`` and ``pkg --version`` do not install dependencies or write files.
+  - ``Install`` does not auto-create ``pkg.toml``.
+  - ``UpdateConfig`` preserves comments, unknown keys, and existing TOML structure when updating an existing file.
+  - Architecture and developer docs live in ``docs/architecture.md`` and ``docs/api.md``.
+
+Run the tool from inside a *version directory*:
+
+  pkg                 # installs from the current working directory
+
+Or pass a path to a version directory:
+
+  pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
+
+You may also pass the *package root* (the directory that contains ``current``);
+in that case the tool installs from the ``current`` junction:
+
+  pkg C:\opt\pkgs\Ripgrep
+
+Scopes
+~~~~~~
+
+User scope:
+  - shortcuts: %APPDATA%\Microsoft\Windows\Start Menu\opt
+  - PATH/env:  HKCU\Environment
+  - bin dir:   %USERPROFILE%\bin
+
+Machine scope (requires admin):
+  - shortcuts: %PROGRAMDATA%\Microsoft\Windows\Start Menu\opt
+  - PATH/env:  HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment
+  - bin dir:   <SYSTEMDRIVE>\bin
+
+Config keys and examples
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+1) Shortcuts (``shortcut`` list)
+   Supported keys:
+
+   - ``name`` (required): file name without extension or with ``.lnk``
+   - ``targetPath`` (required; alias: ``path``): executable path
+   - ``arguments`` (optional)
+   - ``workingDirectory`` (optional)
+   - ``iconLocation`` (optional): e.g. ``C:\path\icon.ico,0``
+   - ``description`` (optional)
+
+2) Environment variables (``environment`` list)
+   Canonical keys are ``Name`` and ``Value``.
+
+3) PATH additions (``path`` list)
+   Use repeated ``[[path]]`` tables or a list-like internal representation.
+
+4) Bin wrappers (``bin`` list)
+   Each entry has ``name`` and ``content``. Wrapper content uses the script
+   expansion mode so PowerShell variables such as ``$PSScriptRoot`` remain
+   literal unless they are package variables.
+
+Variable expansion
+~~~~~~~~~~~~~~~~~~
+
+- ``$App``, ``$Icons``, and ``$Shortcuts`` expand everywhere.
+- ``${VAR}`` expands everywhere and must resolve.
+- plain ``$VAR`` expands only in general config fields.
+- plain ``$VAR`` remains literal inside wrapper content.
+"""
+
+TOP_LEVEL_CONFIG_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "version": "version",
+    "localversion": "localVersion",
+    "local_version": "localVersion",
+    "description": "description",
+    "homepage": "homepage",
+    "downloadurl": "downloadURL",
+    "download_url": "downloadURL",
+    "environment": "environment",
+    "env": "environment",
+    "bin": "bin",
+    "path": "path",
+    "shortcut": "shortcut",
+    "shortcuts": "shortcut",
+    "only_portable": "only_portable",
+    "onlyportable": "only_portable",
+    "portable": "only_portable",
+    "main": "main",
+}
+MAIN_TABLE_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "version": "version",
+    "localversion": "localVersion",
+    "local_version": "localVersion",
+    "description": "description",
+    "homepage": "homepage",
+    "downloadurl": "downloadURL",
+    "download_url": "downloadURL",
+    "only_portable": "only_portable",
+    "onlyportable": "only_portable",
+    "portable": "portable",
+}
+ENVIRONMENT_KEY_ALIASES: Dict[str, str] = {"name": "Name", "value": "Value"}
+BIN_KEY_ALIASES: Dict[str, str] = {"name": "name", "content": "content"}
+SHORTCUT_KEY_ALIASES: Dict[str, str] = {
+    "name": "name",
+    "targetpath": "targetPath",
+    "target_path": "targetPath",
+    "path": "targetPath",
+    "arguments": "arguments",
+    "args": "arguments",
+    "workingdirectory": "workingDirectory",
+    "working_directory": "workingDirectory",
+    "workdir": "workingDirectory",
+    "iconlocation": "iconLocation",
+    "icon_location": "iconLocation",
+    "description": "description",
+    "desc": "description",
+}
+PATH_ENTRY_KEY_ALIASES: Dict[str, str] = {"value": "value", "path": "value"}
+CONFIG_LIST_FIELDS = ("environment", "bin", "path", "shortcut")
+OWNED_METADATA_FIELDS = ("name", "version", "localVersion", "only_portable")
+OWNED_METADATA_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "name": ("name",),
+    "version": ("version",),
+    "localVersion": ("localVersion", "localversion", "local_version"),
+    "only_portable": ("only_portable", "onlyportable", "portable"),
+}
+
+
+def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConfig:
+    """Normalize raw config data into the runtime model.
+
+    Args:
+        raw: Parsed TOML data or ``None``.
+        identity: Directory-derived package identity used to supply defaults.
+
+    Returns:
+        A fully normalized :class:`PackageConfig` object.
+
+    Raises:
+        ConfigValidationError: If *raw* is not a mapping or contains invalid
+            structures.
+    """
+
+    default_data: Dict[str, Any] = {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "description": None,
+        "homepage": None,
+        "downloadURL": None,
+        "environment": [],
+        "bin": [],
+        "path": [],
+        "shortcut": [],
+        "only_portable": identity.only_portable_by_name,
+    }
+    merged = dict(default_data)
+    if raw is not None:
+        if not isinstance(raw, dict):
+            raise ConfigValidationError(f"Configuration must be a dict, got: {type(raw).__name__}")
+        merged.update(PackageMetadata._canonicalize_config_dict(dict(raw)))
+    normalized = PackageMetadata._canonicalize_config_dict(merged)
+    return PackageConfig(
+        description=normalized.get("description"),
+        homepage=normalized.get("homepage"),
+        download_url=normalized.get("downloadURL"),
+        only_portable=bool(normalized.get("only_portable", identity.only_portable_by_name)),
+        environment=[
+            EnvVarSpec(name=str(item.get("Name", "")), value=str(item.get("Value", "")))
+            for item in normalized.get("environment", [])
+        ],
+        shortcut=[
+            ShortcutSpec(
+                name=str(item.get("name", "")),
+                target_path=str(item.get("targetPath", "")),
+                arguments=str(item.get("arguments", "")),
+                working_directory=str(item.get("workingDirectory", "")),
+                icon_location=str(item.get("iconLocation", "")),
+                description=str(item.get("description", "")),
+            )
+            for item in normalized.get("shortcut", [])
+        ],
+        path=[str(item) for item in normalized.get("path", [])],
+        bin=[
+            BinSpec(name=str(item.get("name", "")), content=str(item.get("content", "")))
+            for item in normalized.get("bin", [])
+        ],
+    )
+
+
+def validate_runtime_config(config: PackageConfig) -> None:
+    """Validate required fields in a normalized runtime config.
+
+    Args:
+        config: Runtime config to validate.
+
+    Raises:
+        ConfigValidationError: If required fields are missing.
+    """
+
+    errors: List[str] = []
+    for index, shortcut in enumerate(config.shortcut):
+        missing = []
+        if not shortcut.name.strip():
+            missing.append("name")
+        if not shortcut.target_path.strip():
+            missing.append("targetPath")
+        if missing:
+            errors.append(f"shortcut[{index}] missing required key(s): {', '.join(missing)}")
+    for index, env in enumerate(config.environment):
+        missing = []
+        if not env.name.strip():
+            missing.append("Name")
+        if env.value == "":
+            missing.append("Value")
+        if missing:
+            errors.append(f"environment[{index}] missing required key(s): {', '.join(missing)}")
+    for index, wrapper in enumerate(config.bin):
+        missing = []
+        if not wrapper.name.strip():
+            missing.append("name")
+        if wrapper.content == "":
+            missing.append("content")
+        if missing:
+            errors.append(f"bin[{index}] missing required key(s): {', '.join(missing)}")
+    if errors:
+        joined = "\n  - " + "\n  - ".join(errors)
+        raise ConfigValidationError(f"Invalid configuration:{joined}")
+
+
+def package_config_to_dict(config: PackageConfig, identity: PackageIdentity) -> Dict[str, Any]:
+    """Convert a runtime config back to a plain dictionary.
+
+    Args:
+        config: Normalized runtime config.
+        identity: Package identity that supplies owned metadata fields.
+
+    Returns:
+        A plain-Python dictionary equivalent of *config*.
+    """
+
+    return {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "description": config.description,
+        "homepage": config.homepage,
+        "downloadURL": config.download_url,
+        "only_portable": config.only_portable,
+        "environment": [{"Name": item.name, "Value": item.value} for item in config.environment],
+        "shortcut": [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ],
+        "path": list(config.path),
+        "bin": [{"name": item.name, "content": item.content} for item in config.bin],
+    }
+
+
+def check_metadata_consistency(identity: PackageIdentity, raw_or_config: Any) -> List[str]:
+    """Compare directory-derived metadata with configuration metadata.
+
+    Args:
+        identity: Package identity derived from the directory layout.
+        raw_or_config: Either a normalized :class:`PackageConfig` or a raw config
+            dictionary.
+
+    Returns:
+        A list of human-readable mismatch descriptions. The list is empty when
+        the metadata is consistent.
+
+    Raises:
+        TypeError: If *raw_or_config* is neither a :class:`PackageConfig` nor a
+            dictionary.
+    """
+
+    if isinstance(raw_or_config, PackageConfig):
+        data = {
+            "name": identity.name,
+            "version": identity.version,
+            "localVersion": identity.local_version,
+            "only_portable": raw_or_config.only_portable,
+        }
+    elif isinstance(raw_or_config, dict):
+        data = PackageMetadata._canonicalize_config_dict(dict(raw_or_config))
+    else:
+        raise TypeError("raw_or_config must be a PackageConfig or dict")
+
+    inconsistencies: List[str] = []
+    if "name" in data and data.get("name") not in (None, "") and str(data.get("name")) != identity.name:
+        inconsistencies.append(f"Name mismatch: directory='{identity.name}', config='{data.get('name')}'")
+    if "version" in data and data.get("version") not in (None, "") and str(data.get("version")) != identity.version:
+        inconsistencies.append(f"Version mismatch: directory='{identity.version}', config='{data.get('version')}'")
+    if "localVersion" in data and data.get("localVersion") not in (None, "") and str(data.get("localVersion")) != str(identity.local_version):
+        inconsistencies.append(
+            f"LocalVersion mismatch: directory='{identity.local_version}', config='{data.get('localVersion')}'"
+        )
+    if "only_portable" in data and data.get("only_portable") is not None and bool(data.get("only_portable")) != identity.only_portable_by_name:
+        inconsistencies.append(
+            f"Portable flag mismatch: directory='{identity.only_portable_by_name}', config='{bool(data.get('only_portable'))}'"
+        )
+    return inconsistencies
+
+
+def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[PackageConfig, Dict[str, Any], List[str]]:
+    """Read and validate ``pkg.toml`` for one package version.
+
+    Args:
+        identity: Package identity whose ``pkg.toml`` should be loaded.
+        use_defaults: Whether to fall back to defaults when parsing or
+            validation fails.
+
+    Returns:
+        A tuple ``(runtime_config, raw_dict, warnings)``.
+
+    Raises:
+        DependencyError: If a TOML reader is required but unavailable and
+            *use_defaults* is ``False``.
+        ConfigValidationError: If the config is invalid and *use_defaults* is
+            ``False``.
+        RuntimeError: If the config cannot be read and *use_defaults* is
+            ``False``.
+    """
+
+    warnings: List[str] = []
+    toml_path = identity.version_path / "pkg.toml"
+    if toml_path.exists():
+        try:
+            loaded = read_toml_file(toml_path)
+            config = normalize_runtime_config(loaded, identity)
+            validate_runtime_config(config)
+            return config, PackageMetadata._canonicalize_config_dict(dict(loaded)), warnings
+        except DependencyError:
+            if not use_defaults:
+                raise
+            warnings.append(
+                "No TOML reader is available for pkg.toml parsing. Proceeding with defaults because --use-defaults was provided."
+            )
+        except ConfigValidationError:
+            raise
+        except Exception as exc:
+            if not use_defaults:
+                raise RuntimeError(f"Error loading TOML config from {toml_path}: {exc}") from exc
+            warnings.append(f"Error loading TOML config from {toml_path}: {exc}")
+            warnings.append("Proceeding with defaults because --use-defaults was provided.")
+    config = normalize_runtime_config({}, identity)
+    validate_runtime_config(config)
+    warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
+    return config, package_config_to_dict(config, identity), warnings
+
+
+class PackageMetadata:
+    """Compatibility facade for package identity, scope, and config data."""
+
+    def __init__(self, version_path: Path, platform: Optional[WindowsPlatform] = None):
+        """Create package metadata for a concrete version directory.
+
+        Args:
+            version_path: Path pointing at a version directory, the package root,
+                or the ``current`` junction.
+            platform: Optional Windows platform facade used for path resolution
+                and scope-path calculation.
+        """
+
+        self.platform = platform or DEFAULT_PLATFORM
+        resolved = self.platform.resolve_input_path(Path(version_path))
+        self.resolved_input = resolved
+        self.identity = PackageIdentity.from_resolved_input(resolved)
+        self.input_path = resolved.raw_path
+        self.version_path = self.identity.version_path
+        self.pkg_path = self.identity.package_root
+        self.name = self.identity.name
+        self.version = self.identity.version
+        self.local_version = str(self.identity.local_version)
+        self.version_string = self.identity.version_string
+        self.is_current = self.identity.is_current
+        self.scope: Scope = Scope.USER
+        self.scope_paths: Optional[ScopePaths] = None
+        self.shortcut_dir: Path = Path()
+        self.only_portable: bool = self.identity.only_portable_by_name
+        self.description: Optional[str] = None
+        self.homepage: Optional[str] = None
+        self.download_url: Optional[str] = None
+        self.environment: List[Dict[str, str]] = []
+        self.bin: List[Dict[str, str]] = []
+        self.path: List[str] = []
+        self.shortcut: List[Dict[str, str]] = []
+        self.runtime_config: Optional[PackageConfig] = None
+
+    def _fill_from_directory(self) -> None:
+        """Compatibility no-op retained for older integrations.
+
+        Returns:
+            ``None``. The modern implementation derives all metadata eagerly in
+            :meth:`__init__`.
+        """
+
+        return None
+
+    def _fill_current(self) -> None:
+        """Compatibility no-op retained for older integrations.
+
+        Returns:
+            ``None``. Current-junction resolution now happens in the platform
+            path resolver.
+        """
+
+        return None
+
+    def check_metadata_consistency(self, config_data: Dict[str, Any]) -> List[str]:
+        """Check directory/config metadata consistency for this package.
+
+        Args:
+            config_data: Raw config dictionary to compare against the directory
+                identity.
+
+        Returns:
+            A list of mismatch descriptions.
+        """
+
+        return check_metadata_consistency(self.identity, config_data)
+
+    @staticmethod
+    def _canonicalize_dict_keys(data: Dict[str, Any], keymap: Dict[str, str], *, context: str) -> Dict[str, Any]:
+        """Canonicalize mapping keys using a case-insensitive alias map.
+
+        Args:
+            data: Source dictionary to normalize.
+            keymap: Mapping from lower-cased aliases to canonical key names.
+            context: Human-readable context string used in error messages.
+
+        Returns:
+            A new dictionary whose known keys use the canonical spelling.
+
+        Raises:
+            ConfigValidationError: If two source keys collapse to the same
+                canonical key.
+        """
+
+        out: Dict[str, Any] = {}
+        seen_from: Dict[str, str] = {}
+
+        for key, value in data.items():
+            key_text = str(key)
+            canonical = keymap.get(key_text.lower(), key_text)
+
+            if canonical in out and seen_from.get(canonical) != key_text:
+                raise ConfigValidationError(
+                    f"Duplicate keys differing only by case/alias in {context}: "
+                    f"'{seen_from.get(canonical)}' and '{key_text}' both map to '{canonical}'."
+                )
+
+            out[canonical] = value
+            seen_from[canonical] = key_text
+
+        return out
+
+    @staticmethod
+    def _normalize_bin_content(value: Any) -> str:
+        """Normalize wrapper content so escaped newlines become real newlines.
+
+        Args:
+            value: Raw wrapper content value from the config.
+
+        Returns:
+            Wrapper content with ``\n`` and ``\r\n`` escapes expanded when the
+            source contains no actual newline characters.
+        """
+
+        text = str(value or "")
+        if "\n" in text:
+            return text
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+    @staticmethod
+    def _canonicalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Canonicalize supported config keys and normalize field shapes.
+
+        Args:
+            data: Raw configuration dictionary.
+
+        Returns:
+            A normalized dictionary whose keys use canonical spellings and whose
+            list-like fields use predictable shapes.
+
+        Raises:
+            ConfigValidationError: If the config structure is invalid.
+        """
+
+        if not isinstance(data, dict):
+            raise ConfigValidationError(f"Configuration must be a dict, got: {type(data).__name__}")
+
+        out = PackageMetadata._canonicalize_dict_keys(
+            data,
+            TOP_LEVEL_CONFIG_KEY_ALIASES,
+            context="config",
+        )
+
+        main_block = out.pop("main", None)
+        if main_block is not None:
+            if not isinstance(main_block, list):
+                raise ConfigValidationError(f"'main' must be a list, got: {type(main_block).__name__}")
+            if len(main_block) > 1:
+                raise ConfigValidationError("'main' must contain a single table")
+            if len(main_block) == 1:
+                if not isinstance(main_block[0], dict):
+                    raise ConfigValidationError(
+                        f"'main[0]' must be a dict, got: {type(main_block[0]).__name__}"
+                    )
+                normalized_main = PackageMetadata._canonicalize_dict_keys(
+                    main_block[0],
+                    MAIN_TABLE_KEY_ALIASES,
+                    context="main[0]",
+                )
+                for key, value in normalized_main.items():
+                    out[key] = value
+
+        for field_name in CONFIG_LIST_FIELDS:
+            if out.get(field_name, None) is None:
+                out[field_name] = []
+
+        if isinstance(out.get("path", None), str):
+            out["path"] = [out["path"]]
+        elif not isinstance(out.get("path", []), list):
+            raise ConfigValidationError(
+                f"'path' must be a list of strings or [[path]] tables, got: {type(out['path']).__name__}"
+            )
+
+        def canonicalize_block(block_name: str, keymap: Dict[str, str]) -> List[Dict[str, Any]]:
+            """Canonicalize one list-of-dicts block.
+
+            Args:
+                block_name: Top-level config key being normalized.
+                keymap: Alias map for entries within the block.
+
+            Returns:
+                A list of canonicalized dictionaries.
+
+            Raises:
+                ConfigValidationError: If the block is not a list of
+                    dictionaries.
+            """
+
+            raw = out.get(block_name, [])
+            if raw is None:
+                return []
+            if not isinstance(raw, list):
+                raise ConfigValidationError(f"'{block_name}' must be a list, got: {type(raw).__name__}")
+            result: List[Dict[str, Any]] = []
+            for index, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    raise ConfigValidationError(
+                        f"'{block_name}[{index}]' must be a dict, got: {type(item).__name__}"
+                    )
+                result.append(PackageMetadata._canonicalize_dict_keys(item, keymap, context=f"{block_name}[{index}]"))
+            return result
+
+        out["environment"] = canonicalize_block("environment", ENVIRONMENT_KEY_ALIASES)
+        out["bin"] = canonicalize_block("bin", BIN_KEY_ALIASES)
+        for wrapper in out["bin"]:
+            if "content" in wrapper:
+                wrapper["content"] = PackageMetadata._normalize_bin_content(wrapper.get("content", ""))
+        out["shortcut"] = canonicalize_block("shortcut", SHORTCUT_KEY_ALIASES)
+
+        normalized_path: List[str] = []
+        for index, entry in enumerate(out.get("path", [])):
+            if entry is None:
+                continue
+            if isinstance(entry, str):
+                normalized_path.append(entry)
+                continue
+            if isinstance(entry, dict):
+                path_item = PackageMetadata._canonicalize_dict_keys(entry, PATH_ENTRY_KEY_ALIASES, context=f"path[{index}]")
+                value = path_item.get("value", None)
+                if value is None:
+                    raise ConfigValidationError(
+                        f"'path[{index}]' table is missing required key: value (present keys: {', '.join(sorted(str(k) for k in path_item.keys()))})"
+                    )
+                if not isinstance(value, str):
+                    raise ConfigValidationError(f"'path[{index}].value' must be a string, got: {type(value).__name__}")
+                normalized_path.append(value)
+                continue
+            raise ConfigValidationError(
+                f"'path[{index}]' must be a string or a dict ([[path]] table), got: {type(entry).__name__}"
+            )
+        out["path"] = normalized_path
+
+        return out
+
+    @staticmethod
+    def _validate_config_dict(data: Dict[str, Any]) -> None:
+        """Validate required keys in raw list-of-dicts config data.
+
+        Args:
+            data: Canonicalized raw config dictionary.
+
+        Raises:
+            ConfigValidationError: If required fields are missing.
+        """
+
+        errors: List[str] = []
+
+        def keys_str(block: Dict[str, Any]) -> str:
+            """Render the keys present in one config block.
+
+            Args:
+                block: Config block dictionary.
+
+            Returns:
+                Comma-separated key list for diagnostics.
+            """
+
+            return ", ".join(sorted(str(key) for key in block.keys()))
+
+        shortcuts = data.get("shortcut", [])
+        if isinstance(shortcuts, list):
+            for index, shortcut in enumerate(shortcuts):
+                if not isinstance(shortcut, dict):
+                    errors.append(f"shortcut[{index}] must be a dict")
+                    continue
+                name = str(shortcut.get("name", "") or "").strip()
+                target = str(shortcut.get("targetPath", "") or "").strip()
+                if not name or not target:
+                    missing = []
+                    if not name:
+                        missing.append("name")
+                    if not target:
+                        missing.append("targetPath")
+                    errors.append(
+                        f"shortcut[{index}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(shortcut)})"
+                    )
+
+        envs = data.get("environment", [])
+        if isinstance(envs, list):
+            for index, env in enumerate(envs):
+                if not isinstance(env, dict):
+                    errors.append(f"environment[{index}] must be a dict")
+                    continue
+                name = str(env.get("Name", "") or "").strip()
+                value = str(env.get("Value", "") or "").strip()
+                if not name or value == "":
+                    missing = []
+                    if not name:
+                        missing.append("Name")
+                    if value == "":
+                        missing.append("Value")
+                    errors.append(
+                        f"environment[{index}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(env)})"
+                    )
+
+        bins = data.get("bin", [])
+        if isinstance(bins, list):
+            for index, wrapper in enumerate(bins):
+                if not isinstance(wrapper, dict):
+                    errors.append(f"bin[{index}] must be a dict")
+                    continue
+                name = str(wrapper.get("name", "") or "").strip()
+                content = str(wrapper.get("content", "") or "")
+                if not name or content == "":
+                    missing = []
+                    if not name:
+                        missing.append("name")
+                    if content == "":
+                        missing.append("content")
+                    errors.append(
+                        f"bin[{index}] missing required key(s): {', '.join(missing)} "
+                        f"(present keys: {keys_str(wrapper)})"
+                    )
+
+        if errors:
+            joined = "\n  - " + "\n  - ".join(errors)
+            raise ConfigValidationError(f"Invalid configuration:{joined}")
+
+    @staticmethod
+    def _to_toml_scalar(value: Any) -> str:
+        """Compatibility wrapper around :func:`_to_toml_scalar`.
+
+        Args:
+            value: Python value to render as TOML.
+
+        Returns:
+            TOML literal text.
+        """
+
+        return _to_toml_scalar(value)
+
+    def _metadata_sync_payload(self) -> Dict[str, Any]:
+        """Return the metadata fields owned by ``pkg`` for this package.
+
+        Returns:
+            Dictionary containing only the metadata fields ``pkg`` is allowed to
+            synchronize automatically.
+        """
+
+        return metadata_sync_payload(self.identity)
+
+    def _create_starter_config_text(self, data: Optional[Dict[str, Any]] = None) -> str:
+        """Return a starter ``pkg.toml`` for this package.
+
+        Args:
+            data: Compatibility parameter retained for older callers. The modern
+                implementation derives starter content from the package identity.
+
+        Returns:
+            Minimal metadata-only TOML text.
+        """
+
+        _ = data
+        return create_starter_config(self.identity)
+
+    @staticmethod
+    def _locate_metadata_container(doc: Any) -> Any:
+        """Compatibility wrapper around :func:`locate_metadata_container`.
+
+        Args:
+            doc: Parsed TOML document or fallback text document.
+
+        Returns:
+            The document object that owns package metadata fields.
+        """
+
+        return locate_metadata_container(doc)
+
+    def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
+        """Load and normalize the package runtime configuration.
+
+        Args:
+            use_defaults: Whether defaults may be used when TOML loading fails.
+
+        Returns:
+            A tuple ``(plain_config_dict, warnings)``.
+        """
+
+        config, _raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
+        self.runtime_config = config
+        self.description = config.description
+        self.homepage = config.homepage
+        self.download_url = config.download_url
+        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
+        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
+        self.path = list(config.path)
+        self.shortcut = [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ]
+        self.only_portable = config.only_portable
+        return package_config_to_dict(config, self.identity), warnings
+
+    def _load_from_dict(self, data: Dict[str, Any]) -> None:
+        """Populate the compatibility fields from a raw config dictionary.
+
+        Args:
+            data: Raw configuration dictionary.
+        """
+
+        config = normalize_runtime_config(data, self.identity)
+        validate_runtime_config(config)
+        self.runtime_config = config
+        self.description = config.description
+        self.homepage = config.homepage
+        self.download_url = config.download_url
+        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
+        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
+        self.path = list(config.path)
+        self.shortcut = [
+            {
+                "name": item.name,
+                "targetPath": item.target_path,
+                "arguments": item.arguments,
+                "workingDirectory": item.working_directory,
+                "iconLocation": item.icon_location,
+                "description": item.description,
+            }
+            for item in config.shortcut
+        ]
+        self.only_portable = config.only_portable
+
+    def update_config(self, reporter: Optional[Reporter] = None) -> StepResult:
+        """Synchronize owned metadata fields back to ``pkg.toml``.
+
+        Args:
+            reporter: Optional reporter used for user-visible progress and
+                warnings.
+
+        Returns:
+            A :class:`StepResult` describing the update.
+        """
+
+        reporter = reporter or Reporter()
+        toml_path = self.version_path / "pkg.toml"
+        json_path = self.version_path / "pkg.json"
+        warnings: List[str] = []
+
+        if toml_path.exists():
+            doc, original_text = load_config_document(toml_path)
+            changed = sync_document_metadata(doc, self.identity)
+            rendered = doc.as_string()
+            if not changed or rendered == original_text:
+                reporter.info(f"Configuration already up to date: {toml_path}")
+                result = StepResult(ok=True, changed=False)
+            else:
+                write_text_atomic(toml_path, rendered, backup=True)
+                reporter.info(f"Updated: {toml_path}")
+                result = StepResult(ok=True, changed=True)
+        else:
+            rendered = create_starter_config(self.identity)
+            write_text_atomic(toml_path, rendered, backup=False)
+            reporter.info(f"Created: {toml_path}")
+            result = StepResult(ok=True, changed=True)
+
+        if json_path.exists():
+            try:
+                json_path.unlink()
+                reporter.info(f"Removed: {json_path} (legacy config; TOML-only)")
+                result.changed = True
+            except OSError as exc:
+                warning = f"Failed to remove legacy JSON config {json_path}: {exc}"
+                reporter.warn(warning)
+                warnings.append(warning)
+
+        result.warnings.extend(warnings)
+        return result
+
+    def set_scope(self, scope: Scope) -> None:
+        """Store the install scope and precompute scope-specific paths.
+
+        Args:
+            scope: Selected installation scope.
+        """
+
+        self.scope = scope
+        self.scope_paths = self.platform.compute_scope_paths(scope)
+        self.shortcut_dir = self.scope_paths.shortcut_root
+
+
+def _to_toml_scalar(value: Any) -> str:
+    """Render a Python value as TOML literal text.
+
+    Args:
+        value: Python scalar or list value.
+
+    Returns:
+        TOML literal text representing *value*.
+    """
+
+    if value is None:
+        return '""'
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_to_toml_scalar(item) for item in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
+    """Return the directory-derived metadata owned by ``pkg``.
+
+    Args:
+        identity: Package identity whose metadata should be serialized.
+
+    Returns:
+        Dictionary containing only metadata fields that ``pkg`` owns.
+    """
+
+    return {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "only_portable": identity.only_portable_by_name,
+    }
+
+
+def load_config_document(path: Path) -> Tuple[Any, str]:
+    """Load an existing ``pkg.toml`` for metadata synchronization.
+
+    Args:
+        path: Existing TOML file path.
+
+    Returns:
+        Tuple ``(document, original_text)`` where *document* is either a
+        round-trip TOML document or a :class:`TextConfigDocument` fallback.
+
+    Raises:
+        ConfigValidationError: If the existing TOML document cannot be parsed
+            safely for updates.
+    """
+
+    original_text = path.read_text(encoding="utf-8")
+    backend = load_roundtrip_toml_backend(require=False)
+    if backend is not None:
+        try:
+            return backend.module.parse(original_text), original_text
+        except Exception as exc:
+            raise ConfigValidationError(
+                f"pkg.toml is structurally invalid and cannot be updated safely: {exc}. Edit the config manually."
+            ) from exc
+    return TextConfigDocument(original_text), original_text
+
+
+def locate_metadata_container(doc: Any) -> Any:
+    """Locate the TOML object that owns package metadata fields.
+
+    Args:
+        doc: Parsed TOML document or fallback text document.
+
+    Returns:
+        The document object or table that should be updated with owned metadata.
+
+    Raises:
+        ConfigValidationError: If an existing ``[[main]]`` section is malformed.
+    """
+
+    if isinstance(doc, TextConfigDocument):
+        return doc
+    main_block = doc.get("main", None)
+    if main_block is None:
+        return doc
+    if not isinstance(main_block, list):
+        raise ConfigValidationError(
+            "Existing pkg.toml uses a malformed [[main]] section. Edit the config manually."
+        )
+    if len(main_block) != 1:
+        raise ConfigValidationError(
+            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
+        )
+    return main_block[0]
+
+
+def _find_existing_metadata_key(container: Any, canonical_key: str) -> Optional[str]:
+    """Find the existing spelling or alias for a metadata field.
+
+    Args:
+        container: TOML mapping to search.
+        canonical_key: Canonical metadata key name.
+
+    Returns:
+        The existing key spelling to update, or ``None`` when the field is not
+        present.
+    """
+
+    aliases = {alias.lower() for alias in OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))}
+    exact_match: Optional[str] = None
+    alias_match: Optional[str] = None
+    for key in container.keys():
+        key_text = str(key)
+        key_lower = key_text.lower()
+        if key_text == canonical_key:
+            exact_match = key_text
+            break
+        if key_lower in aliases and alias_match is None:
+            alias_match = key_text
+    return exact_match or alias_match
+
+
+def _sync_text_metadata(doc: TextConfigDocument, identity: PackageIdentity) -> bool:
+    """Synchronize owned metadata directly in raw TOML text.
+
+    Args:
+        doc: Fallback text document to mutate.
+        identity: Package identity that supplies the target metadata values.
+
+    Returns:
+        ``True`` when the text changed; otherwise ``False``.
+
+    Raises:
+        ConfigValidationError: If a malformed ``[[main]]`` section prevents safe
+            updating.
+    """
+
+    text = doc.text
+    changed = False
+    metadata = metadata_sync_payload(identity)
+
+    main_matches = list(re.finditer(r'(?mi)^\s*\[\[main\]\]\s*$', text))
+    if len(main_matches) > 1:
+        raise ConfigValidationError(
+            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
+        )
+
+    if main_matches:
+        start = main_matches[0].end()
+        next_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text[start:])
+        end = start + next_table.start() if next_table else len(text)
+        container_text = text[start:end]
+        container_offset = start
+    else:
+        first_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text)
+        end = first_table.start() if first_table else len(text)
+        container_text = text[:end]
+        container_offset = 0
+
+    for canonical_key, value in metadata.items():
+        aliases = OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))
+        alias_pattern = "|".join(re.escape(alias) for alias in aliases)
+        pattern = re.compile(
+            rf'(?mi)^(?P<indent>\s*)(?P<key>{alias_pattern})\s*=\s*(?P<value>[^\n#]*)(?P<comment>\s*(?:#.*)?)$'
+        )
+        match = pattern.search(container_text)
+        rendered_value = _to_toml_scalar(value)
+        if match:
+            existing_value = match.group("value").strip()
+            if existing_value != rendered_value:
+                replacement_line = (
+                    f"{match.group('indent')}{match.group('key')} = {rendered_value}{match.group('comment')}"
+                )
+                container_text = container_text[:match.start()] + replacement_line + container_text[match.end():]
+                changed = True
+        else:
+            insertion = f"{canonical_key} = {rendered_value}\n"
+            if container_text and not container_text.endswith(("\n", "\r")):
+                container_text += "\n"
+            container_text += insertion
+            changed = True
+
+    if changed:
+        if container_offset == 0:
+            doc.text = container_text + text[end:]
+        else:
+            doc.text = text[:container_offset] + container_text + text[end:]
+    return changed
+
+
+def sync_document_metadata(doc: Any, identity: PackageIdentity) -> bool:
+    """Mutate owned metadata fields in an existing TOML document.
+
+    Args:
+        doc: Parsed TOML document or fallback text document.
+        identity: Package identity that supplies the target metadata values.
+
+    Returns:
+        ``True`` when the document changed; otherwise ``False``.
+    """
+
+    if isinstance(doc, TextConfigDocument):
+        return _sync_text_metadata(doc, identity)
+    container = locate_metadata_container(doc)
+    changed = False
+    for canonical_key, value in metadata_sync_payload(identity).items():
+        existing_key = _find_existing_metadata_key(container, canonical_key)
+        target_key = existing_key or canonical_key
+        if container.get(target_key) != value:
+            container[target_key] = value
+            changed = True
+    return changed
+
+
+def create_starter_config(identity: PackageIdentity) -> str:
+    """Create a minimal starter ``pkg.toml`` for a package.
+
+    Args:
+        identity: Package identity that supplies starter metadata values.
+
+    Returns:
+        Metadata-only TOML text with one field per line.
+    """
+
+    metadata = metadata_sync_payload(identity)
+    lines = [
+        f"name = {_to_toml_scalar(metadata['name'])}",
+        f"version = {_to_toml_scalar(metadata['version'])}",
+        f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
+        f"only_portable = {_to_toml_scalar(metadata['only_portable'])}",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
 
 class PackageManager:
-    """Orchestrate install/update operations for a package."""
+    """Orchestrate install and config-update operations for packages."""
 
     def __init__(
         self,
@@ -2818,29 +3607,48 @@ class PackageManager:
         use_defaults: bool = False,
         force: bool = False,
         no_autoupdate_config: bool = False,
+        platform: Optional[WindowsPlatform] = None,
     ):
-        """Create a :class:`PackageManager`."""
+        """Create a :class:`PackageManager`.
+
+        Args:
+            scope: Installation scope to use for mutations.
+            pause: Whether the CLI should pause before exit.
+            fix_config: Whether installs may synchronize mismatched metadata
+                automatically.
+            use_defaults: Whether installs may fall back to runtime defaults when
+                TOML loading fails.
+            force: Whether installs may replace ``current`` even when that would
+                be a downgrade or reinstall.
+            no_autoupdate_config: Deprecated compatibility flag that disables
+                automatic metadata repair during install.
+            platform: Optional Windows platform facade that performs all
+                Windows-specific work.
+        """
+
         self.scope = scope
         self.pause = pause
         self.fix_config = fix_config
         self.use_defaults = use_defaults
         self.force = force
         self.reporter = Reporter()
+        self.platform = platform or DEFAULT_PLATFORM
 
         if no_autoupdate_config:
             self.fix_config = False
 
-    def _is_admin(self) -> bool:
-        """Return True if the current process has Administrator privileges."""
-        try:
-            import ctypes
-
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
-        except Exception:
-            return False
-
     def _failure(self, message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
-        """Create a failed action result after reporting the message."""
+        """Create a failed action result and report the error.
+
+        Args:
+            message: Human-readable error message.
+            exit_code: Exit code that should be returned to the caller.
+            warnings: Optional list of already-collected warnings.
+
+        Returns:
+            An :class:`ActionResult` representing the failure.
+        """
+
         self.reporter.error(message)
         return ActionResult(
             ok=False,
@@ -2851,7 +3659,16 @@ class PackageManager:
         )
 
     def install(self, package_path: Path) -> ActionResult:
-        """Install a package and return a truthful action result."""
+        """Install a package and return a truthful action result.
+
+        Args:
+            package_path: User-supplied path to a version directory, package
+                root, or ``current`` junction.
+
+        Returns:
+            An :class:`ActionResult` describing the install outcome.
+        """
+
         self.reporter.info("")
         self.reporter.info("=" * 60)
         self.reporter.info("gurlatsev/pkg: Package Manager")
@@ -2861,19 +3678,19 @@ class PackageManager:
 
         try:
             package_path, installing_from_current = self._resolve_install_path(package_path)
-        except ValueError as e:
-            return self._failure(str(e), exit_code=EXIT_USER_ERROR)
+        except ValueError as exc:
+            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
 
         try:
-            metadata = PackageMetadata(package_path)
+            metadata = PackageMetadata(package_path, platform=self.platform)
             metadata.set_scope(self.scope)
             config_data, load_warnings = metadata.load_config(use_defaults=self.use_defaults)
-        except DependencyError as e:
-            return self._failure(str(e), exit_code=EXIT_USER_ERROR)
-        except (ConfigValidationError, RuntimeError, ValueError) as e:
-            return self._failure(f"Failed to load package metadata/config: {e}", exit_code=EXIT_USER_ERROR)
-        except OSError as e:
-            return self._failure(f"Failed to load package metadata/config: {e}", exit_code=EXIT_MUTATION_ERROR)
+        except DependencyError as exc:
+            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
+        except (ConfigValidationError, RuntimeError, ValueError) as exc:
+            return self._failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_USER_ERROR)
+        except OSError as exc:
+            return self._failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_MUTATION_ERROR)
 
         warnings = list(load_warnings)
         for warning in load_warnings:
@@ -2898,8 +3715,8 @@ class PackageManager:
         if inconsistencies:
             if not self.fix_config:
                 self.reporter.error("Configuration inconsistencies detected:")
-                for msg in inconsistencies:
-                    self.reporter.error(f"  - {msg}")
+                for message in inconsistencies:
+                    self.reporter.error(f"  - {message}")
                 self.reporter.info("Aborting installation to avoid mutating configs as a side effect.")
                 self.reporter.info("To fix the config, run one of:")
                 self.reporter.info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.version_path}")
@@ -2913,17 +3730,17 @@ class PackageManager:
                 )
 
             self.reporter.warn("Configuration inconsistencies detected:")
-            for msg in inconsistencies:
-                self.reporter.warn(f"  - {msg}")
+            for message in inconsistencies:
+                self.reporter.warn(f"  - {message}")
             self.reporter.info("--fix-config enabled: syncing configuration metadata to match directory structure...")
             try:
                 update_result = metadata.update_config(reporter=self.reporter)
-            except DependencyError as e:
-                return self._failure(str(e), exit_code=EXIT_USER_ERROR, warnings=warnings)
-            except (ConfigValidationError, RuntimeError, ValueError) as e:
-                return self._failure(f"Failed to update configuration: {e}", exit_code=EXIT_USER_ERROR, warnings=warnings)
-            except OSError as e:
-                return self._failure(f"Failed to update configuration: {e}", exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
+            except DependencyError as exc:
+                return self._failure(str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings)
+            except (ConfigValidationError, RuntimeError, ValueError) as exc:
+                return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR, warnings=warnings)
+            except OSError as exc:
+                return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
             warnings.extend(update_result.warnings)
             config_sync_changed = update_result.changed
             if not update_result.ok:
@@ -2937,7 +3754,7 @@ class PackageManager:
             self.reporter.info("Configuration updated successfully.")
             self.reporter.info("")
 
-        if self.scope == Scope.MACHINE and not self._is_admin():
+        if self.scope == Scope.MACHINE and not self.platform.is_admin():
             return self._failure(
                 "Machine scope requires administrator privileges. Please run as administrator.",
                 exit_code=EXIT_USER_ERROR,
@@ -2950,11 +3767,11 @@ class PackageManager:
         else:
             self.reporter.info("Managing 'current' junction...")
             try:
-                junction_changed = JunctionManager.update_current_junction_if_needed(metadata, force=self.force)
-            except ValueError as e:
-                return self._failure(str(e), exit_code=EXIT_USER_ERROR, warnings=warnings)
-            except Exception as e:
-                return self._failure(str(e), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
+                junction_changed = self.platform.update_current_junction_if_needed(metadata, force=self.force)
+            except ValueError as exc:
+                return self._failure(str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings)
+            except Exception as exc:
+                return self._failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
 
             if not junction_changed and not metadata.is_current:
                 self.reporter.info("Skipping component installation (newer version already installed)")
@@ -2990,24 +3807,39 @@ class PackageManager:
         )
 
     def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
-        """Resolve install input into a version directory path."""
-        resolved = resolve_input_path(package_path)
+        """Resolve an install input into a concrete version path.
+
+        Args:
+            package_path: User-supplied path to resolve.
+
+        Returns:
+            Tuple ``(version_path, installing_from_current)``.
+        """
+
+        resolved = self.platform.resolve_input_path(package_path)
         return resolved.version_path, resolved.installing_from_current
 
-
     def _install_components(self, metadata: PackageMetadata) -> StepResult:
-        """Install all components declared in config for the given package."""
+        """Run the ordered component-install pipeline for one package.
+
+        Args:
+            metadata: Package metadata describing the package being installed.
+
+        Returns:
+            Aggregated :class:`StepResult` for all component steps.
+        """
+
         context = InstallContext(
             identity=metadata.identity,
             config=metadata.runtime_config or PackageConfig(),
-            scope_paths=metadata.scope_paths or compute_scope_paths(metadata.scope),
+            scope_paths=metadata.scope_paths or self.platform.compute_scope_paths(metadata.scope),
             reporter=self.reporter,
             force=self.force,
         )
         metadata.scope_paths = context.scope_paths
 
         results: List[StepResult] = []
-        for step in INSTALL_STEPS:
+        for step in self.platform.install_steps():
             step_result = step(metadata, context)
             results.append(step_result)
 
@@ -3016,23 +3848,31 @@ class PackageManager:
 
         return combine_step_results(*results)
 
-
     def update_config(self, package_path: Path) -> ActionResult:
-        """Update ``pkg.toml`` while preserving existing structure when possible."""
+        """Synchronize ``pkg.toml`` metadata for one package.
+
+        Args:
+            package_path: User-supplied path to a version directory, package
+                root, or ``current`` junction.
+
+        Returns:
+            An :class:`ActionResult` describing the metadata-update outcome.
+        """
+
         try:
             resolved_path, _ = self._resolve_install_path(package_path)
-        except ValueError as e:
-            return self._failure(str(e), exit_code=EXIT_USER_ERROR)
+        except ValueError as exc:
+            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
 
         try:
-            metadata = PackageMetadata(resolved_path)
+            metadata = PackageMetadata(resolved_path, platform=self.platform)
             step_result = metadata.update_config(reporter=self.reporter)
-        except DependencyError as e:
-            return self._failure(str(e), exit_code=EXIT_USER_ERROR)
-        except (ConfigValidationError, RuntimeError, ValueError) as e:
-            return self._failure(f"Failed to update configuration: {e}", exit_code=EXIT_USER_ERROR)
-        except OSError as e:
-            return self._failure(f"Failed to update configuration: {e}", exit_code=EXIT_MUTATION_ERROR)
+        except DependencyError as exc:
+            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
+        except (ConfigValidationError, RuntimeError, ValueError) as exc:
+            return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR)
+        except OSError as exc:
+            return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR)
 
         return ActionResult(
             ok=step_result.ok,
@@ -3043,45 +3883,50 @@ class PackageManager:
         )
 
 
-
 class _ExtendedHelpAction(argparse.Action):
-    """Argparse action that prints standard help plus :data:`EXTENDED_HELP`."""
+    """Argparse action that prints standard help plus extended documentation."""
 
     def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+        """Create the extended-help argparse action.
+
+        Args:
+            option_strings: CLI flags that trigger the action.
+            dest: Argparse destination name.
+            default: Default argparse value.
+            help: Help text shown in ``--help`` output.
+        """
+
         super().__init__(option_strings=option_strings, dest=dest, default=default, nargs=0, help=help)
 
     def __call__(self, parser, namespace, values, option_string=None):
+        """Print standard and extended help, then exit.
+
+        Args:
+            parser: Active argument parser.
+            namespace: Parsed namespace (unused).
+            values: Parsed values for the option (unused).
+            option_string: Exact CLI option that triggered the action.
+        """
+
+        _ = namespace
+        _ = values
+        _ = option_string
         parser.print_help()
         print("\n" + EXTENDED_HELP.strip() + "\n")
         parser.exit()
 
 
-def pause_if_requested(pause: bool) -> None:
-    """Pause for a keypress when requested by the CLI."""
-    if not pause:
-        return
-    print()
-    print("Press any key to continue...")
-    try:
-        import msvcrt
-
-        msvcrt.getch()
-    except ImportError:
-        input("Press Enter to continue...")
-
-
 def main(argv: Optional[List[str]] = None) -> int:
-    """CLI entry point.
+    """CLI entry point for ``pkg``.
 
     Args:
-        argv:
-            Optional list of arguments (without program name). If None,
-            :data:`sys.argv[1:]` is used.
+        argv: Optional argument list excluding the program name. When omitted,
+            :data:`sys.argv[1:]` is used by :mod:`argparse`.
 
     Returns:
-        Process exit code (0 for success, non-zero for failures).
-
+        Process exit code.
     """
+
     parser = argparse.ArgumentParser(
         description="Local Package Manager for Windows (gurlatsev/pkg)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3117,7 +3962,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser.add_argument(
         "--scope",
-        choices=[s.value for s in Scope],
+        choices=[scope.value for scope in Scope],
         default=Scope.USER.value,
         help="Installation scope: User (per-user) or Machine (system-wide)",
     )
@@ -3195,12 +4040,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             message = f"Unknown action: {action}"
             reporter.error(message)
             result = ActionResult(ok=False, errors=[message], exit_code=EXIT_USER_ERROR)
-    except Exception as e:
-        message = f"Unexpected internal error: {e}"
+    except Exception as exc:
+        message = f"Unexpected internal error: {exc}"
         reporter.error(message)
         result = ActionResult(ok=False, errors=[message], exit_code=EXIT_INTERNAL_ERROR)
     finally:
-        pause_if_requested(args.pause)
+        DEFAULT_PLATFORM.pause_if_requested(args.pause)
 
     print()
     print("-" * 60)
@@ -3214,5 +4059,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     return result.exit_code
 
 
+#------------------------------------------
+# Section: Script entry point
+#------------------------------------------
 if __name__ == "__main__":
     raise SystemExit(main())

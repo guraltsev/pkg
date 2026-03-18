@@ -1,6 +1,35 @@
 # pkg
 
-`pkg` is a single-file Windows package tool for locally cached applications.
+`pkg` is a Windows package tool for locally cached applications.
+
+The implementation now lives entirely in `pkg.py`. The file is intentionally
+organized into clearly labeled sections so the architecture stays easy to audit
+without reintroducing separate implementation modules:
+
+- `Shared models and pure helpers`
+- `Windows integration boundary`
+- `Package-management logic and CLI`
+- `Script entry point`
+
+The section layout preserves a strict separation of concerns: Windows-specific
+work such as shortcut creation, registry mutation, PATH changes, junction
+management, wrapper installation, and privilege helpers is confined to the
+`Windows integration boundary` section, while package-management policy remains
+in the `Package-management logic and CLI` section.
+
+## Documentation
+
+Documentation is intentionally redundant and easy to find:
+
+- [`README.md`](README.md) — user overview and quick start
+- [`docs/README.md`](docs/README.md) — documentation index
+- [`docs/architecture.md`](docs/architecture.md) — section boundaries and execution flow
+- [`docs/configuration.md`](docs/configuration.md) — `pkg.toml` schema and variable rules
+- [`docs/api.md`](docs/api.md) — public API and developer reference
+- [`docs/review.md`](docs/review.md) — strengths, weaknesses, and refactor summary
+
+In addition, every function and class in the Python codebase has an in-code
+module/class/function docstring.
 
 ## Package layout
 
@@ -14,12 +43,15 @@
     pkg.toml
 ```
 
-You can run `pkg` from a version directory, a `current` junction, or the package root.
+You can run `pkg` from a version directory, a `current` junction, or the
+package root.
 
 ## Actions
 
-- `Install` updates the `current` junction when appropriate, then applies shortcuts, environment variables, PATH entries, and wrapper files.
-- `UpdateConfig` creates a starter `pkg.toml` when missing, or syncs only filesystem-derived metadata in an existing `pkg.toml`.
+- `Install` updates the `current` junction when appropriate, then applies
+  shortcuts, environment variables, PATH entries, and wrapper files.
+- `UpdateConfig` creates a starter `pkg.toml` when missing, or syncs only the
+  filesystem-derived metadata in an existing `pkg.toml`.
 
 ## Exit codes
 
@@ -32,14 +64,18 @@ You can run `pkg` from a version directory, a `current` junction, or the package
 
 `Install` does not auto-create `pkg.toml` when it is missing.
 
-For existing `pkg.toml`, `UpdateConfig` preserves comments, unknown keys, and existing layout while syncing only these owned metadata keys:
+For an existing `pkg.toml`, `UpdateConfig` preserves comments, unknown keys, and
+existing layout while syncing only these owned metadata keys:
 
 - `name`
 - `version`
 - `localVersion`
 - `only_portable`
 
-`${VAR}` is the recommended environment-expansion syntax. Plain `$VAR` remains supported in general config fields for compatibility, but wrapper script content does not treat plain `$VAR` as pkg expansion unless it is a package variable such as `$App`.
+`${VAR}` is the recommended environment-expansion syntax. Plain `$VAR` remains
+supported in general config fields for compatibility, but wrapper script content
+does not treat plain `$VAR` as a `pkg` expansion unless it is a package
+variable such as `$App`.
 
 ## Minimal config example
 
@@ -67,4 +103,6 @@ content = "@echo off\r\n\"$App\\rg.exe\" %*\r\n"
 
 ## Dependency note
 
-`tomlkit` is preferred for round-trip TOML editing. When it is unavailable, `pkg` falls back to a narrow metadata-only updater for `UpdateConfig` so existing files can still be synced without broad rewrites.
+`tomlkit` is preferred for round-trip TOML editing. When it is unavailable,
+`pkg` falls back to a narrow metadata-only updater for `UpdateConfig` so
+existing files can still be synced without broad rewrites.
