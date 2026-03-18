@@ -69,7 +69,7 @@ directory layout. An installation typically:
 
 1) Updates the package-level ``current`` *junction* so it points at the chosen
    version directory.
-2) Creates Start Menu shortcuts for the packag100e.
+2) Creates Start Menu shortcuts for the package.
 3) Sets package-specific environment variables.
 4) Ensures a per-scope ``bin`` directory exists and is on ``PATH``.
 5) Writes small executable/wrapper files into that ``bin`` directory.
@@ -87,10 +87,12 @@ by :class:`PackageManager`:
     whether ``current`` should be moved to a newer version.
 
 - :class:`VariableExpander`
-    Performs variable expansion in configuration strings. It supports:
-      * package variables: ``$App``, ``$Icons``, ``$Shortcuts`` (resolved through
-        the ``current`` junction), and
-      * environment variables: ``$VAR`` or ``${VAR}``.
+    Performs variable expansion in configuration strings. It supports package
+    variables (``$App``, ``$Icons``, ``$Shortcuts``) everywhere, supports
+    ``${VAR}`` environment expansion everywhere, and keeps plain ``$VAR``
+    expansion restricted to general config fields so wrapper scripts preserve
+    shell-native variables like PowerShell's ``$PSScriptRoot`` and ``$args``.
+
 
 - :class:`ShortcutInstaller`
     Creates ``.lnk`` shortcuts in the Start Menu. Uses ``pywin32`` if available,
@@ -309,7 +311,10 @@ Config keys and examples
    - ``content`` is the full script text written to the wrapper file.
    - Use a TOML multi-line *literal* string (triple single quotes) for scripts
      that include newlines, quotes, and backslashes.
-   - ``$App`` is expanded by pkg before writing the file.
+   - Package variables like ``$App`` are expanded before writing the file.
+   - Plain ``$VAR`` stays literal inside wrapper content (except package
+     variables). Use ``${VAR}`` when you explicitly want environment expansion
+     inside a script.
 
    Example (CMD wrapper with expanded ``$App``):
 
@@ -341,14 +346,22 @@ $app = Join-Path $PSScriptRoot '..\opt\MyApp\MyApp.exe'
 Variable expansion rules
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-- Package variables are expanded first:
+- Package variables are expanded everywhere:
     $App, $Icons, $Shortcuts
   These resolve through the stable ``current`` junction path (e.g.
-  ``<pkg>\\current\\App``). The junction does not need to exist for simple
+  ``<pkg>\current\App``). The junction does not need to exist for simple
   string substitution.
 
-- Environment variables are expanded next:
-    $VAR and ${VAR}
+- Environment variables use two modes:
+    - ``${VAR}`` is supported everywhere.
+    - plain ``$VAR`` is supported only in general config fields such as
+      shortcuts, environment values, and PATH entries.
+    - plain ``$VAR`` inside wrapper content stays literal unless it is one of
+      the package variables above.
+
+- Unresolved variables are treated as failures for mutable steps. In
+  particular, missing variables in PATH entries, shortcut fields, and registry
+  environment values are not silently rewritten to empty strings.
 
 - Escaping:
     Use ``$$`` to produce a literal ``$`` (for example, ``$$App`` becomes
@@ -434,6 +447,14 @@ SHORTCUT_KEY_ALIASES: Dict[str, str] = {
 }
 PATH_ENTRY_KEY_ALIASES: Dict[str, str] = {"value": "value", "path": "value"}
 CONFIG_LIST_FIELDS = ("environment", "bin", "path", "shortcut")
+OWNED_METADATA_FIELDS = ("name", "version", "localVersion", "only_portable")
+OWNED_METADATA_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "name": ("name",),
+    "version": ("version",),
+    "localVersion": ("localVersion", "localversion", "local_version"),
+    "only_portable": ("only_portable", "onlyportable", "portable"),
+}
+PACKAGE_VARIABLE_NAMES = ("App", "Icons", "Shortcuts")
 
 
 def is_version_directory_name(name: str) -> bool:
@@ -777,6 +798,22 @@ class ExpansionResult:
     unresolved: List[str] = field(default_factory=list)
 
 
+class ExpansionMode(Enum):
+    GENERAL = "general"
+    SCRIPT = "script"
+
+
+@dataclass(frozen=True)
+class PreparedShortcut:
+    name: str
+    shortcut_path: Path
+    target_path: str
+    arguments: str = ""
+    working_directory: str = ""
+    icon_location: str = ""
+    description: str = ""
+
+
 class Reporter:
     """Minimal console reporter used by the orchestration layer."""
 
@@ -994,7 +1031,8 @@ def validate_runtime_config(config: PackageConfig) -> None:
         if missing:
             errors.append(f"bin[{i}] missing required key(s): {', '.join(missing)}")
     if errors:
-        PLACEHOLDER
+        joined = "\n  - " + "\n  - ".join(errors)
+        raise ConfigValidationError(f"Invalid configuration:{joined}")
 
 
 def package_config_to_dict(config: PackageConfig, identity: PackageIdentity) -> Dict[str, Any]:
@@ -1370,62 +1408,21 @@ class PackageMetadata:
 
     @staticmethod
     def _to_toml_scalar(value: Any) -> str:
-        """Render a scalar/list value as TOML literal text."""
-        if value is None:
-            return '""'
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, list):
-            return "[" + ", ".join(PackageMetadata._to_toml_scalar(v) for v in value) + "]"
-        return json.dumps(str(value), ensure_ascii=False)
+        """Compatibility wrapper around the shared TOML rendering helper."""
+        return _to_toml_scalar(value)
 
     def _metadata_sync_payload(self) -> Dict[str, Any]:
-        """Return directory-derived metadata that owns config synchronization."""
-        local_version: Union[int, str]
-        if str(self.local_version).isdigit():
-            local_version = int(self.local_version)
-        else:
-            local_version = str(self.local_version)
-        return {
-            "name": self.name,
-            "version": self.version,
-            "localVersion": local_version,
-            "only_portable": self.only_portable,
-        }
+        """Compatibility wrapper around the shared metadata sync payload helper."""
+        return metadata_sync_payload(self.identity)
 
     def _create_starter_config_text(self, data: Optional[Dict[str, Any]] = None) -> str:
-        """Create a minimal starter ``pkg.toml`` for explicit UpdateConfig runs."""
-        metadata = self._metadata_sync_payload()
-        lines = [
-            f"name = {self._to_toml_scalar(metadata['name'])}",
-            f"version = {self._to_toml_scalar(metadata['version'])}",
-            f"localVersion = {self._to_toml_scalar(metadata['localVersion'])}",
-            f"only_portable = {self._to_toml_scalar(metadata['only_portable'])}",
-        ]
-        extra_source = data or {}
-        for key in ("description", "homepage", "downloadURL"):
-            value = extra_source.get(key)
-            if value not in (None, ""):
-                lines.append(f"{key} = {self._to_toml_scalar(value)}")
-        return "\n".join(lines).rstrip() + "\n"
+        """Compatibility wrapper around the shared starter-config helper."""
+        return create_starter_config(self.identity)
 
     @staticmethod
     def _locate_metadata_container(doc: Any) -> Any:
-        """Return the TOML object that owns filesystem-derived metadata keys."""
-        main_block = doc.get("main", None)
-        if main_block is None:
-            return doc
-        if not isinstance(main_block, list):
-            raise ConfigValidationError(
-                "Existing pkg.toml uses a malformed [[main]] section. Edit the config manually."
-            )
-        if len(main_block) != 1:
-            raise ConfigValidationError(
-                "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
-            )
-        return main_block[0]
+        """Compatibility wrapper around the shared document-location helper."""
+        return locate_metadata_container(doc)
 
     def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
         config, _raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
@@ -1473,58 +1470,31 @@ class PackageMetadata:
         ]
         self.only_portable = config.only_portable
 
-    def update_config(self, data: Optional[Dict] = None, reporter: Optional[Reporter] = None) -> StepResult:
-        """Synchronize owned metadata back to ``pkg.toml``.
+    def update_config(self, reporter: Optional[Reporter] = None) -> StepResult:
+        """Synchronize only the owned metadata fields back to ``pkg.toml``.
 
-        Existing files are updated via ``tomlkit`` so comments, unknown keys,
-        and table structure are preserved. Missing files are created only when
-        this explicit action is requested.
+        Existing files are edited in place with a round-trip TOML backend so
+        comments, unknown keys, and existing table structure are preserved.
+        Missing files are created only for this explicit action.
         """
         reporter = reporter or Reporter()
-        source_data = data or {
-            "description": self.description,
-            "homepage": self.homepage,
-            "downloadURL": self.download_url,
-        }
-        if data is not None:
-            source_data = self._canonicalize_config_dict(dict(data))
-            self._validate_config_dict(source_data)
-
-        if self.name.lower().endswith("-portable") and not self.only_portable:
-            self.only_portable = True
-
         toml_path = self.version_path / "pkg.toml"
         json_path = self.version_path / "pkg.json"
         warnings: List[str] = []
 
         if toml_path.exists():
-            backend = load_roundtrip_toml_backend(require=True)
-            assert backend is not None
-            try:
-                original_text = toml_path.read_text(encoding="utf-8")
-                doc = backend.module.parse(original_text)
-            except Exception as e:
-                raise ConfigValidationError(
-                    f"pkg.toml is structurally invalid and cannot be updated safely: {e}"
-                ) from e
-
-            container = self._locate_metadata_container(doc)
-            changed = False
-            for key, value in self._metadata_sync_payload().items():
-                if container.get(key) != value:
-                    container[key] = value
-                    changed = True
-
+            doc, original_text = load_config_document(toml_path)
+            changed = sync_document_metadata(doc, self.identity)
             rendered = doc.as_string()
             if not changed or rendered == original_text:
                 reporter.info(f"Configuration already up to date: {toml_path}")
-                return StepResult(ok=True, changed=False)
-
-            write_text_atomic(toml_path, rendered, backup=True)
-            reporter.info(f"Updated: {toml_path}")
-            result = StepResult(ok=True, changed=True)
+                result = StepResult(ok=True, changed=False)
+            else:
+                write_text_atomic(toml_path, rendered, backup=True)
+                reporter.info(f"Updated: {toml_path}")
+                result = StepResult(ok=True, changed=True)
         else:
-            rendered = self._create_starter_config_text(source_data)
+            rendered = create_starter_config(self.identity)
             write_text_atomic(toml_path, rendered, backup=False)
             reporter.info(f"Created: {toml_path}")
             result = StepResult(ok=True, changed=True)
@@ -1556,96 +1526,218 @@ class PackageMetadata:
 
 # Runtime config parsing still normalizes to dicts; existing-file updates use tomlkit round-trip edits.
 
+
+def _to_toml_scalar(value: Any) -> str:
+    """Render a scalar value as TOML literal text."""
+    if value is None:
+        return '""'
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_to_toml_scalar(v) for v in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
+    """Return the directory-derived metadata owned by pkg."""
+    return {
+        "name": identity.name,
+        "version": identity.version,
+        "localVersion": identity.local_version,
+        "only_portable": identity.only_portable_by_name,
+    }
+
+
+def load_config_document(path: Path) -> Tuple[Any, str]:
+    """Load an existing ``pkg.toml`` with a round-trip backend."""
+    backend = load_roundtrip_toml_backend(require=True)
+    assert backend is not None
+    try:
+        original_text = path.read_text(encoding="utf-8")
+        return backend.module.parse(original_text), original_text
+    except Exception as e:
+        raise ConfigValidationError(
+            f"pkg.toml is structurally invalid and cannot be updated safely: {e}. Edit the config manually."
+        ) from e
+
+
+def locate_metadata_container(doc: Any) -> Any:
+    """Return the TOML object whose keys should be metadata-synced."""
+    main_block = doc.get("main", None)
+    if main_block is None:
+        return doc
+    if not isinstance(main_block, list):
+        raise ConfigValidationError(
+            "Existing pkg.toml uses a malformed [[main]] section. Edit the config manually."
+        )
+    if len(main_block) != 1:
+        raise ConfigValidationError(
+            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
+        )
+    return main_block[0]
+
+
+def _find_existing_metadata_key(container: Any, canonical_key: str) -> Optional[str]:
+    """Find the existing key spelling/alias for a metadata field if present."""
+    aliases = {alias.lower() for alias in OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))}
+    exact_match: Optional[str] = None
+    alias_match: Optional[str] = None
+    for key in container.keys():
+        key_text = str(key)
+        key_lower = key_text.lower()
+        if key_text == canonical_key:
+            exact_match = key_text
+            break
+        if key_lower in aliases and alias_match is None:
+            alias_match = key_text
+    return exact_match or alias_match
+
+
+def sync_document_metadata(doc: Any, identity: PackageIdentity) -> bool:
+    """Mutate only the owned metadata fields in an existing TOML document."""
+    container = locate_metadata_container(doc)
+    changed = False
+    for canonical_key, value in metadata_sync_payload(identity).items():
+        existing_key = _find_existing_metadata_key(container, canonical_key)
+        target_key = existing_key or canonical_key
+        if container.get(target_key) != value:
+            container[target_key] = value
+            changed = True
+    return changed
+
+
+def create_starter_config(identity: PackageIdentity) -> str:
+    """Create a minimal future-facing starter ``pkg.toml``."""
+    metadata = metadata_sync_payload(identity)
+    lines = [
+        f"name = {_to_toml_scalar(metadata['name'])}",
+        f"version = {_to_toml_scalar(metadata['version'])}",
+        f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
+        f"only_portable = {_to_toml_scalar(metadata['only_portable'])}",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
 # =============================================================================
 # Variable expansion
 # =============================================================================
 
-class VariableExpander:
-    """Expand $-style variables in config strings."""
+def _deduplicate_preserving_order(values: List[str]) -> List[str]:
+    """Return *values* without duplicates while preserving first-seen order."""
+    seen = set()
+    out: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
-    @staticmethod
-    def expand_variables(text: str, metadata: PackageMetadata) -> str:
-        """Expand variables in a string using ``$`` syntax.
 
-        Expansion order:
+def _package_variable_map(identity: PackageIdentity) -> Dict[str, str]:
+    """Return the package-variable expansion map for an identity."""
+    pkg_base = identity.package_root / "current"
+    return {
+        "App": str(pkg_base / "App"),
+        "Icons": str(pkg_base / "Icons"),
+        "Shortcuts": str(pkg_base / "Shortcuts"),
+    }
 
-        1) Package variables: ``$App``, ``$Icons``, ``$Shortcuts``.
-           These resolve through the package's stable ``current`` junction path
-           (for example: ``<pkg>\\current\\App``).
-           The junction does not need to exist for string substitution.
-        2) Environment variables: ``${VAR}`` then ``$VAR``.
 
-        Escaping:
-          - ``$$`` produces a literal ``$``. For example, ``$$App`` becomes the
-            literal text ``$App`` (it will not be expanded).
+def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> ExpansionResult:
+    """Expand package/environment variables according to the selected mode.
 
-        Args:
-            text: Input string containing variables.
-            metadata: Package metadata (used to resolve package variables).
+    Rules:
+    - ``$App``, ``$Icons``, and ``$Shortcuts`` expand everywhere.
+    - ``${VAR}`` expands everywhere and is an error when unresolved.
+    - plain ``$VAR`` expands only in :class:`ExpansionMode.GENERAL`.
+    - plain ``$VAR`` remains literal in :class:`ExpansionMode.SCRIPT`, except
+      for the package variables listed above.
+    - ``$$`` becomes a literal ``$``.
+    """
+    if text is None:
+        return ExpansionResult("")
 
-        Returns:
-            The expanded string.
+    source = str(text)
+    if source == "":
+        return ExpansionResult("")
 
-        """
-        if not text:
-            return text
+    pkg_map = _package_variable_map(identity)
+    out: List[str] = []
+    unresolved: List[str] = []
+    i = 0
+    while i < len(source):
+        char = source[i]
+        if char != "$":
+            out.append(char)
+            i += 1
+            continue
 
-        # Preserve user-intended literal dollars.
-        # We only unescape the dollars that were present in the input (not ones
-        # that might appear via environment-variable expansion).
-        sentinel = "\x00PKG_DOLLAR\x00"
-        text = text.replace("$$", sentinel)
+        if i + 1 < len(source) and source[i + 1] == "$":
+            out.append("$")
+            i += 2
+            continue
 
-        # Package vars: boundary-safe ($App does not match $AppData).
-        pkg_base = metadata.pkg_path / "current"
-        pkg_map = {
-            "App": str(pkg_base / "App"),
-            "Icons": str(pkg_base / "Icons"),
-            "Shortcuts": str(pkg_base / "Shortcuts"),
-        }
+        if i + 1 < len(source) and source[i + 1] == "{":
+            closing = source.find("}", i + 2)
+            if closing == -1:
+                out.append("$")
+                i += 1
+                continue
+            var_name = source[i + 2 : closing]
+            token = source[i : closing + 1]
+            if var_name in os.environ:
+                out.append(os.environ[var_name])
+            else:
+                out.append(token)
+                unresolved.append(token)
+            i = closing + 1
+            continue
 
-        def repl_pkg(match: re.Match) -> str:
-            name = match.group(1)
-            return pkg_map.get(name, match.group(0))
-
-        text = re.sub(r"\$(App|Icons|Shortcuts)\b", repl_pkg, text)
-
-        # ${VAR} environment expansion.
-        def repl_env_braces(match: re.Match) -> str:
-            var_name = match.group(1)
-            return os.environ.get(var_name, "")
-
-        text = re.sub(r"\$\{([^}]+)\}", repl_env_braces, text)
-
-        # $VAR environment expansion.
-        # Variable names here intentionally follow shell-like ASCII word rules.
-        def repl_env_plain(match: re.Match) -> str:
-            var_name = match.group(1)
-            # Avoid surprising double-expansion if someone happens to have an
-            # environment variable named App/Icons/Shortcuts.
+        if i + 1 < len(source) and re.match(r"[A-Za-z_]", source[i + 1]):
+            j = i + 2
+            while j < len(source) and re.match(r"[A-Za-z0-9_]", source[j]):
+                j += 1
+            var_name = source[i + 1 : j]
+            token = source[i:j]
             if var_name in pkg_map:
-                return match.group(0)
-            return os.environ.get(var_name, "")
+                out.append(pkg_map[var_name])
+            elif mode == ExpansionMode.GENERAL:
+                if var_name in os.environ:
+                    out.append(os.environ[var_name])
+                else:
+                    out.append(token)
+                    unresolved.append(token)
+            else:
+                out.append(token)
+            i = j
+            continue
 
-        text = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", repl_env_plain, text)
+        out.append("$")
+        i += 1
 
-        # Restore escaped dollars.
-        return text.replace(sentinel, "$")
+    return ExpansionResult("".join(out), _deduplicate_preserving_order(unresolved))
+
+
+class VariableExpander:
+    """Compatibility wrappers around the newer expansion API."""
 
     @staticmethod
-    def expand_dict(data: Dict[str, str], metadata: PackageMetadata) -> Dict[str, str]:
-        """Expand variables in all values of a dictionary.
+    def expand_variables(
+        text: str,
+        metadata: PackageMetadata,
+        mode: ExpansionMode = ExpansionMode.GENERAL,
+    ) -> ExpansionResult:
+        return expand_text(text, metadata.identity, mode)
 
-        Args:
-            data: Mapping from keys to template strings.
-            metadata: Package metadata for package-variable expansion.
-
-        Returns:
-            A new dict where each value has been expanded using
-            :meth:`expand_variables`.
-
-        """
-        return {key: VariableExpander.expand_variables(value, metadata) for key, value in data.items()}
+    @staticmethod
+    def expand_dict(
+        data: Dict[str, str],
+        metadata: PackageMetadata,
+        mode: ExpansionMode = ExpansionMode.GENERAL,
+    ) -> Dict[str, ExpansionResult]:
+        return {key: expand_text(value, metadata.identity, mode) for key, value in data.items()}
 
 
 # =============================================================================
@@ -1933,73 +2025,156 @@ class JunctionManager:
 # Install steps
 # =============================================================================
 
+def _expanded_text_or_error(
+    text: str,
+    identity: PackageIdentity,
+    mode: ExpansionMode,
+    *,
+    field_label: str,
+) -> str:
+    """Return expanded text or raise a clear unresolved-variable error."""
+    expansion = expand_text(text, identity, mode)
+    if expansion.unresolved:
+        unresolved = ", ".join(expansion.unresolved)
+        raise ValueError(f"{field_label} contains unresolved variable(s): {unresolved}")
+    return expansion.value
+
+
+def prepare_shortcut_spec(
+    spec: ShortcutSpec,
+    identity: PackageIdentity,
+    scope_paths: ScopePaths,
+) -> PreparedShortcut:
+    """Expand, validate, and materialize a shortcut definition."""
+    raw_display_name = spec.name or "<unnamed>"
+    expanded_name = _expanded_text_or_error(
+        spec.name,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut name for '{raw_display_name}'",
+    ).strip()
+    expanded_target = _expanded_text_or_error(
+        spec.target_path,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut targetPath for '{raw_display_name}'",
+    ).strip()
+    expanded_arguments = _expanded_text_or_error(
+        spec.arguments,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut arguments for '{raw_display_name}'",
+    )
+    expanded_working_directory = _expanded_text_or_error(
+        spec.working_directory,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut workingDirectory for '{raw_display_name}'",
+    )
+    expanded_icon_location = _expanded_text_or_error(
+        spec.icon_location,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut iconLocation for '{raw_display_name}'",
+    )
+    expanded_description = _expanded_text_or_error(
+        spec.description,
+        identity,
+        ExpansionMode.GENERAL,
+        field_label=f"shortcut description for '{raw_display_name}'",
+    )
+
+    missing: List[str] = []
+    if not expanded_name:
+        missing.append("name")
+    if not expanded_target:
+        missing.append("targetPath")
+    if missing:
+        raise ValueError(
+            f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
+        )
+
+    scope_paths.shortcut_root.mkdir(parents=True, exist_ok=True)
+    shortcut_path = scope_paths.shortcut_root / expanded_name
+    if shortcut_path.suffix.lower() != ".lnk":
+        shortcut_path = shortcut_path.with_suffix(".lnk")
+    shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+
+    return PreparedShortcut(
+        name=expanded_name,
+        shortcut_path=shortcut_path,
+        target_path=expanded_target,
+        arguments=expanded_arguments,
+        working_directory=expanded_working_directory,
+        icon_location=expanded_icon_location,
+        description=expanded_description,
+    )
+
+
 class ShortcutInstaller:
     """Create Windows Start Menu shortcuts (.lnk)."""
 
     @staticmethod
-    def _prepare_shortcut(shortcut_info: Dict[str, str], metadata: PackageMetadata) -> Tuple[Dict[str, str], Path, str]:
+    def _prepare_shortcut(shortcut_info: Dict[str, str], metadata: PackageMetadata) -> PreparedShortcut:
         """Expand and validate shortcut metadata before backend-specific writing."""
-        expanded = VariableExpander.expand_dict(shortcut_info, metadata)
-        name = str(expanded.get("name", "") or "").strip()
-        target_required = str(expanded.get("targetPath", "") or "").strip()
-        if not name or not target_required:
-            missing: List[str] = []
-            if not name:
-                missing.append("name")
-            if not target_required:
-                missing.append("targetPath")
-            raise ValueError(
-                f"missing required key(s) {missing} in entry: {shortcut_info}"
-            )
-
-        metadata.shortcut_dir.mkdir(parents=True, exist_ok=True)
-        shortcut_path = metadata.shortcut_dir / name
-        if shortcut_path.suffix.lower() != ".lnk":
-            shortcut_path = shortcut_path.with_suffix(".lnk")
-        shortcut_path.parent.mkdir(parents=True, exist_ok=True)
-        return expanded, shortcut_path, target_required
+        scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
+        metadata.scope_paths = scope_paths
+        metadata.shortcut_dir = scope_paths.shortcut_root
+        spec = ShortcutSpec(
+            name=str(shortcut_info.get("name", "") or ""),
+            target_path=str(shortcut_info.get("targetPath", "") or ""),
+            arguments=str(shortcut_info.get("arguments", "") or ""),
+            working_directory=str(shortcut_info.get("workingDirectory", "") or ""),
+            icon_location=str(shortcut_info.get("iconLocation", "") or ""),
+            description=str(shortcut_info.get("description", "") or ""),
+        )
+        return prepare_shortcut_spec(spec, metadata.identity, scope_paths)
 
     @staticmethod
-    def _create_shortcut_with_pywin32(shortcut_info: Dict[str, str], metadata: PackageMetadata) -> bool:
+    def _create_shortcut_with_pywin32(
+        shortcut_info: Dict[str, str],
+        metadata: PackageMetadata,
+    ) -> Tuple[bool, Optional[str]]:
         """Create a shortcut using pywin32 (COM)."""
         try:
-            expanded, shortcut_path, target_required = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
+            prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
             win32_client = get_win32com_client()
             if win32_client is None:
                 raise RuntimeError("pywin32 is not installed")
             shell = win32_client.Dispatch("WScript.Shell")
-            shortcut = shell.CreateShortcut(str(shortcut_path))
-            shortcut.TargetPath = target_required
-            if "arguments" in expanded:
-                shortcut.Arguments = expanded["arguments"]
-            if "workingDirectory" in expanded:
-                shortcut.WorkingDirectory = expanded["workingDirectory"]
-            if "iconLocation" in expanded and expanded["iconLocation"] != "":
-                shortcut.IconLocation = expanded["iconLocation"]
-            if "description" in expanded:
-                shortcut.Description = expanded["description"]
+            shortcut = shell.CreateShortcut(str(prepared.shortcut_path))
+            shortcut.TargetPath = prepared.target_path
+            shortcut.Arguments = prepared.arguments
+            shortcut.WorkingDirectory = prepared.working_directory
+            if prepared.icon_location != "":
+                shortcut.IconLocation = prepared.icon_location
+            shortcut.Description = prepared.description
             shortcut.Save()
-            print(f"SHORTCUT: created: {shortcut_path.name}")
-            return True
+            print(f"SHORTCUT: created: {prepared.shortcut_path.name}")
+            return True, None
         except Exception as e:
-            print(f"SHORTCUT error creating {shortcut_info.get('name', 'unknown')}: {e}")
-            return False
+            name = shortcut_info.get("name", "unknown")
+            print(f"SHORTCUT error creating {name}: {e}")
+            return False, f"Failed to create shortcut '{name}': {e}"
 
     @staticmethod
-    def _create_shortcut_with_powershell(shortcut_info: Dict[str, str], metadata: PackageMetadata) -> bool:
+    def _create_shortcut_with_powershell(
+        shortcut_info: Dict[str, str],
+        metadata: PackageMetadata,
+    ) -> Tuple[bool, Optional[str]]:
         """Create a shortcut using PowerShell (fallback)."""
         try:
-            expanded, shortcut_path, target_required = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
+            prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
 
             def esc(value: str) -> str:
                 return value.replace("'", "''")
 
-            shortcut_path_text = esc(str(shortcut_path))
-            target_path = esc(target_required)
-            arguments = esc(expanded.get("arguments", ""))
-            working_dir = esc(expanded.get("workingDirectory", ""))
-            icon_location = esc(expanded.get("iconLocation", ""))
-            description = esc(expanded.get("description", ""))
+            shortcut_path_text = esc(str(prepared.shortcut_path))
+            target_path = esc(prepared.target_path)
+            arguments = esc(prepared.arguments)
+            working_dir = esc(prepared.working_directory)
+            icon_location = esc(prepared.icon_location)
+            description = esc(prepared.description)
 
             ps_command = f"""
 $WshShell = New-Object -ComObject WScript.Shell
@@ -2018,16 +2193,22 @@ $Shortcut.Save()
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if result.returncode == 0:
-                print(f"SHORTCUT: created (via PowerShell): {shortcut_path.name}")
-                return True
-            print(f"SHORTCUT PowerShell error: {result.stderr or result.stdout}")
-            return False
+                print(f"SHORTCUT: created (via PowerShell): {prepared.shortcut_path.name}")
+                return True, None
+            error_text = (result.stderr or result.stdout or "unknown PowerShell shortcut error").strip()
+            print(f"SHORTCUT PowerShell error: {error_text}")
+            return False, f"Failed to create shortcut '{prepared.name}': {error_text}"
         except Exception as e:
-            print(f"SHORTCUT error creating {shortcut_info.get('name', 'unknown')}: {e}")
-            return False
+            name = shortcut_info.get("name", "unknown")
+            print(f"SHORTCUT error creating {name}: {e}")
+            return False, f"Failed to create shortcut '{name}': {e}"
 
     @staticmethod
-    def create_shortcut(shortcut_info: Dict[str, str], metadata: PackageMetadata, backend: Optional[str] = None) -> bool:
+    def create_shortcut(
+        shortcut_info: Dict[str, str],
+        metadata: PackageMetadata,
+        backend: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
         """Create a Windows shortcut (.lnk)."""
         backend = backend or get_shortcut_backend()
         if backend == "pywin32":
@@ -2049,14 +2230,14 @@ $Shortcut.Save()
             result.warnings.append(warning)
 
         for shortcut_info in metadata.shortcut:
-            ok = ShortcutInstaller.create_shortcut(shortcut_info, metadata, backend=backend)
+            ok, error = ShortcutInstaller.create_shortcut(shortcut_info, metadata, backend=backend)
             if ok:
                 result.changed = True
                 continue
             result.ok = False
-            result.errors.append(
-                f"Failed to create shortcut: {shortcut_info.get('name', 'unknown')}"
-            )
+            message = error or f"Failed to create shortcut: {shortcut_info.get('name', 'unknown')}"
+            reporter.error(message)
+            result.errors.append(message)
 
         return result
 
@@ -2157,19 +2338,29 @@ class EnvironmentVariableManager:
             name = str(env_var.get("Name", "") or "").strip()
             value = env_var.get("Value", "")
             if not name:
+                message = f"Environment variable entry is missing Name: {env_var}"
+                reporter.error(message)
                 result.ok = False
-                result.errors.append(f"Environment variable entry is missing Name: {env_var}")
+                result.errors.append(message)
                 continue
-            expanded_value = VariableExpander.expand_variables(value, metadata)
+            expansion = expand_text(str(value), metadata.identity, ExpansionMode.GENERAL)
+            if expansion.unresolved:
+                unresolved = ", ".join(expansion.unresolved)
+                message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
+                reporter.error(message)
+                result.ok = False
+                result.errors.append(message)
+                continue
             ok = EnvironmentVariableManager.set_environment_variable(
-                name, expanded_value, metadata.scope, expand=True
+                name, expansion.value, metadata.scope, expand=True
             )
             if ok:
                 result.changed = True
                 continue
-            reporter.error(f"Failed to set environment variable: {name}")
+            message = f"Failed to set environment variable: {name}"
+            reporter.error(message)
             result.ok = False
-            result.errors.append(f"Failed to set environment variable: {name}")
+            result.errors.append(message)
         return result
 
 
@@ -2244,19 +2435,46 @@ class PATHManager:
     def add_to_path(new_entries: List[str], metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
         """Append directories to PATH, avoiding duplicates and surfacing failures."""
         reporter = reporter or Reporter()
-        expanded_new_entries: List[str] = []
+        result = StepResult(ok=True, changed=False)
+        valid_entries: List[str] = []
+
         for entry in new_entries:
-            expanded = VariableExpander.expand_variables(entry, metadata)
+            expansion = expand_text(str(entry), metadata.identity, ExpansionMode.GENERAL)
+            if expansion.unresolved:
+                unresolved = ", ".join(expansion.unresolved)
+                message = f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
+                reporter.error(message)
+                result.ok = False
+                result.errors.append(message)
+                continue
+
+            expanded = expansion.value.strip()
+            if expanded == "":
+                message = f"PATH entry '{entry}' expands to an empty value and will not be added."
+                reporter.error(message)
+                result.ok = False
+                result.errors.append(message)
+                continue
+
             normalized = os.path.normpath(expanded)
-            if normalized:
-                expanded_new_entries.append(normalized)
+            if normalized == "":
+                message = f"PATH entry '{entry}' normalized to an empty value and will not be added."
+                reporter.error(message)
+                result.ok = False
+                result.errors.append(message)
+                continue
+
+            valid_entries.append(normalized)
+
+        if not valid_entries:
+            return result if result.errors else StepResult(ok=True, changed=False)
 
         current_path = PATHManager.get_current_path(metadata.scope)
         updated_path = current_path.copy()
         existing_keys = {PATHManager._path_key(p) for p in current_path if p}
         added_entries: List[str] = []
 
-        for entry in expanded_new_entries:
+        for entry in valid_entries:
             key = PATHManager._path_key(entry)
             if key not in existing_keys:
                 updated_path.append(entry)
@@ -2265,15 +2483,17 @@ class PATHManager:
                 reporter.info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
 
         if not added_entries:
-            return StepResult(ok=True, changed=False)
+            return result
 
         if PATHManager.set_path(updated_path, metadata.scope):
-            return StepResult(ok=True, changed=True)
+            result.changed = True
+            return result
 
-        return StepResult(
-            ok=False,
-            errors=[f"Failed to update {metadata.scope.value} PATH."],
-        )
+        message = f"Failed to update {metadata.scope.value} PATH."
+        reporter.error(message)
+        result.ok = False
+        result.errors.append(message)
+        return result
 
     @staticmethod
     def _system_drive_root() -> str:
@@ -2287,10 +2507,9 @@ class PATHManager:
     def ensure_bin_in_path(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
         """Ensure the per-scope bin directory exists and is on PATH."""
         reporter = reporter or Reporter()
-        if metadata.scope == Scope.USER:
-            bin_dir = Path.home() / "bin"
-        else:
-            bin_dir = Path(PATHManager._system_drive_root()) / "bin"
+        scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
+        metadata.scope_paths = scope_paths
+        bin_dir = scope_paths.bin_dir
 
         changed = False
         try:
@@ -2317,51 +2536,43 @@ class BinFileCreator:
 
     @staticmethod
     def get_bin_dir(scope: Scope) -> Path:
-        """Return the bin directory for a given scope.
-
-        Args:
-            scope: User or Machine scope.
-
-        Returns:
-            A :class:`~pathlib.Path` to the bin directory.
-
-        """
+        """Return the bin directory for a given scope."""
         if scope == Scope.USER:
             return Path.home() / "bin"
         return Path(PATHManager._system_drive_root()) / "bin"
 
     @staticmethod
-    def create_wrapper(wrapper_info: Dict[str, str], metadata: PackageMetadata) -> bool:
-        """Create a wrapper file in the bin directory.
-
-        Args:
-            wrapper_info:
-                Wrapper definition dict with keys:
-                - ``name`` (required): output file name
-                - ``content`` (required): file contents (after variable expansion)
-            metadata: Package metadata for variable expansion and scope.
-
-        Returns:
-            True if the wrapper was written successfully; False otherwise.
-
-        """
+    def create_wrapper(wrapper_info: Dict[str, str], metadata: PackageMetadata) -> Tuple[bool, Optional[str]]:
+        """Create a wrapper file in the bin directory."""
         try:
-            name = wrapper_info.get("name", "")
-            content = wrapper_info.get("content", "")
-            if not name:
-                return False
+            raw_name = str(wrapper_info.get("name", "") or "")
+            raw_content = str(wrapper_info.get("content", "") or "")
+            if not raw_name:
+                raise ValueError("wrapper entry is missing name")
 
-            expanded_content = VariableExpander.expand_variables(content, metadata)
+            expanded_name = _expanded_text_or_error(
+                raw_name,
+                metadata.identity,
+                ExpansionMode.GENERAL,
+                field_label=f"wrapper name for '{raw_name}'",
+            ).strip()
+            expanded_content_result = expand_text(raw_content, metadata.identity, ExpansionMode.SCRIPT)
+            if expanded_content_result.unresolved:
+                unresolved = ", ".join(expanded_content_result.unresolved)
+                raise ValueError(
+                    f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
+                )
+            expanded_content = expanded_content_result.value
 
-            bin_dir = BinFileCreator.get_bin_dir(metadata.scope)
+            scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
+            metadata.scope_paths = scope_paths
+            bin_dir = scope_paths.bin_dir
             bin_dir.mkdir(parents=True, exist_ok=True)
 
-            wrapper_path = bin_dir / name
+            wrapper_path = bin_dir / expanded_name
             wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
             ext = wrapper_path.suffix.lower()
-            # cmd.exe historically uses legacy code pages; UTF-8 can be
-            # problematic for non-ASCII. Prefer ASCII when possible.
             if ext in (".cmd", ".bat"):
                 try:
                     desired_bytes = expanded_content.encode("ascii")
@@ -2378,19 +2589,19 @@ class BinFileCreator:
                 try:
                     if wrapper_path.read_bytes() == desired_bytes:
                         print(f"BIN: up-to-date: {wrapper_path}")
-                        return True
+                        return True, None
                 except OSError:
-                    # Fall through to rewrite.
                     pass
 
             wrapper_path.write_bytes(desired_bytes)
             action = "updated" if existed_before else "created"
             print(f"BIN: {action}: {wrapper_path}")
-            return True
+            return True, None
 
         except Exception as e:
-            print(f"BIN error creating {wrapper_info.get('name', 'unknown')}: {e}")
-            return False
+            name = wrapper_info.get("name", "unknown")
+            print(f"BIN error creating {name}: {e}")
+            return False, f"Failed to create wrapper '{name}': {e}"
 
     @staticmethod
     def install_wrappers(metadata: PackageMetadata, reporter: Optional[Reporter] = None) -> StepResult:
@@ -2398,15 +2609,14 @@ class BinFileCreator:
         reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         for wrapper_info in metadata.bin:
-            ok = BinFileCreator.create_wrapper(wrapper_info, metadata)
+            ok, error = BinFileCreator.create_wrapper(wrapper_info, metadata)
             if ok:
                 result.changed = True
                 continue
-            reporter.error(f"Failed to create wrapper: {wrapper_info.get('name', 'unknown')}")
+            message = error or f"Failed to create wrapper: {wrapper_info.get('name', 'unknown')}"
+            reporter.error(message)
             result.ok = False
-            result.errors.append(
-                f"Failed to create wrapper: {wrapper_info.get('name', 'unknown')}"
-            )
+            result.errors.append(message)
         return result
 
 
@@ -2489,10 +2699,11 @@ class PackageManager:
         self.reporter.info(f"Package: {metadata.name}")
         self.reporter.info(f"Version: {metadata.version_string}")
         self.reporter.info(f"Path: {metadata.version_path}")
-        self.reporter.info(f"only_portable: {metadata.only_portable}")
+        effective_only_portable = metadata.identity.only_portable_by_name or metadata.only_portable
+        self.reporter.info(f"only_portable: {effective_only_portable}")
         self.reporter.info("")
 
-        if metadata.only_portable and self.scope == Scope.MACHINE:
+        if effective_only_portable and self.scope == Scope.MACHINE:
             return self._failure(
                 "only_portable packages cannot be installed system-wide. Please use User scope.",
                 exit_code=EXIT_USER_ERROR,
@@ -2523,7 +2734,7 @@ class PackageManager:
                 self.reporter.warn(f"  - {msg}")
             self.reporter.info("--fix-config enabled: syncing configuration metadata to match directory structure...")
             try:
-                update_result = metadata.update_config(config_data, reporter=self.reporter)
+                update_result = metadata.update_config(reporter=self.reporter)
             except DependencyError as e:
                 return self._failure(str(e), exit_code=EXIT_USER_ERROR, warnings=warnings)
             except (ConfigValidationError, RuntimeError, ValueError) as e:
@@ -2641,10 +2852,7 @@ class PackageManager:
 
         try:
             metadata = PackageMetadata(resolved_path)
-            config_data, load_warnings = metadata.load_config(use_defaults=self.use_defaults)
-            for warning in load_warnings:
-                self.reporter.warn(warning)
-            step_result = metadata.update_config(config_data, reporter=self.reporter)
+            step_result = metadata.update_config(reporter=self.reporter)
         except DependencyError as e:
             return self._failure(str(e), exit_code=EXIT_USER_ERROR)
         except (ConfigValidationError, RuntimeError, ValueError) as e:
@@ -2655,10 +2863,11 @@ class PackageManager:
         return ActionResult(
             ok=step_result.ok,
             changed=step_result.changed,
-            warnings=load_warnings + step_result.warnings,
+            warnings=step_result.warnings,
             errors=step_result.errors,
             exit_code=EXIT_SUCCESS if step_result.ok else EXIT_MUTATION_ERROR,
         )
+
 
 
 class _ExtendedHelpAction(argparse.Action):

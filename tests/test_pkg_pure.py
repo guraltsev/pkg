@@ -195,6 +195,136 @@ name = "Broken"
         self.assertEqual(config.path, [r"$App\bin"])
         self.assertEqual(config.bin[0].name, "alias.cmd")
 
+    def test_update_config_creates_starter_file_when_missing(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "NoConfigApp"
+            dst = Path(tmpdir) / "NoConfigApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v0.9.0.l1"
+            manager = module.PackageManager()
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = manager.update_config(version_dir)
+            self.assertTrue(result.ok)
+            self.assertTrue(result.changed)
+            pkg_toml = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertIn('name = "NoConfigApp"', pkg_toml)
+            self.assertIn('version = "0.9.0"', pkg_toml)
+            self.assertIn('localVersion = 1', pkg_toml)
+            self.assertIn('only_portable = false', pkg_toml)
+
+    def test_update_config_syncs_metadata_without_validating_runtime_entries(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "BrokenWriteApp" / "v1.0.0.l2"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.toml").write_text(
+                """# Keep this comment
+name = "BrokenWriteApp-OLD"
+version = "0.9.0"
+localVersion = 7
+only_portable = false
+
+[[shortcut]]
+name = "Broken Shortcut"
+x_note = "preserve me"
+""",
+                encoding="utf-8",
+            )
+            manager = module.PackageManager()
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = manager.update_config(version_dir)
+            self.assertTrue(result.ok)
+            self.assertTrue(result.changed)
+            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertIn('# Keep this comment', updated)
+            self.assertIn('name = "BrokenWriteApp"', updated)
+            self.assertIn('version = "1.0.0"', updated)
+            self.assertIn('localVersion = 2', updated)
+            self.assertIn('x_note = "preserve me"', updated)
+            self.assertNotIn('targetPath', updated)
+
+    def test_script_expansion_preserves_powershell_variables_and_expands_braced_env(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "PwshApp"
+            dst = Path(tmpdir) / "PwshApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v5.4.3.l2"
+            metadata = module.PackageMetadata(version_dir)
+            metadata.load_config()
+            wrapper_content = metadata.bin[0]["content"] + "\n${SystemRoot}\n"
+            with mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}, clear=False):
+                expansion = module.expand_text(wrapper_content, metadata.identity, module.ExpansionMode.SCRIPT)
+            self.assertEqual(expansion.unresolved, [])
+            self.assertIn("$ErrorActionPreference = 'Stop'", expansion.value)
+            self.assertIn("$app = Join-Path $PSScriptRoot 'PwshApp.exe'", expansion.value)
+            self.assertIn('& $app @args', expansion.value)
+            self.assertIn(r"C:\Windows", expansion.value)
+
+    def test_missing_variable_in_path_is_error_not_silent_success(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "BadPathApp"
+            dst = Path(tmpdir) / "BadPathApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v1.0.0.l1"
+            metadata = module.PackageMetadata(version_dir)
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = module.PATHManager.add_to_path(["$MISSING_VAR"], metadata, reporter=module.Reporter())
+            self.assertFalse(result.ok)
+            self.assertFalse(result.changed)
+            self.assertTrue(any("unresolved variable" in err for err in result.errors))
+
+    def test_missing_variable_in_shortcut_target_fails_step(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "ShortcutApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            metadata = module.PackageMetadata(version_dir)
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                metadata.set_scope(module.Scope.USER)
+                metadata.shortcut = [{"name": "Broken Shortcut", "targetPath": r"$MISSING_VAR\App.exe"}]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = module.ShortcutInstaller.install_shortcuts(metadata, reporter=module.Reporter())
+            self.assertFalse(result.ok)
+            self.assertTrue(any("unresolved variable" in err for err in result.errors))
+
+    def test_powershell_shortcut_backend_escapes_apostrophes(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "ApostropheApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            metadata = module.PackageMetadata(version_dir)
+            appdata = Path(tmpdir) / "O'Brien"
+            appdata.mkdir(parents=True, exist_ok=True)
+            with mock.patch.dict(os.environ, {"APPDATA": str(appdata), "USERPROFILE": tmpdir}, clear=False):
+                metadata.set_scope(module.Scope.USER)
+                captured = {}
+
+                def fake_run(cmd, **kwargs):
+                    captured["cmd"] = cmd
+
+                    class Result:
+                        returncode = 0
+                        stderr = ""
+                        stdout = ""
+
+                    return Result()
+
+                with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        ok, error = module.ShortcutInstaller._create_shortcut_with_powershell(
+                            {"name": "O'Brien Tool", "targetPath": r"C:\Tools\app.exe"},
+                            metadata,
+                        )
+            self.assertTrue(ok, msg=error)
+            self.assertIn("-NoProfile", captured["cmd"])
+            self.assertIn("-NonInteractive", captured["cmd"])
+            ps_command = captured["cmd"][-1]
+            self.assertIn("O''Brien Tool.lnk", ps_command)
+            self.assertIn("O''Brien", ps_command)
+
 
 if __name__ == "__main__":
     unittest.main()
