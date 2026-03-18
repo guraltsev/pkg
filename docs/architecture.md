@@ -8,14 +8,15 @@ Windows-specific side effects.
 
 - `Shared models and pure helpers` decides shared data structures, validation,
   variable expansion, version comparison, and atomic file operations.
-- `Windows integration boundary` performs all direct Windows interaction.
+- `Windows integration boundary` exposes thin Python wrappers for direct
+  Windows primitives.
 - `Package-management logic and CLI` decides what should happen at a package
-  level and delegates platform mutations through `WindowsPlatform`.
+  level and orchestrates those wrappers through `WindowsPlatform`.
 - `Script entry point` provides the executable handoff.
 
-This layout keeps Start Menu shortcut creation, registry mutation, junction
-management, and wrapper installation self-contained and easy to audit without
-spreading the implementation across multiple files.
+This layout keeps raw Windows commands and APIs easy to audit in one place
+without letting package-management policy drift into the Windows wrapper
+section.
 
 ## Section map
 
@@ -35,18 +36,19 @@ single-file organization requirement.
 
 ### `Windows integration boundary`
 
-Windows integration code:
+Windows wrapper code:
 
-- current-junction inspection and replacement
-- shortcut creation (`pywin32` or PowerShell)
-- registry-backed environment variable writes
-- registry-backed PATH updates
-- wrapper file installation in the scope bin directory
-- scope path resolution
-- Administrator detection and console pause handling
+- shortcut writers (`create_shortcut()`, `create_shortcut_with_pywin32()`,
+  `create_shortcut_with_powershell()`)
+- junction primitives (`create_junction()`, `is_junction()`,
+  `get_junction_target()`)
+- registry wrappers (`read_registry_value()`, `write_registry_value()`)
+- environment-change broadcast, admin detection, and keypress pause wrappers
 
-Every direct Windows primitive lives here, including the imports needed for
-subprocess execution, registry access, and low-level Windows calls.
+This section intentionally stays free of package-management orchestration. It
+contains the direct Windows commands and API calls, while the higher-level
+classes that decide when to use them live below in the package-management
+section.
 
 ### `Package-management logic and CLI`
 
@@ -56,11 +58,12 @@ Package-management logic:
 - package metadata facade
 - metadata consistency checks
 - round-trip/fallback metadata synchronization for `pkg.toml`
+- install orchestrators such as `JunctionManager`, `ShortcutInstaller`,
+  `EnvironmentVariableManager`, `PATHManager`, and `BinFileCreator`
 - CLI parsing and high-level action orchestration
 
-This section depends on the `WindowsPlatform` facade rather than directly on
-registry APIs, shortcut backends, PowerShell command execution, or junction
-manipulation details.
+This section depends on the Windows wrapper functions rather than embedding
+registry APIs, COM automation, or command execution details inline.
 
 ### `Script entry point`
 
@@ -75,9 +78,10 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
    `WindowsPlatform.resolve_input_path()`.
 3. `PackageMetadata` loads and normalizes `pkg.toml`.
 4. `PackageManager` validates portability and metadata consistency.
-5. If needed, `WindowsPlatform.update_current_junction_if_needed()` repoints the
-   package `current` junction.
-6. The Windows install-step pipeline runs in order:
+5. If needed, `WindowsPlatform.update_current_junction_if_needed()` runs the
+   package-level junction policy and uses the raw junction wrappers to repoint
+   `current`.
+6. The install-step pipeline runs in order:
    - shortcuts
    - environment variables
    - ensuring the scope bin directory is on PATH

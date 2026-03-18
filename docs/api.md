@@ -24,11 +24,20 @@ Notable public types and helpers defined in the shared section:
 
 Notable public API defined in the package-management section:
 
+- `resolve_input_path()`
+- `compute_scope_paths()`
 - `normalize_runtime_config()`
 - `validate_runtime_config()`
 - `package_config_to_dict()`
 - `check_metadata_consistency()`
 - `read_runtime_config()`
+- `JunctionManager`
+- `ShortcutInstaller`
+- `EnvironmentVariableManager`
+- `PATHManager`
+- `BinFileCreator`
+- `WindowsPlatform`
+- `DEFAULT_PLATFORM`
 - `PackageMetadata`
 - `PackageManager`
 - `main()`
@@ -37,15 +46,17 @@ Notable public API defined in the package-management section:
 
 Notable public API defined in the Windows integration section:
 
-- `resolve_input_path()`
-- `compute_scope_paths()`
-- `JunctionManager`
-- `ShortcutInstaller`
-- `EnvironmentVariableManager`
-- `PATHManager`
-- `BinFileCreator`
-- `WindowsPlatform`
-- `DEFAULT_PLATFORM`
+- `create_shortcut()`
+- `create_shortcut_with_pywin32()`
+- `create_shortcut_with_powershell()`
+- `create_junction()`
+- `is_junction()`
+- `get_junction_target()`
+- `read_registry_value()`
+- `write_registry_value()`
+- `broadcast_environment_change()`
+- `is_current_user_admin()`
+- `wait_for_keypress()`
 
 ## Compatibility expectations
 

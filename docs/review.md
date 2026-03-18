@@ -30,9 +30,12 @@
   - Windows integration
   - package-management logic and CLI
   - script entry point
-- Kept Windows interactions self-contained inside the Windows section,
-  including junction work, shortcut creation, registry writes, PATH updates,
-  wrapper installation, and privilege helpers.
+- Narrowed the Windows section further so it now contains thin wrappers for
+  shortcut creation, junction primitives, registry reads/writes, privilege
+  checks, and environment-change broadcasts.
+- Moved orchestration classes such as `ShortcutInstaller`, `EnvironmentVariableManager`,
+  `PATHManager`, `BinFileCreator`, and `JunctionManager` into the package-management
+  section so the control flow stays expressive and visible.
 - Preserved the `WindowsPlatform` facade so package-management logic depends on
   an explicit platform boundary rather than directly on Windows APIs.
 - Added comprehensive function/class docstrings across the Python code.

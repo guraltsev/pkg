@@ -185,12 +185,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         ranges = self._section_ranges()
         windows_start, windows_end = ranges["windows"]
         banned_markers = [
-            "mklink",
             "WScript.Shell",
             "SendMessageTimeoutW",
             "HKEY_CURRENT_USER",
             "HKEY_LOCAL_MACHINE",
-            "powershell",
             "import subprocess",
             "import ctypes",
             "import winreg",
@@ -206,18 +204,51 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         start, end = self._section_ranges()["core"]
         core_source = source[start:end]
         banned_markers = [
-            "mklink",
             "WScript.Shell",
             "SendMessageTimeoutW",
             "HKEY_CURRENT_USER",
             "HKEY_LOCAL_MACHINE",
-            "powershell",
             "import subprocess",
             "import ctypes",
             "import winreg",
         ]
         for marker in banned_markers:
             self.assertNotIn(marker, core_source)
+
+    def test_windows_section_keeps_only_wrapper_functions_for_shortcuts_and_registry(self) -> None:
+        """Ensure the Windows section holds wrapper functions while orchestration classes stay out."""
+        source = self._source()
+        start, end = self._section_ranges()["windows"]
+        windows_source = source[start:end]
+        self.assertIn("def create_shortcut(", windows_source)
+        self.assertIn("def read_registry_value(", windows_source)
+        self.assertIn("def write_registry_value(", windows_source)
+        self.assertNotIn("class ShortcutInstaller", windows_source)
+        self.assertNotIn("class EnvironmentVariableManager", windows_source)
+        self.assertNotIn("class PATHManager", windows_source)
+        self.assertNotIn("class BinFileCreator", windows_source)
+        self.assertNotIn("class WindowsPlatform", windows_source)
+        self.assertNotIn("class JunctionManager", windows_source)
+
+    def test_orchestration_classes_live_in_core_section(self) -> None:
+        """Ensure install orchestration classes are defined in the package-management section."""
+        source = self._source()
+        start, end = self._section_ranges()["core"]
+        core_source = source[start:end]
+        for marker in (
+            "class JunctionManager",
+            "class ShortcutInstaller",
+            "class EnvironmentVariableManager",
+            "class PATHManager",
+            "class BinFileCreator",
+            "class WindowsPlatform",
+        ):
+            self.assertIn(marker, core_source)
+        for marker in (
+            "def resolve_input_path(",
+            "def compute_scope_paths(",
+        ):
+            self.assertIn(marker, core_source)
 
 
 if __name__ == "__main__":

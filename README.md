@@ -11,11 +11,12 @@ without reintroducing separate implementation modules:
 - `Package-management logic and CLI`
 - `Script entry point`
 
-The section layout preserves a strict separation of concerns: Windows-specific
-work such as shortcut creation, registry mutation, PATH changes, junction
-management, wrapper installation, and privilege helpers is confined to the
-`Windows integration boundary` section, while package-management policy remains
-in the `Package-management logic and CLI` section.
+The section layout preserves a strict separation of concerns: the
+`Windows integration boundary` section now contains thin Python wrappers around
+direct Windows primitives such as shortcut creation, registry reads/writes,
+junction creation, privilege checks, and environment-change broadcasts, while
+package-management orchestration lives in the `Package-management logic and
+CLI` section.
 
 ## Documentation
 

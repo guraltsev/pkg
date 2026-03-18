@@ -20,11 +20,12 @@ Section guide
 
 - ``Shared models and pure helpers`` contains shared data models, validation
   helpers, text expansion, version comparison, and atomic file writers.
-- ``Windows integration boundary`` contains every direct Windows interaction,
-  including shortcut creation, registry updates, junction management, and PATH
-  mutation.
+- ``Windows integration boundary`` contains only thin Python wrappers around
+  direct Windows primitives such as shortcut creation, registry access,
+  junction creation, privilege checks, and environment-change broadcasts.
 - ``Package-management logic and CLI`` contains config normalization, metadata
-  synchronization, runtime validation, and command-line orchestration.
+  synchronization, runtime validation, and the classes that orchestrate those
+  Windows wrappers.
 """
 
 from __future__ import annotations
@@ -998,16 +999,13 @@ def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> Ex
 #------------------------------------------
 import os
 import subprocess
-import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 if os.name == "nt":
     import winreg
 else:
     winreg = None  # type: ignore[assignment]
-
-InstallStep = Callable[["PackageMetadata", InstallContext], StepResult]
 
 
 def get_win32com_client() -> Optional[Any]:
@@ -1046,451 +1044,425 @@ def get_shortcut_backend() -> str:
     return "pywin32" if get_win32com_client() is not None else "powershell"
 
 
-class JunctionManager:
-    """Create, inspect, and replace NTFS junctions used by ``pkg``."""
-
-    @staticmethod
-    def create_junction(source: Path, target: Path) -> bool:
-        r"""Create or replace an NTFS junction.
-
-        Args:
-            source: Path where the junction should be created, usually the
-                package ``current`` path or a temporary sibling.
-            target: Existing directory that the junction should reference.
-
-        Returns:
-            ``True`` when the junction was created successfully, otherwise
-            ``False``.
-        """
-
-        try:
-            if not target.exists() or not target.is_dir():
-                print(f"JUNCTION error: target does not exist or is not a directory: {target}")
-                return False
-
-            if os.path.lexists(str(source)):
-                if JunctionManager.is_junction(source):
-                    try:
-                        os.rmdir(str(source))
-                    except OSError as exc:
-                        print(f"JUNCTION error: failed to remove existing junction {source}: {exc}")
-                        return False
-                else:
-                    print(
-                        f"JUNCTION error: {source} already exists and is not a junction; "
-                        "refusing to overwrite."
-                    )
-                    return False
-
-            result = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(source), str(target)],
-                capture_output=True,
-                text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-
-            if result.returncode == 0:
-                print(f"JUNCTION: created: {source.name} -> {target}")
-                return True
-
-            stderr_text = (result.stderr or "").strip()
-            stdout_text = (result.stdout or "").strip()
-            if stderr_text:
-                print(f"JUNCTION error: {stderr_text}")
-            if stdout_text:
-                print(f"JUNCTION output: {stdout_text}")
-            return False
-
-        except Exception as exc:
-            print(f"JUNCTION error creating {source}: {exc}")
-            return False
-
-    @staticmethod
-    def _win_get_reparse_tag(path: Path) -> Optional[int]:
-        """Read the reparse tag for a filesystem entry.
-
-        Args:
-            path: Filesystem entry to inspect.
-
-        Returns:
-            The integer reparse tag, or ``None`` when the tag cannot be read.
-        """
-
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-            FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-            OPEN_EXISTING = 3
-            FILE_SHARE_READ = 0x00000001
-            FILE_SHARE_WRITE = 0x00000002
-            FILE_SHARE_DELETE = 0x00000004
-            FSCTL_GET_REPARSE_POINT = 0x000900A8
-
-            create_file = ctypes.windll.kernel32.CreateFileW
-            create_file.argtypes = [
-                wintypes.LPCWSTR,
-                wintypes.DWORD,
-                wintypes.DWORD,
-                wintypes.LPVOID,
-                wintypes.DWORD,
-                wintypes.DWORD,
-                wintypes.HANDLE,
-            ]
-            create_file.restype = wintypes.HANDLE
-
-            device_io_control = ctypes.windll.kernel32.DeviceIoControl
-            device_io_control.argtypes = [
-                wintypes.HANDLE,
-                wintypes.DWORD,
-                wintypes.LPVOID,
-                wintypes.DWORD,
-                wintypes.LPVOID,
-                wintypes.DWORD,
-                ctypes.POINTER(wintypes.DWORD),
-                wintypes.LPVOID,
-            ]
-            device_io_control.restype = wintypes.BOOL
-
-            close_handle = ctypes.windll.kernel32.CloseHandle
-            close_handle.argtypes = [wintypes.HANDLE]
-            close_handle.restype = wintypes.BOOL
-
-            handle = create_file(
-                str(path),
-                0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-                None,
-            )
-            invalid_handle_value = wintypes.HANDLE(-1).value
-            if handle == invalid_handle_value:
-                return None
-
-            try:
-                buffer = ctypes.create_string_buffer(16 * 1024)
-                returned = wintypes.DWORD(0)
-                ok = device_io_control(
-                    handle,
-                    FSCTL_GET_REPARSE_POINT,
-                    None,
-                    0,
-                    buffer,
-                    len(buffer),
-                    ctypes.byref(returned),
-                    None,
-                )
-                if not ok:
-                    return None
-                return int.from_bytes(buffer.raw[0:4], "little", signed=False)
-            finally:
-                close_handle(handle)
-        except Exception:
-            return None
-
-    @staticmethod
-    def is_junction(path: Path) -> bool:
-        """Return whether a path is an NTFS junction.
-
-        Args:
-            path: Directory path to inspect.
-
-        Returns:
-            ``True`` when *path* exists and is a junction; otherwise ``False``.
-        """
-
-        try:
-            if hasattr(os.path, "isjunction"):
-                return os.path.isjunction(str(path))  # type: ignore[attr-defined]
-
-            if not os.path.isdir(str(path)):
-                return False
-
-            io_reparse_tag_mount_point = 0xA0000003
-            tag = JunctionManager._win_get_reparse_tag(path)
-            return tag == io_reparse_tag_mount_point
-        except Exception:
-            return False
-
-    @staticmethod
-    def get_junction_target(path: Path) -> Optional[Path]:
-        """Resolve the target of a junction.
-
-        Args:
-            path: Junction path to inspect.
-
-        Returns:
-            The normalized target path, or ``None`` when the target cannot be
-            read.
-        """
-
-        try:
-            target = os.readlink(str(path))
-            return normalize_path(target)
-        except (OSError, AttributeError):
-            return None
-
-    @staticmethod
-    def compare_versions(version1: str, version2: str) -> int:
-        """Compare two package version directory names.
-
-        Args:
-            version1: Left-hand version string.
-            version2: Right-hand version string.
-
-        Returns:
-            ``1`` when *version1* is newer, ``-1`` when *version2* is newer, or
-            ``0`` when they match.
-        """
-
-        return compare_package_versions(version1, version2)
-
-    @staticmethod
-    def _temp_junction_path(base: Path, label: str) -> Path:
-        """Build a unique temporary sibling path for junction replacement.
-
-        Args:
-            base: Path being replaced.
-            label: Human-readable label embedded in the temporary file name.
-
-        Returns:
-            A unique temporary path next to *base*.
-        """
-
-        suffix = uuid.uuid4().hex[:8]
-        return base.with_name(f"{base.name}.{label}.{suffix}")
-
-    @staticmethod
-    def _replace_current_junction_atomic(current_path: Path, target_path: Path) -> None:
-        """Atomically repoint ``current`` to a new version directory.
-
-        Args:
-            current_path: Existing or future ``current`` junction path.
-            target_path: Version directory that should become the new target.
-
-        Raises:
-            RuntimeError: If the replacement cannot be completed safely.
-        """
-
-        if not target_path.exists() or not target_path.is_dir():
-            raise RuntimeError(f"Junction target does not exist or is not a directory: {target_path}")
-
-        new_path = JunctionManager._temp_junction_path(current_path, "__new__")
-        old_path = JunctionManager._temp_junction_path(current_path, "__old__")
-        moved_current = False
-        try:
-            if os.path.lexists(str(new_path)):
-                if JunctionManager.is_junction(new_path):
-                    os.rmdir(str(new_path))
-                else:
-                    raise RuntimeError(f"Temporary junction path already exists and is unsafe to replace: {new_path}")
-
-            if not JunctionManager.create_junction(new_path, target_path):
-                raise RuntimeError(f"Failed to create temporary junction at {new_path}")
-
-            new_target = JunctionManager.get_junction_target(new_path)
-            if new_target is None or normalize_path(new_target) != normalize_path(target_path):
-                raise RuntimeError(f"Temporary junction verification failed: expected {target_path}, got {new_target}")
-
-            if os.path.lexists(str(current_path)):
-                os.replace(str(current_path), str(old_path))
-                moved_current = True
-
-            os.replace(str(new_path), str(current_path))
-
-            if os.path.lexists(str(old_path)):
-                os.rmdir(str(old_path))
-        except Exception:
-            if not os.path.lexists(str(current_path)) and moved_current and os.path.lexists(str(old_path)):
-                try:
-                    os.replace(str(old_path), str(current_path))
-                except Exception:
-                    pass
-            raise
-        finally:
-            if os.path.lexists(str(new_path)):
-                try:
-                    os.rmdir(str(new_path))
-                except OSError:
-                    pass
-            if os.path.lexists(str(old_path)) and not os.path.lexists(str(current_path)):
-                try:
-                    os.replace(str(old_path), str(current_path))
-                except OSError:
-                    pass
-
-    @staticmethod
-    def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
-        r"""Update ``<package>\current`` when the chosen version should win.
-
-        Args:
-            metadata: Package metadata describing the version being installed.
-            force: Whether to allow downgrades or reinstalls even when ``current``
-                already points to a newer version.
-
-        Returns:
-            ``True`` when the junction changed; ``False`` when ``current`` was
-            intentionally left untouched because a newer version was already
-            active.
-
-        Raises:
-            ValueError: If the existing ``current`` path is unsafe or malformed.
-            RuntimeError: If the junction replacement fails.
-        """
-
-        current_path = metadata.pkg_path / "current"
-
-        if os.path.lexists(str(current_path)):
-            if not JunctionManager.is_junction(current_path):
-                raise ValueError(f"{current_path} exists but is not a junction. Aborting all operations.")
-
-            current_target = JunctionManager.get_junction_target(current_path)
-            if not current_target:
-                raise ValueError(f"{current_path} is a junction but its target is not resolvable. Aborting.")
-
-            current_target = current_target.resolve()
-            if not current_target.is_dir():
-                print(f"JUNCTION: stale current target detected: {current_target}")
-                JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
-                return True
-
-            if current_target.parent != metadata.pkg_path:
-                raise ValueError(
-                    f"{current_path} is a junction but its target {current_target} "
-                    f"is not under {metadata.pkg_path}. Aborting."
-                )
-
-            current_version = current_target.name
-            print(f"'current' junction version: {current_version}")
-            comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
-            if not force and comparison < 0:
-                print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
-                return False
-            if force:
-                print(f"JUNCTION: --force: updating current to {metadata.version_string}")
-
-            JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
-            return True
-
-        JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
-        return True
-
-
-def _current_version_matches(package_root: Path, version_path: Path) -> bool:
-    """Return whether ``package_root/current`` points at ``version_path``.
+def _run_hidden(command: List[str]) -> subprocess.CompletedProcess:
+    """Run one Windows command without opening a console window.
 
     Args:
-        package_root: Package root that may contain the ``current`` junction.
-        version_path: Concrete version directory to compare against.
+        command: Command-line tokens to execute.
 
     Returns:
-        ``True`` when ``current`` exists, is a junction, and resolves to
-        *version_path*.
+        The completed subprocess result.
     """
 
-    current_path = package_root / "current"
-    if not current_path.exists() or not JunctionManager.is_junction(current_path):
-        return False
-    target = JunctionManager.get_junction_target(current_path)
-    if target is None:
-        return False
-    try:
-        return normalize_path(target) == normalize_path(version_path)
-    except OSError:
-        return False
-
-
-def resolve_input_path(raw_path: Path) -> ResolvedInput:
-    """Classify a user-supplied path using Windows package-layout rules.
-
-    Args:
-        raw_path: User-supplied path that may point at a version directory, a
-            ``current`` junction, or the package root.
-
-    Returns:
-        A :class:`ResolvedInput` describing the package root, concrete version
-        directory, and whether the path was resolved via ``current``.
-
-    Raises:
-        ValueError: If the path does not match a supported package layout.
-    """
-
-    candidate = raw_path.expanduser()
-
-    if is_version_directory_name(candidate.name):
-        if not candidate.exists() or not candidate.is_dir():
-            raise ValueError(f"Version directory does not exist: {candidate}")
-        package_root = candidate.parent
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=package_root,
-            version_path=candidate,
-            input_kind="version",
-            installing_from_current=False,
-            version_is_current=_current_version_matches(package_root, candidate),
-        )
-
-    if candidate.name.lower() == "current":
-        if not candidate.exists():
-            raise ValueError(f'"current" path does not exist: {candidate}')
-        if not JunctionManager.is_junction(candidate):
-            raise ValueError(
-                f'"current" path exists but is not a valid junction: {candidate}; '
-                f"exists={candidate.exists()}, is_dir={candidate.is_dir()}, parent={candidate.parent}"
-            )
-        target = JunctionManager.get_junction_target(candidate)
-        if target is None:
-            raise ValueError(f'Could not resolve "current" junction target: {candidate}')
-        resolved_target = normalize_path(target)
-        if not resolved_target.is_dir():
-            raise ValueError(
-                f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
-            )
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=candidate.parent,
-            version_path=resolved_target,
-            input_kind="current",
-            installing_from_current=True,
-            version_is_current=True,
-        )
-
-    if not candidate.exists() or not candidate.is_dir():
-        raise ValueError(f"Package root does not exist: {candidate}")
-    current_path = candidate / "current"
-    if not current_path.exists():
-        raise ValueError(
-            f'No "current" directory exists in package root: {candidate}; '
-            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
-        )
-    if not JunctionManager.is_junction(current_path):
-        raise ValueError(
-            f'"current" path exists but is not a valid junction: {current_path}; '
-            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
-        )
-    target = JunctionManager.get_junction_target(current_path)
-    if target is None:
-        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
-    resolved_target = normalize_path(target)
-    if not resolved_target.is_dir():
-        raise ValueError(
-            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
-        )
-    return ResolvedInput(
-        raw_path=candidate,
-        package_root=candidate,
-        version_path=resolved_target,
-        input_kind="package_root",
-        installing_from_current=True,
-        version_is_current=True,
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 
+def _escape_powershell_single_quoted(value: str) -> str:
+    """Escape text for a PowerShell single-quoted string literal.
+
+    Args:
+        value: Text that will be embedded in PowerShell.
+
+    Returns:
+        The same text with apostrophes doubled.
+    """
+
+    return value.replace("'", "''")
+
+
+def create_shortcut_with_pywin32(prepared: PreparedShortcut) -> None:
+    """Create one ``.lnk`` file through ``pywin32`` automation.
+
+    Args:
+        prepared: Fully expanded shortcut data to write.
+
+    Raises:
+        RuntimeError: If ``pywin32`` is unavailable or COM automation fails.
+    """
+
+    win32_client = get_win32com_client()
+    if win32_client is None:
+        raise RuntimeError("pywin32 is not installed")
+
+    shell = win32_client.Dispatch("WScript.Shell")
+    shortcut = shell.CreateShortcut(str(prepared.shortcut_path))
+    shortcut.TargetPath = prepared.target_path
+    shortcut.Arguments = prepared.arguments
+    shortcut.WorkingDirectory = prepared.working_directory
+    if prepared.icon_location:
+        shortcut.IconLocation = prepared.icon_location
+    shortcut.Description = prepared.description
+    shortcut.Save()
+
+
+def create_shortcut_with_powershell(prepared: PreparedShortcut) -> None:
+    """Create one ``.lnk`` file through PowerShell automation.
+
+    Args:
+        prepared: Fully expanded shortcut data to write.
+
+    Raises:
+        RuntimeError: If PowerShell reports a shortcut-creation failure.
+    """
+
+    ps_command = f"""
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut('{_escape_powershell_single_quoted(str(prepared.shortcut_path))}')
+$Shortcut.TargetPath = '{_escape_powershell_single_quoted(prepared.target_path)}'
+$Shortcut.Arguments = '{_escape_powershell_single_quoted(prepared.arguments)}'
+$Shortcut.WorkingDirectory = '{_escape_powershell_single_quoted(prepared.working_directory)}'
+$Shortcut.IconLocation = '{_escape_powershell_single_quoted(prepared.icon_location)}'
+$Shortcut.Description = '{_escape_powershell_single_quoted(prepared.description)}'
+$Shortcut.Save()
+"""
+    result = _run_hidden([
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        ps_command,
+    ])
+    if result.returncode != 0:
+        error_text = (result.stderr or result.stdout or "unknown PowerShell shortcut error").strip()
+        raise RuntimeError(error_text)
+
+
+def create_shortcut(prepared: PreparedShortcut, backend: Optional[str] = None) -> str:
+    """Create one shortcut using the selected backend.
+
+    Args:
+        prepared: Fully expanded shortcut data to write.
+        backend: Explicit backend override. When omitted, the preferred backend
+            is selected automatically.
+
+    Returns:
+        The backend name that performed the write.
+
+    Raises:
+        RuntimeError: If the selected backend cannot create the shortcut.
+    """
+
+    selected_backend = backend or get_shortcut_backend()
+    if selected_backend == "pywin32":
+        create_shortcut_with_pywin32(prepared)
+        return selected_backend
+    create_shortcut_with_powershell(prepared)
+    return selected_backend
+
+
+def create_junction(source: Path, target: Path) -> None:
+    r"""Create or replace one NTFS junction.
+
+    Args:
+        source: Path where the junction should be created.
+        target: Existing directory the junction should reference.
+
+    Raises:
+        RuntimeError: If the junction cannot be created safely.
+    """
+
+    if not target.exists() or not target.is_dir():
+        raise RuntimeError(f"Junction target does not exist or is not a directory: {target}")
+
+    if os.path.lexists(str(source)):
+        if is_junction(source):
+            os.rmdir(str(source))
+        else:
+            raise RuntimeError(
+                f"{source} already exists and is not a junction; refusing to overwrite."
+            )
+
+    result = _run_hidden(["cmd", "/c", "mklink", "/J", str(source), str(target)])
+    if result.returncode != 0:
+        error_text = (result.stderr or result.stdout or "mklink /J failed").strip()
+        raise RuntimeError(error_text)
+
+
+def _win_get_reparse_tag(path: Path) -> Optional[int]:
+    """Read the reparse tag for one filesystem entry.
+
+    Args:
+        path: Filesystem entry to inspect.
+
+    Returns:
+        The integer reparse tag, or ``None`` when the tag cannot be read.
+    """
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+        FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+        OPEN_EXISTING = 3
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        FILE_SHARE_DELETE = 0x00000004
+        FSCTL_GET_REPARSE_POINT = 0x000900A8
+
+        create_file = ctypes.windll.kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+
+        device_io_control = ctypes.windll.kernel32.DeviceIoControl
+        device_io_control.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        device_io_control.restype = wintypes.BOOL
+
+        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        handle = create_file(
+            str(path),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        invalid_handle_value = wintypes.HANDLE(-1).value
+        if handle == invalid_handle_value:
+            return None
+
+        try:
+            buffer = ctypes.create_string_buffer(16 * 1024)
+            returned = wintypes.DWORD(0)
+            ok = device_io_control(
+                handle,
+                FSCTL_GET_REPARSE_POINT,
+                None,
+                0,
+                buffer,
+                len(buffer),
+                ctypes.byref(returned),
+                None,
+            )
+            if not ok:
+                return None
+            return int.from_bytes(buffer.raw[0:4], "little", signed=False)
+        finally:
+            close_handle(handle)
+    except Exception:
+        return None
+
+
+def is_junction(path: Path) -> bool:
+    """Return whether one path is an NTFS junction.
+
+    Args:
+        path: Filesystem entry to inspect.
+
+    Returns:
+        ``True`` when *path* exists and is a junction; otherwise ``False``.
+    """
+
+    try:
+        if hasattr(os.path, "isjunction"):
+            return os.path.isjunction(str(path))  # type: ignore[attr-defined]
+
+        if not os.path.isdir(str(path)):
+            return False
+
+        io_reparse_tag_mount_point = 0xA0000003
+        return _win_get_reparse_tag(path) == io_reparse_tag_mount_point
+    except Exception:
+        return False
+
+
+def get_junction_target(path: Path) -> Optional[Path]:
+    """Resolve the target of one junction path.
+
+    Args:
+        path: Junction path to inspect.
+
+    Returns:
+        The normalized target path, or ``None`` when the target cannot be read.
+    """
+
+    try:
+        return normalize_path(os.readlink(str(path)))
+    except (OSError, AttributeError):
+        return None
+
+
+def environment_registry_location(scope: Scope) -> Tuple[Any, str]:
+    """Return the registry location used for one environment scope.
+
+    Args:
+        scope: Installation scope whose environment location is needed.
+
+    Returns:
+        A tuple ``(root_hkey_or_none, subkey)``.
+    """
+
+    if scope == Scope.USER:
+        return (winreg.HKEY_CURRENT_USER if winreg is not None else None, r"Environment")
+    return (
+        winreg.HKEY_LOCAL_MACHINE if winreg is not None else None,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    )
+
+
+def read_registry_value(root: Any, subkey: str, name: str) -> Tuple[Any, int]:
+    """Read one registry value.
+
+    Args:
+        root: Registry hive constant.
+        subkey: Registry key path below *root*.
+        name: Value name to read.
+
+    Returns:
+        Tuple ``(value, registry_type)`` from ``QueryValueEx``.
+
+    Raises:
+        OSError: If the value cannot be read.
+    """
+
+    reg = require_winreg()
+    with reg.OpenKey(root, subkey, 0, reg.KEY_READ) as key:
+        return reg.QueryValueEx(key, name)
+
+
+def write_registry_value(root: Any, subkey: str, name: str, value: str, reg_type: int) -> None:
+    """Write one registry value.
+
+    Args:
+        root: Registry hive constant.
+        subkey: Registry key path below *root*.
+        name: Value name to write.
+        value: Value data to store.
+        reg_type: ``winreg`` registry type constant.
+
+    Raises:
+        OSError: If the value cannot be written.
+    """
+
+    reg = require_winreg()
+    with reg.OpenKey(root, subkey, 0, reg.KEY_SET_VALUE) as key:
+        reg.SetValueEx(key, name, 0, reg_type, value)
+
+
+def broadcast_environment_change() -> None:
+    """Notify Windows that environment values changed.
+
+    Raises:
+        OSError: If Windows does not accept the broadcast notification.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    hwnd_broadcast = 0xFFFF
+    wm_settingchange = 0x001A
+    smto_abortifhung = 0x0002
+
+    send_message_timeout = ctypes.windll.user32.SendMessageTimeoutW
+    send_message_timeout.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.POINTER(wintypes.ULONG_PTR),
+    ]
+    send_message_timeout.restype = wintypes.LPARAM
+
+    result = wintypes.ULONG_PTR(0)
+    ok = send_message_timeout(
+        hwnd_broadcast,
+        wm_settingchange,
+        0,
+        ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
+        smto_abortifhung,
+        5000,
+        ctypes.byref(result),
+    )
+    if not ok:
+        raise OSError("SendMessageTimeoutW failed")
+
+
+def is_current_user_admin() -> bool:
+    """Return whether the current process has Administrator privileges.
+
+    Returns:
+        ``True`` when the current process is elevated; otherwise ``False``.
+    """
+
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def wait_for_keypress() -> None:
+    """Pause for a keypress using the Windows console when possible.
+
+    Returns:
+        ``None``.
+    """
+
+    try:
+        import msvcrt
+
+        msvcrt.getch()
+    except ImportError:
+        input("Press Enter to continue...")
+
+
+def system_drive_root() -> str:
+    """Return the system drive root with a trailing backslash.
+
+    Returns:
+        A drive-root string such as ``C:\\``.
+    """
+
+    system_drive = os.environ.get("SYSTEMDRIVE", "C:")
+    if not system_drive.endswith("\\"):
+        system_drive += "\\"
+    return system_drive
+
+
+#------------------------------------------
+# Section: Package-management logic and CLI
+#------------------------------------------
+import argparse
+import json
+import re
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+InstallStep = Callable[["PackageMetadata", InstallContext], StepResult]
+
+
 def compute_scope_paths(scope: Scope) -> ScopePaths:
-    """Resolve the Windows filesystem and registry locations for one scope.
+    """Resolve the filesystem and registry locations for one install scope.
 
     Args:
         scope: Installation scope for which paths should be calculated.
@@ -1504,7 +1476,7 @@ def compute_scope_paths(scope: Scope) -> ScopePaths:
             ``PROGRAMDATA`` are missing.
     """
 
-    registry = winreg
+    env_root, env_subkey = environment_registry_location(scope)
     if scope == Scope.USER:
         appdata = os.environ.get("APPDATA")
         if not appdata:
@@ -1516,8 +1488,8 @@ def compute_scope_paths(scope: Scope) -> ScopePaths:
             scope=scope,
             shortcut_root=Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
             bin_dir=Path(userprofile) / "bin",
-            env_root=(registry.HKEY_CURRENT_USER if registry is not None else None),
-            env_subkey="Environment",
+            env_root=env_root,
+            env_subkey=env_subkey,
         )
 
     programdata = os.environ.get("PROGRAMDATA")
@@ -1530,8 +1502,8 @@ def compute_scope_paths(scope: Scope) -> ScopePaths:
         scope=scope,
         shortcut_root=Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
         bin_dir=Path(systemdrive) / "bin",
-        env_root=(registry.HKEY_LOCAL_MACHINE if registry is not None else None),
-        env_subkey=r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        env_root=env_root,
+        env_subkey=env_subkey,
     )
 
 
@@ -1651,8 +1623,236 @@ def prepare_shortcut_spec(
     )
 
 
+def _current_version_matches(package_root: Path, version_path: Path) -> bool:
+    """Return whether ``package_root/current`` points at ``version_path``.
+
+    Args:
+        package_root: Package root that may contain the ``current`` junction.
+        version_path: Concrete version directory to compare against.
+
+    Returns:
+        ``True`` when ``current`` exists, is a junction, and resolves to
+        *version_path*.
+    """
+
+    current_path = package_root / "current"
+    if not current_path.exists() or not is_junction(current_path):
+        return False
+    target = get_junction_target(current_path)
+    if target is None:
+        return False
+    try:
+        return normalize_path(target) == normalize_path(version_path)
+    except OSError:
+        return False
+
+
+def resolve_input_path(raw_path: Path) -> ResolvedInput:
+    """Classify a user-supplied path using ``pkg`` package-layout rules.
+
+    Args:
+        raw_path: User-supplied path that may point at a version directory, a
+            ``current`` junction, or the package root.
+
+    Returns:
+        A :class:`ResolvedInput` describing the package root, concrete version
+        directory, and whether the path was resolved via ``current``.
+
+    Raises:
+        ValueError: If the path does not match a supported package layout.
+    """
+
+    candidate = raw_path.expanduser()
+
+    if is_version_directory_name(candidate.name):
+        if not candidate.exists() or not candidate.is_dir():
+            raise ValueError(f"Version directory does not exist: {candidate}")
+        package_root = candidate.parent
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=package_root,
+            version_path=candidate,
+            input_kind="version",
+            installing_from_current=False,
+            version_is_current=_current_version_matches(package_root, candidate),
+        )
+
+    if candidate.name.lower() == "current":
+        if not candidate.exists():
+            raise ValueError(f'"current" path does not exist: {candidate}')
+        if not is_junction(candidate):
+            raise ValueError(
+                f'"current" path exists but is not a valid junction: {candidate}; '
+                f"exists={candidate.exists()}, is_dir={candidate.is_dir()}, parent={candidate.parent}"
+            )
+        target = get_junction_target(candidate)
+        if target is None:
+            raise ValueError(f'Could not resolve "current" junction target: {candidate}')
+        resolved_target = normalize_path(target)
+        if not resolved_target.is_dir():
+            raise ValueError(
+                f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
+            )
+        return ResolvedInput(
+            raw_path=candidate,
+            package_root=candidate.parent,
+            version_path=resolved_target,
+            input_kind="current",
+            installing_from_current=True,
+            version_is_current=True,
+        )
+
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError(f"Package root does not exist: {candidate}")
+    current_path = candidate / "current"
+    if not current_path.exists():
+        raise ValueError(
+            f'No "current" directory exists in package root: {candidate}; '
+            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
+        )
+    if not is_junction(current_path):
+        raise ValueError(
+            f'"current" path exists but is not a valid junction: {current_path}; '
+            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
+        )
+    target = get_junction_target(current_path)
+    if target is None:
+        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
+    resolved_target = normalize_path(target)
+    if not resolved_target.is_dir():
+        raise ValueError(
+            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
+        )
+    return ResolvedInput(
+        raw_path=candidate,
+        package_root=candidate,
+        version_path=resolved_target,
+        input_kind="package_root",
+        installing_from_current=True,
+        version_is_current=True,
+    )
+
+
+class JunctionManager:
+    """Decide when and how ``pkg`` should repoint the ``current`` junction."""
+
+    @staticmethod
+    def compare_versions(version1: str, version2: str) -> int:
+        """Compare two package version directory names.
+
+        Args:
+            version1: Left-hand version string.
+            version2: Right-hand version string.
+
+        Returns:
+            ``1`` when *version1* is newer, ``-1`` when *version2* is newer, or
+            ``0`` when they match.
+        """
+
+        return compare_package_versions(version1, version2)
+
+    @staticmethod
+    def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
+        r"""Update ``<package>\current`` when the chosen version should win.
+
+        Args:
+            metadata: Package metadata describing the version being installed.
+            force: Whether to allow downgrades or reinstalls even when ``current``
+                already points to a newer version.
+
+        Returns:
+            ``True`` when the junction changed; ``False`` when ``current`` was
+            intentionally left untouched because a newer version was already
+            active.
+
+        Raises:
+            ValueError: If the existing ``current`` path is unsafe or malformed.
+            RuntimeError: If the junction replacement fails.
+        """
+
+        current_path = metadata.pkg_path / "current"
+        desired_target = metadata.version_path
+
+        if not desired_target.exists() or not desired_target.is_dir():
+            raise RuntimeError(f"Junction target does not exist or is not a directory: {desired_target}")
+
+        if os.path.lexists(str(current_path)):
+            if not is_junction(current_path):
+                raise ValueError(f"{current_path} exists but is not a junction. Aborting all operations.")
+
+            current_target = get_junction_target(current_path)
+            if current_target is None:
+                raise ValueError(f"{current_path} is a junction but its target is not resolvable. Aborting.")
+
+            current_target = current_target.resolve()
+            if not current_target.is_dir():
+                print(f"JUNCTION: stale current target detected: {current_target}")
+            else:
+                if current_target.parent != metadata.pkg_path:
+                    raise ValueError(
+                        f"{current_path} is a junction but its target {current_target} "
+                        f"is not under {metadata.pkg_path}. Aborting."
+                    )
+
+                current_version = current_target.name
+                print(f"'current' junction version: {current_version}")
+                comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
+                if not force and comparison < 0:
+                    print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
+                    return False
+                if force:
+                    print(f"JUNCTION: --force: updating current to {metadata.version_string}")
+        
+        new_path = current_path.with_name(f"{current_path.name}.__new__.{uuid.uuid4().hex[:8]}")
+        old_path = current_path.with_name(f"{current_path.name}.__old__.{uuid.uuid4().hex[:8]}")
+        moved_current = False
+        try:
+            if os.path.lexists(str(new_path)):
+                if is_junction(new_path):
+                    os.rmdir(str(new_path))
+                else:
+                    raise RuntimeError(f"Temporary junction path already exists and is unsafe to replace: {new_path}")
+
+            create_junction(new_path, desired_target)
+            new_target = get_junction_target(new_path)
+            if new_target is None or normalize_path(new_target) != normalize_path(desired_target):
+                raise RuntimeError(
+                    f"Temporary junction verification failed: expected {desired_target}, got {new_target}"
+                )
+
+            if os.path.lexists(str(current_path)):
+                os.replace(str(current_path), str(old_path))
+                moved_current = True
+
+            os.replace(str(new_path), str(current_path))
+
+            if os.path.lexists(str(old_path)):
+                os.rmdir(str(old_path))
+        except Exception:
+            if not os.path.lexists(str(current_path)) and moved_current and os.path.lexists(str(old_path)):
+                try:
+                    os.replace(str(old_path), str(current_path))
+                except Exception:
+                    pass
+            raise
+        finally:
+            if os.path.lexists(str(new_path)):
+                try:
+                    os.rmdir(str(new_path))
+                except OSError:
+                    pass
+            if os.path.lexists(str(old_path)) and not os.path.lexists(str(current_path)):
+                try:
+                    os.replace(str(old_path), str(current_path))
+                except OSError:
+                    pass
+
+        print(f"JUNCTION: created: {current_path.name} -> {desired_target}")
+        return True
+
+
 class ShortcutInstaller:
-    """Create Windows Start Menu shortcuts."""
+    """Expand shortcut config and orchestrate Start Menu shortcut creation."""
 
     @staticmethod
     def _prepare_shortcut(shortcut_info: Dict[str, str], metadata: "PackageMetadata") -> PreparedShortcut:
@@ -1684,7 +1884,7 @@ class ShortcutInstaller:
         shortcut_info: Dict[str, str],
         metadata: "PackageMetadata",
     ) -> Tuple[bool, Optional[str]]:
-        """Create a shortcut using ``pywin32``.
+        """Create a shortcut using the ``pywin32`` wrapper.
 
         Args:
             shortcut_info: Raw shortcut dictionary from the runtime config.
@@ -1696,18 +1896,7 @@ class ShortcutInstaller:
 
         try:
             prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
-            win32_client = get_win32com_client()
-            if win32_client is None:
-                raise RuntimeError("pywin32 is not installed")
-            shell = win32_client.Dispatch("WScript.Shell")
-            shortcut = shell.CreateShortcut(str(prepared.shortcut_path))
-            shortcut.TargetPath = prepared.target_path
-            shortcut.Arguments = prepared.arguments
-            shortcut.WorkingDirectory = prepared.working_directory
-            if prepared.icon_location != "":
-                shortcut.IconLocation = prepared.icon_location
-            shortcut.Description = prepared.description
-            shortcut.Save()
+            create_shortcut_with_pywin32(prepared)
             print(f"SHORTCUT: created: {prepared.shortcut_path.name}")
             return True, None
         except Exception as exc:
@@ -1720,7 +1909,7 @@ class ShortcutInstaller:
         shortcut_info: Dict[str, str],
         metadata: "PackageMetadata",
     ) -> Tuple[bool, Optional[str]]:
-        """Create a shortcut using PowerShell automation.
+        """Create a shortcut using the PowerShell wrapper.
 
         Args:
             shortcut_info: Raw shortcut dictionary from the runtime config.
@@ -1732,48 +1921,9 @@ class ShortcutInstaller:
 
         try:
             prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
-
-            def esc(value: str) -> str:
-                """Escape single quotes for PowerShell single-quoted strings.
-
-                Args:
-                    value: Text that will be embedded in a PowerShell literal.
-
-                Returns:
-                    The same text with single quotes doubled.
-                """
-
-                return value.replace("'", "''")
-
-            shortcut_path_text = esc(str(prepared.shortcut_path))
-            target_path = esc(prepared.target_path)
-            arguments = esc(prepared.arguments)
-            working_dir = esc(prepared.working_directory)
-            icon_location = esc(prepared.icon_location)
-            description = esc(prepared.description)
-
-            ps_command = f"""
-$WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut('{shortcut_path_text}')
-$Shortcut.TargetPath = '{target_path}'
-$Shortcut.Arguments = '{arguments}'
-$Shortcut.WorkingDirectory = '{working_dir}'
-$Shortcut.IconLocation = '{icon_location}'
-$Shortcut.Description = '{description}'
-$Shortcut.Save()
-"""
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_command],
-                capture_output=True,
-                text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if result.returncode == 0:
-                print(f"SHORTCUT: created (via PowerShell): {prepared.shortcut_path.name}")
-                return True, None
-            error_text = (result.stderr or result.stdout or "unknown PowerShell shortcut error").strip()
-            print(f"SHORTCUT PowerShell error: {error_text}")
-            return False, f"Failed to create shortcut '{prepared.name}': {error_text}"
+            create_shortcut_with_powershell(prepared)
+            print(f"SHORTCUT: created (via PowerShell): {prepared.shortcut_path.name}")
+            return True, None
         except Exception as exc:
             name = shortcut_info.get("name", "unknown")
             print(f"SHORTCUT error creating {name}: {exc}")
@@ -1797,10 +1947,18 @@ $Shortcut.Save()
             ``(True, None)`` on success; otherwise ``(False, error_message)``.
         """
 
-        backend = backend or get_shortcut_backend()
-        if backend == "pywin32":
-            return ShortcutInstaller._create_shortcut_with_pywin32(shortcut_info, metadata)
-        return ShortcutInstaller._create_shortcut_with_powershell(shortcut_info, metadata)
+        try:
+            prepared = ShortcutInstaller._prepare_shortcut(shortcut_info, metadata)
+            selected_backend = create_shortcut(prepared, backend=backend)
+            if selected_backend == "pywin32":
+                print(f"SHORTCUT: created: {prepared.shortcut_path.name}")
+            else:
+                print(f"SHORTCUT: created (via PowerShell): {prepared.shortcut_path.name}")
+            return True, None
+        except Exception as exc:
+            name = shortcut_info.get("name", "unknown")
+            print(f"SHORTCUT error creating {name}: {exc}")
+            return False, f"Failed to create shortcut '{name}': {exc}"
 
     @staticmethod
     def install_shortcuts(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
@@ -1841,10 +1999,10 @@ $Shortcut.Save()
 
 
 class EnvironmentVariableManager:
-    """Write environment variables to the Windows registry."""
+    """Expand package config and orchestrate registry-backed env updates."""
 
     @staticmethod
-    def _get_registry_key(scope: Scope) -> Tuple[int, str]:
+    def _get_registry_key(scope: Scope) -> Tuple[Any, str]:
         """Return the registry location used for environment updates.
 
         Args:
@@ -1854,10 +2012,7 @@ class EnvironmentVariableManager:
             A tuple ``(root_hkey, subkey)``.
         """
 
-        reg = require_winreg()
-        if scope == Scope.USER:
-            return reg.HKEY_CURRENT_USER, r"Environment"
-        return reg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        return environment_registry_location(scope)
 
     @staticmethod
     def broadcast_environment_change() -> None:
@@ -1869,37 +2024,7 @@ class EnvironmentVariableManager:
         """
 
         try:
-            import ctypes
-            from ctypes import wintypes
-
-            hwnd_broadcast = 0xFFFF
-            wm_settingchange = 0x001A
-            smto_abortifhung = 0x0002
-
-            send_message_timeout = ctypes.windll.user32.SendMessageTimeoutW
-            send_message_timeout.argtypes = [
-                wintypes.HWND,
-                wintypes.UINT,
-                wintypes.WPARAM,
-                wintypes.LPARAM,
-                wintypes.UINT,
-                wintypes.UINT,
-                ctypes.POINTER(wintypes.ULONG_PTR),
-            ]
-            send_message_timeout.restype = wintypes.LPARAM
-
-            result = wintypes.ULONG_PTR(0)
-            ok = send_message_timeout(
-                hwnd_broadcast,
-                wm_settingchange,
-                0,
-                ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
-                smto_abortifhung,
-                5000,
-                ctypes.byref(result),
-            )
-            if not ok:
-                raise OSError("SendMessageTimeoutW failed")
+            broadcast_environment_change()
         except Exception as exc:
             print(f"Warning: failed to broadcast environment change notification: {exc}")
 
@@ -1920,14 +2045,11 @@ class EnvironmentVariableManager:
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
             reg = require_winreg()
-            with reg.OpenKey(root, subkey, 0, reg.KEY_SET_VALUE) as key:
-                reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
-                reg.SetValueEx(key, name, 0, reg_type, value)
-
+            reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
+            write_registry_value(root, subkey, name, value, reg_type)
             print(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
             EnvironmentVariableManager.broadcast_environment_change()
             return True
-
         except PermissionError:
             print(f"ERROR: Insufficient permissions to set {scope.value} environment variable: {name}")
             return False
@@ -1982,7 +2104,7 @@ class EnvironmentVariableManager:
 
 
 class PATHManager:
-    """Read and update the registry-backed PATH value."""
+    """Expand package config and orchestrate registry-backed PATH updates."""
 
     @staticmethod
     def _path_key(path_value: str) -> str:
@@ -2011,11 +2133,10 @@ class PATHManager:
 
         try:
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
+            value, reg_type = read_registry_value(root, subkey, "Path")
             reg = require_winreg()
-            with reg.OpenKey(root, subkey, 0, reg.KEY_READ) as key:
-                value, reg_type = reg.QueryValueEx(key, "Path")
-                if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
-                    return [item.strip() for item in value.split(";") if item.strip()]
+            if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
+                return [item.strip() for item in str(value).split(";") if item.strip()]
         except FileNotFoundError:
             pass
         except Exception as exc:
@@ -2039,8 +2160,7 @@ class PATHManager:
             path_value = ";".join(path_entries)
             root, subkey = EnvironmentVariableManager._get_registry_key(scope)
             reg = require_winreg()
-            with reg.OpenKey(root, subkey, 0, reg.KEY_SET_VALUE) as key:
-                reg.SetValueEx(key, "Path", 0, reg.REG_EXPAND_SZ, path_value)
+            write_registry_value(root, subkey, "Path", path_value, reg.REG_EXPAND_SZ)
             EnvironmentVariableManager.broadcast_environment_change()
             return True
         except PermissionError:
@@ -2134,10 +2254,7 @@ class PATHManager:
             A drive-root string ending with a trailing backslash.
         """
 
-        system_drive = os.environ.get("SYSTEMDRIVE", "C:")
-        if not system_drive.endswith("\\"):
-            system_drive += "\\"
-        return system_drive
+        return system_drive_root()
 
     @staticmethod
     def ensure_bin_in_path(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
@@ -2178,7 +2295,7 @@ class PATHManager:
 
 
 class BinFileCreator:
-    """Create wrapper files inside the per-scope ``bin`` directory."""
+    """Expand wrapper config and orchestrate writes to the scope ``bin`` directory."""
 
     @staticmethod
     def get_bin_dir(scope: Scope) -> Path:
@@ -2262,7 +2379,6 @@ class BinFileCreator:
             action = "updated" if existed_before else "created"
             print(f"BIN: {action}: {wrapper_path}")
             return True, None
-
         except Exception as exc:
             name = wrapper_info.get("name", "unknown")
             print(f"BIN error creating {name}: {exc}")
@@ -2393,11 +2509,10 @@ INSTALL_STEPS: Tuple[InstallStep, ...] = (
 
 
 class WindowsPlatform:
-    """Facade that owns all Windows-specific side effects.
+    """Facade that exposes Windows wrappers to the package-management layer.
 
     The package-management layer depends on this class rather than directly on
-    ``winreg``, COM automation, or junction-manipulation details. This keeps the
-    Windows boundary explicit and easy to discover.
+    ``winreg``, COM automation, or ``mklink`` command execution.
     """
 
     junction_manager = JunctionManager
@@ -2437,12 +2552,7 @@ class WindowsPlatform:
             ``True`` when the current process is elevated; otherwise ``False``.
         """
 
-        try:
-            import ctypes
-
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
-        except Exception:
-            return False
+        return is_current_user_admin()
 
     def pause_if_requested(self, pause: bool) -> None:
         """Pause for a keypress when requested by the CLI.
@@ -2455,12 +2565,7 @@ class WindowsPlatform:
             return
         print()
         print("Press any key to continue...")
-        try:
-            import msvcrt
-
-            msvcrt.getch()
-        except ImportError:
-            input("Press Enter to continue...")
+        wait_for_keypress()
 
     def update_current_junction_if_needed(self, metadata: "PackageMetadata", *, force: bool = False) -> bool:
         """Delegate junction updates to :class:`JunctionManager`.
@@ -2489,7 +2594,7 @@ DEFAULT_PLATFORM = WindowsPlatform()
 
 
 def pause_if_requested(pause: bool) -> None:
-    """Pause for a keypress using the default Windows platform facade.
+    """Pause for a keypress using the default platform facade.
 
     Args:
         pause: Whether the pause should happen.
@@ -2497,15 +2602,6 @@ def pause_if_requested(pause: bool) -> None:
 
     DEFAULT_PLATFORM.pause_if_requested(pause)
 
-
-#------------------------------------------
-# Section: Package-management logic and CLI
-#------------------------------------------
-import argparse
-import json
-import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 EXTENDED_HELP = r"""
 Extended help
