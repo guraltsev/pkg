@@ -16,8 +16,7 @@ main things:
 3) Supports both ``User`` and ``Machine`` installation scopes, so packages can
    be installed per-user or system-wide (with admin rights for Machine scope).
 
-The default action is ``Install``. An additional action is available to keep
-metadata in sync (``UpdateConfig``).
+The default action is ``Install``. ``Install`` does not auto-create ``pkg.toml`` when it is missing; it uses runtime defaults only. ``UpdateConfig`` is the explicit action that creates a starter config or synchronizes filesystem-derived metadata while preserving comments and unknown keys.
 
 Examples
 --------
@@ -42,7 +41,7 @@ Expected package layout:
         Shortcuts/
         pkg.toml
 
-Minimal ``pkg.toml`` snippet:
+Minimal ``pkg.toml`` snippet (note that ``${VAR}`` is the recommended environment-expansion syntax):
 
 ::
 
@@ -75,7 +74,8 @@ directory layout. An installation typically:
 5) Writes small executable/wrapper files into that ``bin`` directory.
 
 The code is organized as a set of small, single-purpose components coordinated
-by :class:`PackageManager`:
+by :class:`PackageManager`. Startup is side-effect free: help/version do not create folders or install dependencies.
+
 
 - :class:`PackageMetadata`
     Parses the directory naming convention (``v<upstream>.l<local>``) and loads
@@ -92,6 +92,8 @@ by :class:`PackageManager`:
     ``${VAR}`` environment expansion everywhere, and keeps plain ``$VAR``
     expansion restricted to general config fields so wrapper scripts preserve
     shell-native variables like PowerShell's ``$PSScriptRoot`` and ``$args``.
+    In script content, plain ``$VAR`` is treated as literal text unless it is a
+    package variable such as ``$App``.
 
 
 - :class:`ShortcutInstaller`
@@ -114,8 +116,7 @@ Execution flow
 ``main()`` parses CLI arguments, constructs :class:`PackageManager`, normalizes
 the provided path, then performs one of the actions:
 
-- ``Install`` (default): update ``current`` junction if needed, then install
-  shortcuts/env/PATH/bin wrappers.
+- ``Install`` (default): update ``current`` junction if needed, then run the install pipeline for shortcuts/env/PATH/bin wrappers. Missing ``pkg.toml`` uses defaults and writes nothing.
 - ``UpdateConfig``: sync filesystem-derived metadata into ``pkg.toml`` while
   preserving comments and unknown keys when an existing file is updated.
 
@@ -157,6 +158,13 @@ Top-level keys used by this tool:
 Safety and scope
 ~~~~~~~~~~~~~~~~
 
+Exit codes:
+- ``0`` success (including no-op success)
+- ``2`` user/config/input/dependency problem
+- ``3`` system mutation failure
+- ``4`` unexpected internal failure
+
+
 - Machine scope modifies HKLM environment variables and requires Administrator
   privileges.
 - Start Menu shortcuts are installed under the per-scope Start Menu directory:
@@ -182,10 +190,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 if os.name == "nt":
     import winreg
@@ -217,7 +226,7 @@ def require_winreg() -> Any:
 # User-facing documentation, version, and constants
 # =============================================================================
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 __copyright__ = "Copyright (C) 2025 Gennady Uraltseev. All rights reserved."
 __license__ = "MIT"
 
@@ -233,6 +242,11 @@ Extended help
 
 Quick start
 ~~~~~~~~~~~
+
+Notes:
+  - ``pkg --help`` and ``pkg --version`` do not install dependencies or write files.
+  - ``Install`` does not auto-create ``pkg.toml``.
+  - ``UpdateConfig`` preserves comments, unknown keys, and existing TOML structure when updating an existing file.
 
 Run the tool from inside a *version directory*:
 
@@ -587,15 +601,6 @@ def load_roundtrip_toml_backend(require: bool) -> Optional[RoundTripBackend]:
     tomlkit_module = try_import("tomlkit")
     if tomlkit_module is not None:
         return RoundTripBackend("tomlkit", tomlkit_module)
-
-    if require:
-        raise DependencyError(
-            "`tomlkit` is required to update an existing pkg.toml while preserving comments "
-            "and formatting.\n"
-            "Install it with `pip install tomlkit`, or run pkg under a Python environment "
-            "where it is already available."
-        )
-
     return None
 
 
@@ -634,6 +639,27 @@ def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
             os.unlink(tmp_path)
 
 
+def write_bytes_atomic(path: Path, content: bytes) -> None:
+    """Atomically write bytes to *path*."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd: Optional[int] = None
+    tmp_path: Optional[str] = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(tmp_fd, "wb") as fh:
+            tmp_fd = None
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_fd is not None:
+            os.close(tmp_fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 # =============================================================================
 # Enums, dataclasses, and custom exceptions
 # =============================================================================
@@ -663,7 +689,6 @@ class Action(Enum):
 
     INSTALL = "Install"
     UPDATE_CONFIG = "UpdateConfig"
-    COMPRESS = "Compress"
 
 
 @dataclass(frozen=True)
@@ -680,6 +705,16 @@ class RoundTripBackend:
 
     name: str
     module: Any
+
+
+@dataclass
+class TextConfigDocument:
+    """Fallback metadata-only TOML editor used when tomlkit is unavailable."""
+
+    text: str
+
+    def as_string(self) -> str:
+        return self.text
 
 
 @dataclass
@@ -812,6 +847,15 @@ class PreparedShortcut:
     working_directory: str = ""
     icon_location: str = ""
     description: str = ""
+
+
+@dataclass(frozen=True)
+class InstallContext:
+    identity: PackageIdentity
+    config: PackageConfig
+    scope_paths: ScopePaths
+    reporter: Any
+    force: bool
 
 
 class Reporter:
@@ -1551,20 +1595,28 @@ def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
 
 
 def load_config_document(path: Path) -> Tuple[Any, str]:
-    """Load an existing ``pkg.toml`` with a round-trip backend."""
-    backend = load_roundtrip_toml_backend(require=True)
-    assert backend is not None
-    try:
-        original_text = path.read_text(encoding="utf-8")
-        return backend.module.parse(original_text), original_text
-    except Exception as e:
-        raise ConfigValidationError(
-            f"pkg.toml is structurally invalid and cannot be updated safely: {e}. Edit the config manually."
-        ) from e
+    """Load an existing ``pkg.toml`` with a round-trip backend when available.
+
+    If ``tomlkit`` is unavailable, fall back to a narrow metadata-only text editor
+    that preserves comments, unknown keys, and overall layout while syncing only
+    the owned metadata keys.
+    """
+    original_text = path.read_text(encoding="utf-8")
+    backend = load_roundtrip_toml_backend(require=False)
+    if backend is not None:
+        try:
+            return backend.module.parse(original_text), original_text
+        except Exception as e:
+            raise ConfigValidationError(
+                f"pkg.toml is structurally invalid and cannot be updated safely: {e}. Edit the config manually."
+            ) from e
+    return TextConfigDocument(original_text), original_text
 
 
 def locate_metadata_container(doc: Any) -> Any:
     """Return the TOML object whose keys should be metadata-synced."""
+    if isinstance(doc, TextConfigDocument):
+        return doc
     main_block = doc.get("main", None)
     if main_block is None:
         return doc
@@ -1595,8 +1647,63 @@ def _find_existing_metadata_key(container: Any, canonical_key: str) -> Optional[
     return exact_match or alias_match
 
 
+def _sync_text_metadata(doc: TextConfigDocument, identity: PackageIdentity) -> bool:
+    text = doc.text
+    changed = False
+    metadata = metadata_sync_payload(identity)
+
+    main_matches = list(re.finditer(r'(?mi)^\s*\[\[main\]\]\s*$', text))
+    if len(main_matches) > 1:
+        raise ConfigValidationError(
+            "Existing pkg.toml uses [[main]] but it does not contain exactly one table. Edit the config manually."
+        )
+
+    if main_matches:
+        start = main_matches[0].end()
+        next_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text[start:])
+        end = start + next_table.start() if next_table else len(text)
+        container_text = text[start:end]
+        container_offset = start
+    else:
+        first_table = re.search(r'(?m)^\s*\[\[?.*\]?\]\s*$', text)
+        end = first_table.start() if first_table else len(text)
+        container_text = text[:end]
+        container_offset = 0
+
+    for canonical_key, value in metadata.items():
+        aliases = OWNED_METADATA_KEY_ALIASES.get(canonical_key, (canonical_key,))
+        alias_pattern = "|".join(re.escape(a) for a in aliases)
+        pattern = re.compile(
+            rf'(?mi)^(?P<indent>\s*)(?P<key>{alias_pattern})\s*=\s*(?P<value>[^\n#]*)(?P<comment>\s*(?:#.*)?)$'
+        )
+        match = pattern.search(container_text)
+        rendered_value = _to_toml_scalar(value)
+        if match:
+            existing_value = match.group('value').strip()
+            if existing_value != rendered_value:
+                replacement_line = (
+                    f"{match.group('indent')}{match.group('key')} = {rendered_value}{match.group('comment')}"
+                )
+                container_text = container_text[:match.start()] + replacement_line + container_text[match.end():]
+                changed = True
+        else:
+            insertion = f"{canonical_key} = {rendered_value}\n"
+            if container_text and not container_text.endswith(("\n", "\r")):
+                container_text += "\n"
+            container_text += insertion
+            changed = True
+
+    if changed:
+        if container_offset == 0:
+            doc.text = container_text + text[end:]
+        else:
+            doc.text = text[:container_offset] + container_text + text[end:]
+    return changed
+
 def sync_document_metadata(doc: Any, identity: PackageIdentity) -> bool:
     """Mutate only the owned metadata fields in an existing TOML document."""
+    if isinstance(doc, TextConfigDocument):
+        return _sync_text_metadata(doc, identity)
     container = locate_metadata_container(doc)
     changed = False
     for canonical_key, value in metadata_sync_payload(identity).items():
@@ -1612,10 +1719,10 @@ def create_starter_config(identity: PackageIdentity) -> str:
     """Create a minimal future-facing starter ``pkg.toml``."""
     metadata = metadata_sync_payload(identity)
     lines = [
-        f"name = {_to_toml_scalar(metadata['name'])}",
-        f"version = {_to_toml_scalar(metadata['version'])}",
-        f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
-        f"only_portable = {_to_toml_scalar(metadata['only_portable'])}",
+        f"name = {_to_toml_scalar(metadata['name'])}"
+        f"version = {_to_toml_scalar(metadata['version'])}"
+        f"localVersion = {_to_toml_scalar(metadata['localVersion'])}"
+        f"only_portable = {_to_toml_scalar(metadata['only_portable'])}"
     ]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -1950,47 +2057,81 @@ class JunctionManager:
         return compare_package_versions(version1, version2)
 
     @staticmethod
+    def _temp_junction_path(base: Path, label: str) -> Path:
+        suffix = uuid.uuid4().hex[:8]
+        return base.with_name(f"{base.name}.{label}.{suffix}")
+
+    @staticmethod
+    def _replace_current_junction_atomic(current_path: Path, target_path: Path) -> None:
+        if not target_path.exists() or not target_path.is_dir():
+            raise RuntimeError(f"Junction target does not exist or is not a directory: {target_path}")
+
+        new_path = JunctionManager._temp_junction_path(current_path, "__new__")
+        old_path = JunctionManager._temp_junction_path(current_path, "__old__")
+        moved_current = False
+        try:
+            if os.path.lexists(str(new_path)):
+                if JunctionManager.is_junction(new_path):
+                    os.rmdir(str(new_path))
+                else:
+                    raise RuntimeError(f"Temporary junction path already exists and is unsafe to replace: {new_path}")
+
+            if not JunctionManager.create_junction(new_path, target_path):
+                raise RuntimeError(f"Failed to create temporary junction at {new_path}")
+
+            new_target = JunctionManager.get_junction_target(new_path)
+            if new_target is None or normalize_path(new_target) != normalize_path(target_path):
+                raise RuntimeError(f"Temporary junction verification failed: expected {target_path}, got {new_target}")
+
+            if os.path.lexists(str(current_path)):
+                os.replace(str(current_path), str(old_path))
+                moved_current = True
+
+            os.replace(str(new_path), str(current_path))
+
+            if os.path.lexists(str(old_path)):
+                os.rmdir(str(old_path))
+        except Exception:
+            if not os.path.lexists(str(current_path)) and moved_current and os.path.lexists(str(old_path)):
+                try:
+                    os.replace(str(old_path), str(current_path))
+                except Exception:
+                    pass
+            raise
+        finally:
+            if os.path.lexists(str(new_path)):
+                try:
+                    os.rmdir(str(new_path))
+                except OSError:
+                    pass
+            if os.path.lexists(str(old_path)) and not os.path.lexists(str(current_path)):
+                try:
+                    os.replace(str(old_path), str(current_path))
+                except OSError:
+                    pass
+
+    @staticmethod
     def update_current_junction_if_needed(metadata: PackageMetadata, *, force: bool = False) -> bool:
         r"""Update ``<pkg_path>\current`` if the supplied version is not older.
 
         If ``current`` already exists and points to a newer version, no change is
         made unless ``force=True``.
-
-        Args:
-            metadata: Package metadata for the candidate version.
-            force: If True, update ``current`` even when it would be a downgrade.
-
-        Returns:
-            True if ``current`` was created/updated; False if it was left unchanged.
-
-        Raises:
-            ValueError: If ``current`` exists but is not a junction or points
-                somewhere unexpected.
-            RuntimeError: If creating or updating the junction fails.
-
         """
         current_path = metadata.pkg_path / "current"
 
         if os.path.lexists(str(current_path)):
             if not JunctionManager.is_junction(current_path):
-                raise ValueError(
-                    f"{current_path} exists but is not a junction. Aborting all operations."
-                )
+                raise ValueError(f"{current_path} exists but is not a junction. Aborting all operations.")
 
             current_target = JunctionManager.get_junction_target(current_path)
             if not current_target:
-                raise ValueError(
-                    f"{current_path} is a junction but its target is not resolvable. Aborting."
-                )
+                raise ValueError(f"{current_path} is a junction but its target is not resolvable. Aborting.")
 
             current_target = current_target.resolve()
             if not current_target.is_dir():
-                print(
-                    f"JUNCTION: removing stale 'current' target (missing directory): {current_target}"
-                )
-                if JunctionManager.create_junction(current_path, metadata.version_path):
-                    return True
-                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
+                print(f"JUNCTION: stale current target detected: {current_target}")
+                JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
+                return True
 
             if current_target.parent != metadata.pkg_path:
                 raise ValueError(
@@ -2001,24 +2142,18 @@ class JunctionManager:
             current_version = current_target.name
             print(f"'current' junction version: {current_version}")
             comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
-
+            if not force and comparison < 0:
+                print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
+                return False
             if force:
                 print(f"JUNCTION: --force: updating current to {metadata.version_string}")
-                if JunctionManager.create_junction(current_path, metadata.version_path):
-                    return True
-                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
 
-            if comparison >= 0:
-                if JunctionManager.create_junction(current_path, metadata.version_path):
-                    return True
-                raise RuntimeError(f"Failed to update 'current' junction at {current_path}")
-
-            print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
-            return False
-
-        if JunctionManager.create_junction(current_path, metadata.version_path):
+            JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
             return True
-        raise RuntimeError(f"Failed to create 'current' junction at {current_path}")
+
+        JunctionManager._replace_current_junction_atomic(current_path, metadata.version_path)
+        return True
+
 
 
 # =============================================================================
@@ -2276,23 +2411,25 @@ class EnvironmentVariableManager:
                 wintypes.HWND,
                 wintypes.UINT,
                 wintypes.WPARAM,
-                wintypes.LPCWSTR,
+                wintypes.LPARAM,
                 wintypes.UINT,
                 wintypes.UINT,
-                ctypes.POINTER(wintypes.DWORD),
+                ctypes.POINTER(wintypes.ULONG_PTR),
             ]
             SendMessageTimeoutW.restype = wintypes.LPARAM
 
-            result = wintypes.DWORD(0)
-            SendMessageTimeoutW(
+            result = wintypes.ULONG_PTR(0)
+            ok = SendMessageTimeoutW(
                 HWND_BROADCAST,
                 WM_SETTINGCHANGE,
                 0,
-                "Environment",
+                ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
                 SMTO_ABORTIFHUNG,
                 5000,
                 ctypes.byref(result),
             )
+            if not ok:
+                raise OSError("SendMessageTimeoutW failed")
         except Exception as e:
             print(f"Warning: failed to broadcast environment change notification: {e}")
 
@@ -2589,11 +2726,11 @@ class BinFileCreator:
                 try:
                     if wrapper_path.read_bytes() == desired_bytes:
                         print(f"BIN: up-to-date: {wrapper_path}")
-                        return True, None
+                        return True, "unchanged"
                 except OSError:
                     pass
 
-            wrapper_path.write_bytes(desired_bytes)
+            write_bytes_atomic(wrapper_path, desired_bytes)
             action = "updated" if existed_before else "created"
             print(f"BIN: {action}: {wrapper_path}")
             return True, None
@@ -2611,13 +2748,59 @@ class BinFileCreator:
         for wrapper_info in metadata.bin:
             ok, error = BinFileCreator.create_wrapper(wrapper_info, metadata)
             if ok:
-                result.changed = True
+                if error != "unchanged":
+                    result.changed = True
                 continue
             message = error or f"Failed to create wrapper: {wrapper_info.get('name', 'unknown')}"
             reporter.error(message)
             result.ok = False
             result.errors.append(message)
         return result
+
+
+def install_shortcuts_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+    if not metadata.shortcut:
+        return StepResult(ok=True, changed=False)
+    context.reporter.info("")
+    context.reporter.info("Creating shortcuts...")
+    return ShortcutInstaller.install_shortcuts(metadata, reporter=context.reporter)
+
+
+def install_environment_variables_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+    if not metadata.environment:
+        return StepResult(ok=True, changed=False)
+    context.reporter.info("")
+    context.reporter.info("Setting environment variables...")
+    return EnvironmentVariableManager.install_environment_variables(metadata, reporter=context.reporter)
+
+
+def ensure_bin_in_path_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+    context.reporter.info("")
+    context.reporter.info("Managing PATH...")
+    return PATHManager.ensure_bin_in_path(metadata, reporter=context.reporter)
+
+
+def install_extra_path_entries_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+    if not metadata.path:
+        return StepResult(ok=True, changed=False)
+    return PATHManager.add_to_path(metadata.path, metadata, reporter=context.reporter)
+
+
+def install_wrappers_step(metadata: PackageMetadata, context: InstallContext) -> StepResult:
+    if not metadata.bin:
+        return StepResult(ok=True, changed=False)
+    context.reporter.info("")
+    context.reporter.info("Creating executable wrappers...")
+    return BinFileCreator.install_wrappers(metadata, reporter=context.reporter)
+
+
+INSTALL_STEPS = [
+    install_shortcuts_step,
+    install_environment_variables_step,
+    ensure_bin_in_path_step,
+    install_extra_path_entries_step,
+    install_wrappers_step,
+]
 
 
 # =============================================================================
@@ -2814,34 +2997,25 @@ class PackageManager:
 
     def _install_components(self, metadata: PackageMetadata) -> StepResult:
         """Install all components declared in config for the given package."""
+        context = InstallContext(
+            identity=metadata.identity,
+            config=metadata.runtime_config or PackageConfig(),
+            scope_paths=metadata.scope_paths or compute_scope_paths(metadata.scope),
+            reporter=self.reporter,
+            force=self.force,
+        )
+        metadata.scope_paths = context.scope_paths
+
         results: List[StepResult] = []
-
-        if metadata.shortcut:
-            self.reporter.info("")
-            self.reporter.info("Creating shortcuts...")
-            results.append(ShortcutInstaller.install_shortcuts(metadata, reporter=self.reporter))
-
-        if metadata.environment:
-            self.reporter.info("")
-            self.reporter.info("Setting environment variables...")
-            results.append(EnvironmentVariableManager.install_environment_variables(metadata, reporter=self.reporter))
-
-        self.reporter.info("")
-        self.reporter.info("Managing PATH...")
-        results.append(PATHManager.ensure_bin_in_path(metadata, reporter=self.reporter))
-
-        if metadata.path:
-            results.append(PATHManager.add_to_path(metadata.path, metadata, reporter=self.reporter))
-
-        if metadata.bin:
-            self.reporter.info("")
-            self.reporter.info("Creating executable wrappers...")
-            results.append(BinFileCreator.install_wrappers(metadata, reporter=self.reporter))
+        for step in INSTALL_STEPS:
+            step_result = step(metadata, context)
+            results.append(step_result)
 
         if not results:
             return StepResult(ok=True, changed=False)
 
         return combine_step_results(*results)
+
 
     def update_config(self, package_path: Path) -> ActionResult:
         """Update ``pkg.toml`` while preserving existing structure when possible."""
@@ -3017,10 +3191,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = manager.install(package_path)
         elif action == Action.UPDATE_CONFIG:
             result = manager.update_config(package_path)
-        elif action == Action.COMPRESS:
-            message = "Compress action is not implemented."
-            reporter.error(message)
-            result = ActionResult(ok=False, errors=[message], exit_code=EXIT_USER_ERROR)
         else:
             message = f"Unknown action: {action}"
             reporter.error(message)

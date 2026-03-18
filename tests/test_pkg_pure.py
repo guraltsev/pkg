@@ -32,7 +32,7 @@ def load_pkg_module():
 class PkgPureImportTests(unittest.TestCase):
     def test_import_succeeds(self) -> None:
         module = load_pkg_module()
-        self.assertEqual(module.__version__, "0.11.0")
+        self.assertEqual(module.__version__, "0.12.0")
 
     def test_version_helpers_are_callable(self) -> None:
         module = load_pkg_module()
@@ -324,6 +324,28 @@ x_note = "preserve me"
             ps_command = captured["cmd"][-1]
             self.assertIn("O''Brien Tool.lnk", ps_command)
             self.assertIn("O''Brien", ps_command)
+
+    def test_help_hides_python_and_compress(self) -> None:
+        module = load_pkg_module()
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stdout(stdout):
+                module.main(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        help_text = stdout.getvalue()
+        self.assertNotIn("--python", help_text)
+        self.assertNotIn("Compress", help_text)
+
+    def test_write_bytes_atomic_updates_wrapper_atomically(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tool.cmd"
+            module.write_bytes_atomic(path, b"@echo off\r\necho one\r\n")
+            self.assertEqual(path.read_bytes(), b"@echo off\r\necho one\r\n")
+            module.write_bytes_atomic(path, b"@echo off\r\necho two\r\n")
+            self.assertEqual(path.read_bytes(), b"@echo off\r\necho two\r\n")
+            temps = list(Path(tmpdir).glob(".*.tmp"))
+            self.assertEqual(temps, [])
 
 
 if __name__ == "__main__":
