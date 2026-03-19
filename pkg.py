@@ -1647,6 +1647,21 @@ def _current_version_matches(package_root: Path, version_path: Path) -> bool:
         return False
 
 
+def _normalize_input_path(raw_path: Path) -> Path:
+    """Normalize a user-supplied path without dereferencing junctions.
+
+    Args:
+        raw_path: User-supplied path that may be relative, including ``.`` or
+            ``..`` segments.
+
+    Returns:
+        An absolute, lexically normalized path that preserves a trailing
+        ``current`` path component instead of resolving through it.
+    """
+
+    return Path(os.path.abspath(os.fspath(raw_path.expanduser())))
+
+
 def resolve_input_path(raw_path: Path) -> ResolvedInput:
     """Classify a user-supplied path using ``pkg`` package-layout rules.
 
@@ -1662,7 +1677,7 @@ def resolve_input_path(raw_path: Path) -> ResolvedInput:
         ValueError: If the path does not match a supported package layout.
     """
 
-    candidate = raw_path.expanduser()
+    candidate = _normalize_input_path(raw_path)
 
     if is_version_directory_name(candidate.name):
         if not candidate.exists() or not candidate.is_dir():
@@ -3733,6 +3748,21 @@ class PackageManager:
         if no_autoupdate_config:
             self.fix_config = False
 
+    def _print_banner(self, operation: Action) -> None:
+        """Emit the standard CLI banner for one operation.
+
+        Args:
+            operation: Action currently being executed.
+        """
+
+        self.reporter.info("")
+        self.reporter.info("=" * 60)
+        self.reporter.info("gurlatsev/pkg: Package Manager")
+        self.reporter.info(f"Operation: {operation.value}")
+        self.reporter.info(f"Scope: {self.scope.value}")
+        self.reporter.info("=" * 60)
+        self.reporter.info("")
+
     def _failure(self, message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
         """Create a failed action result and report the error.
 
@@ -3765,12 +3795,7 @@ class PackageManager:
             An :class:`ActionResult` describing the install outcome.
         """
 
-        self.reporter.info("")
-        self.reporter.info("=" * 60)
-        self.reporter.info("gurlatsev/pkg: Package Manager")
-        self.reporter.info(f"Scope: {self.scope.value}")
-        self.reporter.info("=" * 60)
-        self.reporter.info("")
+        self._print_banner(Action.INSTALL)
 
         try:
             package_path, installing_from_current = self._resolve_install_path(package_path)
@@ -3954,6 +3979,8 @@ class PackageManager:
         Returns:
             An :class:`ActionResult` describing the metadata-update outcome.
         """
+
+        self._print_banner(Action.UPDATE_CONFIG)
 
         try:
             resolved_path, _ = self._resolve_install_path(package_path)

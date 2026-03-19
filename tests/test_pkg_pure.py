@@ -167,6 +167,38 @@ name = "Broken"
             self.assertEqual(resolved.version_path, version_dir)
             self.assertFalse(resolved.installing_from_current)
 
+    def test_resolve_input_path_treats_dot_inside_version_dir_as_version_dir(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "GoodApp" / "v1.2.3.l1"
+            version_dir.mkdir(parents=True)
+            cwd = Path.cwd()
+            try:
+                os.chdir(version_dir)
+                resolved = module.resolve_input_path(Path("."))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(resolved.input_kind, "version")
+            self.assertEqual(resolved.package_root, version_dir.parent)
+            self.assertEqual(resolved.version_path, version_dir)
+            self.assertFalse(resolved.installing_from_current)
+
+    def test_install_banner_includes_operation_name(self) -> None:
+        module = load_pkg_module()
+        manager = module.PackageManager()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            result = manager.install(ROOT / "does-not-exist")
+        self.assertFalse(result.ok)
+        self.assertIn("Operation: Install", output.getvalue())
+
+    def test_update_config_banner_includes_operation_name(self) -> None:
+        module = load_pkg_module()
+        manager = module.PackageManager()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            result = manager.update_config(ROOT / "does-not-exist")
+        self.assertFalse(result.ok)
+        self.assertIn("Operation: UpdateConfig", output.getvalue())
+
     def test_alias_heavy_runtime_config_normalizes_to_runtime_model(self) -> None:
         module = load_pkg_module()
         identity = module.PackageIdentity(

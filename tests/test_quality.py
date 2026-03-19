@@ -14,6 +14,11 @@ DOC_TARGETS = [
 ]
 README = ROOT / "README.md"
 DOC_INDEX = ROOT / "docs" / "README.md"
+WRAPPER_SCRIPTS = [
+    ROOT / "install.cmd",
+    ROOT / "install-machine.cmd",
+    ROOT / "update-config.cmd",
+]
 REMOVED_MODULES = [
     ROOT / "pkg_common.py",
     ROOT / "pkg_core.py",
@@ -129,6 +134,14 @@ class DocumentationCoverageTests(unittest.TestCase):
         self.assertIn("configuration.md", index_text)
         self.assertIn("api.md", index_text)
         self.assertIn("review.md", index_text)
+
+
+class WrapperScriptTests(unittest.TestCase):
+    def test_wrapper_scripts_preserve_caller_working_directory(self) -> None:
+        """Ensure convenience wrappers do not change away from the caller's directory."""
+        for script in WRAPPER_SCRIPTS:
+            script_text = script.read_text(encoding="utf-8")
+            self.assertNotIn("cd /d", script_text.lower(), msg=f"Wrapper unexpectedly changes directory: {script.name}")
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
