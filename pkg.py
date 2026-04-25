@@ -2628,6 +2628,7 @@ Quick start
 Notes:
   - ``pkg --help`` and ``pkg --version`` do not install dependencies or write files.
   - ``Install`` does not auto-create ``pkg.toml``.
+  - ``UpdateConfig`` creates a documented starter template with commented examples when ``pkg.toml`` is missing.
   - ``UpdateConfig`` preserves comments, unknown keys, and existing TOML structure when updating an existing file.
   - Architecture and developer docs live in ``docs/architecture.md`` and ``docs/api.md``.
 
@@ -3336,7 +3337,7 @@ class PackageMetadata:
                 implementation derives starter content from the package identity.
 
         Returns:
-            Minimal metadata-only TOML text.
+            Documented TOML text with comments and commented examples.
         """
 
         _ = data
@@ -3424,7 +3425,9 @@ class PackageMetadata:
                 warnings.
 
         Returns:
-            A :class:`StepResult` describing the update.
+            A :class:`StepResult` describing the update. Missing configs are
+            created as documented starter templates, and bare metadata-only
+            configs from the recent regression are upgraded in place.
         """
 
         reporter = reporter or Reporter()
@@ -3433,16 +3436,29 @@ class PackageMetadata:
         warnings: List[str] = []
 
         if toml_path.exists():
-            doc, original_text = load_config_document(toml_path)
-            changed = sync_document_metadata(doc, self.identity)
-            rendered = doc.as_string()
-            if not changed or rendered == original_text:
-                reporter.info(f"Configuration already up to date: {toml_path}")
-                result = StepResult(ok=True, changed=False)
+            original_text = toml_path.read_text(encoding="utf-8")
+            if is_metadata_only_config_text(original_text):
+                rendered = create_starter_config(self.identity)
+                if rendered == original_text:
+                    reporter.info(f"Configuration already up to date: {toml_path}")
+                    result = StepResult(ok=True, changed=False)
+                else:
+                    write_text_atomic(toml_path, rendered, backup=True)
+                    reporter.info(
+                        f"Expanded: {toml_path} (upgraded metadata-only config to documented template)"
+                    )
+                    result = StepResult(ok=True, changed=True)
             else:
-                write_text_atomic(toml_path, rendered, backup=True)
-                reporter.info(f"Updated: {toml_path}")
-                result = StepResult(ok=True, changed=True)
+                doc, original_text = load_config_document(toml_path)
+                changed = sync_document_metadata(doc, self.identity)
+                rendered = doc.as_string()
+                if not changed or rendered == original_text:
+                    reporter.info(f"Configuration already up to date: {toml_path}")
+                    result = StepResult(ok=True, changed=False)
+                else:
+                    write_text_atomic(toml_path, rendered, backup=True)
+                    reporter.info(f"Updated: {toml_path}")
+                    result = StepResult(ok=True, changed=True)
         else:
             rendered = create_starter_config(self.identity)
             write_text_atomic(toml_path, rendered, backup=False)
@@ -3511,6 +3527,54 @@ def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
         "localVersion": identity.local_version,
         "only_portable": identity.only_portable_by_name,
     }
+
+
+def is_metadata_only_config_text(text: str) -> bool:
+    """Return whether *text* is a bare metadata-only config.
+
+    The detection is intentionally conservative and is only used to identify
+    the recent regression where ``UpdateConfig`` created a nearly empty
+    ``pkg.toml`` containing just the directory-owned metadata fields. When the
+    file appears to be that minimal auto-generated shape, ``pkg`` upgrades it
+    to the richer documented template on the next ``UpdateConfig`` run.
+
+    Args:
+        text: Raw ``pkg.toml`` content to inspect.
+
+    Returns:
+        ``True`` when *text* contains only owned metadata assignments (with an
+        optional ``[[main]]`` wrapper) plus blank lines; otherwise ``False``.
+    """
+
+    allowed_keys = {
+        alias.lower()
+        for aliases in OWNED_METADATA_KEY_ALIASES.values()
+        for alias in aliases
+    }
+    saw_assignment = False
+    saw_main = False
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return False
+        if "#" in stripped:
+            return False
+        if stripped == "[[main]]":
+            if saw_main:
+                return False
+            saw_main = True
+            continue
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*.+$", stripped)
+        if match is None:
+            return False
+        if match.group(1).lower() not in allowed_keys:
+            return False
+        saw_assignment = True
+
+    return saw_assignment
 
 
 def load_config_document(path: Path) -> Tuple[Any, str]:
@@ -3688,21 +3752,80 @@ def sync_document_metadata(doc: Any, identity: PackageIdentity) -> bool:
 
 
 def create_starter_config(identity: PackageIdentity) -> str:
-    """Create a minimal starter ``pkg.toml`` for a package.
+    """Create a documented starter ``pkg.toml`` for a package.
 
     Args:
         identity: Package identity that supplies starter metadata values.
 
     Returns:
-        Metadata-only TOML text with one field per line.
+        TOML text that includes synchronized metadata, documentation comments,
+        and commented example blocks for the supported runtime sections.
     """
 
     metadata = metadata_sync_payload(identity)
+    
+    
+    example_exe = re.sub(r"[^A-Za-z0-9._-]+", "", identity.name) or "App"
+    example_env = re.sub(r"[^A-Za-z0-9]+", "_", identity.name).strip("_").upper() or "APP"
+    example_wrapper = re.sub(r"[^A-Za-z0-9]+", "-", identity.name).strip("-").lower() or "app"
+    example_description = f""
+    example_homepage = "https://"
+    example_download = "https://"
+    example_exe_path = rf"$App\{example_exe}.exe"
+    example_icon_path = rf"$Icons\{example_exe}.ico,0"
+    example_env_value = rf"${{USERPROFILE}}\{identity.name}"
+    example_wrapper_name = f"{example_wrapper}.cmd"
+    example_wrapper_command = f'"{example_exe_path}" %*'
+    
+    
     lines = [
+        "# Generated automatically by `pkg`.",
+        "",
+        "# UpdateConfig will keep these fields aligned with the package folder name.",
         f"name = {_to_toml_scalar(metadata['name'])}",
         f"version = {_to_toml_scalar(metadata['version'])}",
         f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
+        "# Set only_portable = true when the package stores user config in its folder",
+        "# Therefore the package must only be installed portably.",
         f"only_portable = {_to_toml_scalar(metadata['only_portable'])}",
+        "",
+        "",
+        f"# description = {_to_toml_scalar(example_description)}",
+        f"# homepage = {_to_toml_scalar(example_homepage)}",
+        f"# downloadURL = {_to_toml_scalar(example_download)}",
+        "",
+        "# Variable expansion reference:",
+        "#   $App, $Icons, $Shortcuts -> package directories under <package>/current/",
+        "#   ${VAR} -> environment variable expansion and must resolve",
+        "#   plain $VAR -> expands in regular fields but stays literal in [[bin]] content",
+        "#   $$ -> literal $",
+        "",
+        "",
+        "# Examples:",
+        "# [[shortcut]]",
+        f"# name = {_to_toml_scalar(identity.name)}",
+        f"# targetPath = {_to_toml_scalar(example_exe_path)}",
+        "# arguments = \"--example\"",
+        "# workingDirectory = \"$App\"",
+        f"# iconLocation = {_to_toml_scalar(example_icon_path)}",
+        f"# description = {_to_toml_scalar(identity.name)}",
+        "",
+        "# Example environment variable available after installation.",
+        "# [[environment]]",
+        f"# Name = {_to_toml_scalar(f'{example_env}_HOME')}",
+        f"# Value = {_to_toml_scalar(example_env_value)}",
+        "",
+        "# Example PATH entry.",
+        "# [[path]]",
+        "# value = \"$App\"",
+        "",
+        "# Example wrapper script placed in the scope bin directory.",
+        "# [[bin]]",
+        f"# name = {_to_toml_scalar(example_wrapper_name)}",
+        "# content = '''",
+        "# @echo off",
+        f"# {example_wrapper_command}",
+        "# '''",
     ]
     return "\n".join(lines).rstrip() + "\n"
 

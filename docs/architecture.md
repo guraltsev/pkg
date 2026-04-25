@@ -94,7 +94,10 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
 2. `PackageManager.update_config()` resolves the target version directory.
 3. `PackageMetadata.update_config()` updates only owned metadata keys.
 4. Existing TOML structure/comments are preserved when possible.
-5. Missing `pkg.toml` files get a minimal starter config.
+5. Bare metadata-only configs from the recent regression are upgraded to the
+   richer documented starter template.
+6. Missing `pkg.toml` files get a documented starter config with commented
+   examples for the supported runtime sections.
 
 ## Why the section split matters
 

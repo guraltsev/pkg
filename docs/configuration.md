@@ -90,4 +90,9 @@ They expand relative to `<package_root>/current/...`.
 ## Missing `pkg.toml`
 
 - `Install` uses runtime defaults and does not create the file.
-- `UpdateConfig` creates a starter `pkg.toml` containing owned metadata fields.
+- `UpdateConfig` creates a documented starter `pkg.toml` containing owned
+  metadata fields plus commented examples for `[[shortcut]]`, `[[environment]]`,
+  `[[path]]`, and `[[bin]]`.
+- If a package still has one of the recent metadata-only auto-generated files,
+  `UpdateConfig` upgrades it to the richer documented template while keeping a
+  `.bak` backup.

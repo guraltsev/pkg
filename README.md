@@ -51,8 +51,9 @@ package root.
 
 - `Install` updates the `current` junction when appropriate, then applies
   shortcuts, environment variables, PATH entries, and wrapper files.
-- `UpdateConfig` creates a starter `pkg.toml` when missing, or syncs only the
-  filesystem-derived metadata in an existing `pkg.toml`.
+- `UpdateConfig` creates a documented starter `pkg.toml` with commented
+  examples when missing, upgrades recent metadata-only auto-generated configs,
+  or syncs only the filesystem-derived metadata in an existing `pkg.toml`.
 
 ## Exit codes
 
@@ -64,6 +65,10 @@ package root.
 ## Config notes
 
 `Install` does not auto-create `pkg.toml` when it is missing.
+
+When `pkg.toml` is missing, `UpdateConfig` now creates a self-documenting file
+that includes the synchronized metadata plus commented examples for shortcuts,
+environment variables, PATH entries, and wrapper scripts.
 
 For an existing `pkg.toml`, `UpdateConfig` preserves comments, unknown keys, and
 existing layout while syncing only these owned metadata keys:

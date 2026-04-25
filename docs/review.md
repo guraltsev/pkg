@@ -42,5 +42,8 @@
 - Added discoverable documentation under `docs/`.
 - Added quality tests that enforce docstring coverage, documentation
   discoverability, the single-file layout, and Windows-boundary separation.
-- Corrected starter `pkg.toml` generation so metadata is emitted on separate
-  lines.
+- Restored starter `pkg.toml` generation so missing configs now become
+  documented templates with comments and commented examples instead of bare
+  metadata-only files.
+- Added a targeted upgrade path so the recent metadata-only auto-generated
+  configs can be expanded in place on the next `UpdateConfig` run.
