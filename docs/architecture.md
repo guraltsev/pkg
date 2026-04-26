@@ -80,13 +80,18 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
 4. `PackageManager` validates portability and metadata consistency.
 5. If needed, `WindowsPlatform.update_current_junction_if_needed()` runs the
    package-level junction policy and uses the raw junction wrappers to repoint
-   `current`.
+   `current`. This step is not only for upgrades: reinstalling the currently
+   active version may still recreate `current`.
 6. The install-step pipeline runs in order:
    - shortcuts
    - environment variables
    - ensuring the scope bin directory is on PATH
    - extra PATH entries
    - wrapper files
+
+   The pipeline is repair-oriented. Same-version reinstalls are not treated as
+   a no-op; the steps still run so broken shortcuts, environment variables,
+   PATH entries, and wrapper files can be restored.
 
 ### UpdateConfig
 

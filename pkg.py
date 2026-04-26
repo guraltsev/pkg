@@ -892,6 +892,12 @@ def _deduplicate_preserving_order(values: List[str]) -> List[str]:
 def _package_variable_map(identity: PackageIdentity) -> Dict[str, str]:
     """Build the package-variable expansion map for one package identity.
 
+    Package variables intentionally resolve through ``<package>/current``
+    rather than directly through :attr:`PackageIdentity.version_path`.
+    Re-running install for the same version is a supported repair path, so
+    shortcuts, environment variables, PATH entries, and wrapper files keep
+    targeting the active package view.
+
     Args:
         identity: Package identity whose ``current`` tree should be referenced.
 
@@ -1768,17 +1774,23 @@ class JunctionManager:
 
     @staticmethod
     def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
-        r"""Update ``<package>\current`` when the chosen version should win.
+        r"""Update ``<package>\current`` unless a newer version should win.
+
+        When this method runs for the version that is already active, it may
+        still refresh ``current`` by recreating the junction. That behavior is
+        intentional: install uses reruns as a repair path for external state,
+        so same-version targets are not treated as a junction no-op here.
 
         Args:
             metadata: Package metadata describing the version being installed.
-            force: Whether to allow downgrades or reinstalls even when ``current``
-                already points to a newer version.
+            force: Whether to allow replacing ``current`` when it already
+                points to a newer version. Same-version targets may still
+                refresh ``current`` without ``force``.
 
         Returns:
-            ``True`` when the junction changed; ``False`` when ``current`` was
-            intentionally left untouched because a newer version was already
-            active.
+            ``True`` when ``current`` was recreated or repointed; ``False``
+            only when ``current`` was intentionally left untouched because a
+            newer version was already active.
 
         Raises:
             ValueError: If the existing ``current`` path is unsafe or malformed.
@@ -1812,12 +1824,17 @@ class JunctionManager:
                 current_version = current_target.name
                 print(f"'current' junction version: {current_version}")
                 comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
+                # Same-version reinstalls are a supported refresh path. Only
+                # keep the existing junction untouched when it points to a
+                # newer version and --force was not requested.
                 if not force and comparison < 0:
                     print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
                     return False
                 if force:
                     print(f"JUNCTION: --force: updating current to {metadata.version_string}")
         
+        # Refreshing the currently active version may still recreate
+        # ``current`` so install can reassert the active package view.
         new_path = current_path.with_name(f"{current_path.name}.__new__.{uuid.uuid4().hex[:8]}")
         old_path = current_path.with_name(f"{current_path.name}.__old__.{uuid.uuid4().hex[:8]}")
         moved_current = False
@@ -2587,10 +2604,11 @@ class WindowsPlatform:
 
         Args:
             metadata: Package metadata describing the version being installed.
-            force: Whether downgrades/reinstalls should be allowed.
+            force: Whether replacing ``current`` should be allowed when it
+                already points to a newer version.
 
         Returns:
-            ``True`` when ``current`` changed.
+            ``True`` when ``current`` was recreated or repointed.
         """
 
         return self.junction_manager.update_current_junction_if_needed(metadata, force=force)
@@ -3847,8 +3865,9 @@ class PackageManager:
                 automatically.
             use_defaults: Whether installs may fall back to runtime defaults when
                 TOML loading fails.
-            force: Whether installs may replace ``current`` even when that would
-                be a downgrade or reinstall.
+            force: Whether installs may replace ``current`` even when it
+                already points to a newer version. Ordinary same-version repair
+                reruns do not require ``force``.
             no_autoupdate_config: Deprecated compatibility flag that disables
                 automatic metadata repair during install.
             platform: Optional Windows platform facade that performs all
@@ -3903,7 +3922,13 @@ class PackageManager:
         )
 
     def install(self, package_path: Path) -> ActionResult:
-        """Install a package and return a truthful action result.
+        """Install or reinstall a package and return a truthful action result.
+
+        Same-version installs are intentionally not treated as a no-op. Once
+        the selected version is allowed to proceed, the component pipeline
+        reruns so broken shortcuts, environment variables, PATH entries, and
+        wrapper files can be restored. Depending on *package_path*, reinstall
+        may also refresh the ``current`` junction.
 
         Args:
             package_path: User-supplied path to a version directory, package
@@ -4012,6 +4037,9 @@ class PackageManager:
             except Exception as exc:
                 return self._failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
 
+            # Only skip when a newer version remains current. Reinstalling the
+            # active version is intentionally allowed to continue so install
+            # can repair external state.
             if not junction_changed and not metadata.is_current:
                 self.reporter.info("Skipping component installation (newer version already installed)")
                 return ActionResult(
@@ -4246,7 +4274,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--force",
         action="store_true",
         default=False,
-        help="Force install: allow downgrade/reinstall by updating current even if newer is installed",
+        help="Force install: allow replacing current even if a newer version is already active",
     )
 
     parser.add_argument(

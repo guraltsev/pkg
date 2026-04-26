@@ -76,6 +76,12 @@ These always expand:
 
 They expand relative to `<package_root>/current/...`.
 
+This is intentional: package variables follow the active package view that
+`Install` reasserts. Rerunning `Install` for the same version is a supported
+repair path for shortcuts, environment variables, PATH entries, and wrapper
+files, so those expansions stay anchored to `current` rather than a specific
+version directory.
+
 ### Environment variables
 
 - `${VAR}` expands everywhere and is treated as an error when unresolved.

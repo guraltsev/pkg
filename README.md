@@ -49,8 +49,10 @@ package root.
 
 ## Actions
 
-- `Install` updates the `current` junction when appropriate, then applies
-  shortcuts, environment variables, PATH entries, and wrapper files.
+- `Install` is repair-oriented: rerunning it for the same version is
+  intentional and reapplies package state so broken shortcuts, environment
+  variables, PATH entries, and wrapper files can be restored. It may also
+  recreate the `current` junction.
 - `UpdateConfig` creates a documented starter `pkg.toml` with commented
   examples when missing, upgrades recent metadata-only auto-generated configs,
   or syncs only the filesystem-derived metadata in an existing `pkg.toml`.
