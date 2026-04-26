@@ -133,6 +133,128 @@ name = "Broken"
             self.assertTrue(warnings)
             self.assertFalse((version_dir / "pkg.toml").exists())
 
+    def test_metadata_consistency_detects_raw_file_mismatches(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "MismatchApp"
+            dst = Path(tmpdir) / "MismatchApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v2.0.0.l3"
+            metadata = module.PackageMetadata(version_dir)
+
+            config_data, warnings = metadata.load_config()
+
+            self.assertEqual(warnings, [])
+            self.assertEqual(config_data["name"], "MismatchApp-OLD")
+            self.assertEqual(config_data["version"], "1.9.9")
+            self.assertEqual(config_data["localVersion"], 7)
+            self.assertEqual(
+                metadata.check_metadata_consistency(config_data),
+                [
+                    "Name mismatch: directory='MismatchApp', config='MismatchApp-OLD'",
+                    "Version mismatch: directory='2.0.0', config='1.9.9'",
+                    "LocalVersion mismatch: directory='3', config='7'",
+                ],
+            )
+
+    def test_matching_raw_config_has_no_metadata_mismatch(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "GoodApp"
+            dst = Path(tmpdir) / "GoodApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v1.2.3.l1"
+            metadata = module.PackageMetadata(version_dir)
+
+            config_data, warnings = metadata.load_config()
+
+            self.assertEqual(warnings, [])
+            self.assertEqual(config_data["name"], "GoodApp")
+            self.assertEqual(metadata.check_metadata_consistency(config_data), [])
+
+    def test_missing_config_with_defaults_does_not_trigger_metadata_mismatch(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "NoConfigApp"
+            dst = Path(tmpdir) / "NoConfigApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v0.9.0.l1"
+            metadata = module.PackageMetadata(version_dir)
+
+            config_data, warnings = metadata.load_config(use_defaults=True)
+
+            self.assertTrue(warnings)
+            self.assertEqual(config_data["name"], "NoConfigApp")
+            self.assertEqual(metadata.check_metadata_consistency(config_data), [])
+            self.assertFalse((version_dir / "pkg.toml").exists())
+
+    def test_install_aborts_on_metadata_mismatch_before_mutations(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "MismatchApp"
+            dst = Path(tmpdir) / "MismatchApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v2.0.0.l3"
+            manager = module.PackageManager()
+            calls = []
+
+            def fake_update_current(metadata, force=False):
+                calls.append("junction")
+                return True
+
+            def fake_install_components(metadata):
+                calls.append("components")
+                return module.StepResult(ok=True, changed=False)
+
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                with mock.patch.object(manager.platform, "update_current_junction_if_needed", side_effect=fake_update_current):
+                    with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
+                        with contextlib.redirect_stdout(io.StringIO()) as output:
+                            result = manager.install(version_dir)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
+            self.assertEqual(calls, [])
+            self.assertIn("Configuration inconsistencies detected", output.getvalue())
+            pkg_toml = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertIn('name = "MismatchApp-OLD"', pkg_toml)
+            self.assertFalse((version_dir / "pkg.toml.bak").exists())
+
+    def test_install_with_fix_config_repairs_metadata_then_continues(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = FIXTURES / "MismatchApp"
+            dst = Path(tmpdir) / "MismatchApp"
+            shutil.copytree(src, dst)
+            version_dir = dst / "v2.0.0.l3"
+            manager = module.PackageManager(fix_config=True)
+            calls = []
+
+            def fake_update_current(metadata, force=False):
+                calls.append("junction")
+                return True
+
+            def fake_install_components(metadata):
+                calls.append("components")
+                return module.StepResult(ok=True, changed=False)
+
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                with mock.patch.object(manager.platform, "update_current_junction_if_needed", side_effect=fake_update_current):
+                    with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
+                        with contextlib.redirect_stdout(io.StringIO()) as output:
+                            result = manager.install(version_dir)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.exit_code, module.EXIT_SUCCESS)
+            self.assertEqual(calls, ["junction", "components"])
+            self.assertIn("Configuration updated successfully.", output.getvalue())
+            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
+            self.assertIn('name = "MismatchApp"', updated)
+            self.assertIn('version = "2.0.0"', updated)
+            self.assertIn('localVersion = 3', updated)
+            self.assertIn('name = "MismatchApp-OLD"', backup)
+
     def test_update_config_preserves_comments_unknown_keys_and_creates_backup(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -240,7 +362,7 @@ name = "Broken"
             self.assertTrue(result.ok)
             self.assertTrue(result.changed)
             pkg_toml = (version_dir / "pkg.toml").read_text(encoding="utf-8")
-            self.assertIn("# Generated by `pkg --action UpdateConfig`.", pkg_toml)
+            self.assertIn("# Generated automatically by `pkg`.", pkg_toml)
             self.assertIn('name = "NoConfigApp"', pkg_toml)
             self.assertIn('version = "0.9.0"', pkg_toml)
             self.assertIn('localVersion = 1', pkg_toml)
@@ -277,7 +399,7 @@ name = "Broken"
             backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
 
             self.assertEqual(backup, original)
-            self.assertIn("# Generated by `pkg --action UpdateConfig`.", updated)
+            self.assertIn("# Generated automatically by `pkg`.", updated)
             self.assertIn('name = "RegressionApp"', updated)
             self.assertIn('version = "3.4.5"', updated)
             self.assertIn('localVersion = 6', updated)

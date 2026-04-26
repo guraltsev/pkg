@@ -2890,34 +2890,25 @@ def package_config_to_dict(config: PackageConfig, identity: PackageIdentity) -> 
     }
 
 
-def check_metadata_consistency(identity: PackageIdentity, raw_or_config: Any) -> List[str]:
-    """Compare directory-derived metadata with configuration metadata.
+def check_metadata_consistency(identity: PackageIdentity, raw_config: Dict[str, Any]) -> List[str]:
+    """Compare directory-derived metadata with raw configuration metadata.
 
     Args:
         identity: Package identity derived from the directory layout.
-        raw_or_config: Either a normalized :class:`PackageConfig` or a raw config
-            dictionary.
+        raw_config: Raw config dictionary derived from ``pkg.toml``.
 
     Returns:
         A list of human-readable mismatch descriptions. The list is empty when
         the metadata is consistent.
 
     Raises:
-        TypeError: If *raw_or_config* is neither a :class:`PackageConfig` nor a
-            dictionary.
+        TypeError: If *raw_config* is not a dictionary.
     """
 
-    if isinstance(raw_or_config, PackageConfig):
-        data = {
-            "name": identity.name,
-            "version": identity.version,
-            "localVersion": identity.local_version,
-            "only_portable": raw_or_config.only_portable,
-        }
-    elif isinstance(raw_or_config, dict):
-        data = PackageMetadata._canonicalize_config_dict(dict(raw_or_config))
-    else:
-        raise TypeError("raw_or_config must be a PackageConfig or dict")
+    if not isinstance(raw_config, dict):
+        raise TypeError("raw_config must be a dict")
+
+    data = PackageMetadata._canonicalize_config_dict(dict(raw_config))
 
     inconsistencies: List[str] = []
     if "name" in data and data.get("name") not in (None, "") and str(data.get("name")) != identity.name:
@@ -2944,7 +2935,9 @@ def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -
             validation fails.
 
     Returns:
-        A tuple ``(runtime_config, raw_dict, warnings)``.
+        A tuple ``(runtime_config, raw_dict, warnings)`` where ``raw_dict`` is
+        the canonicalized file-authored config when ``pkg.toml`` exists, or the
+        generated defaults dictionary when no config is available.
 
     Raises:
         DependencyError: If a TOML reader is required but unavailable and
@@ -2962,7 +2955,8 @@ def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -
             loaded = read_toml_file(toml_path)
             config = normalize_runtime_config(loaded, identity)
             validate_runtime_config(config)
-            return config, PackageMetadata._canonicalize_config_dict(dict(loaded)), warnings
+            raw_config = PackageMetadata._canonicalize_config_dict(dict(loaded))
+            return config, raw_config, warnings
         except DependencyError:
             if not use_defaults:
                 raise
@@ -2978,8 +2972,9 @@ def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -
             warnings.append("Proceeding with defaults because --use-defaults was provided.")
     config = normalize_runtime_config({}, identity)
     validate_runtime_config(config)
+    raw_config = package_config_to_dict(config, identity)
     warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
-    return config, package_config_to_dict(config, identity), warnings
+    return config, raw_config, warnings
 
 
 class PackageMetadata:
@@ -3363,10 +3358,10 @@ class PackageMetadata:
             use_defaults: Whether defaults may be used when TOML loading fails.
 
         Returns:
-            A tuple ``(plain_config_dict, warnings)``.
+            A tuple ``(raw_config_dict, warnings)``.
         """
 
-        config, _raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
+        config, raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
         self.runtime_config = config
         self.description = config.description
         self.homepage = config.homepage
@@ -3386,7 +3381,7 @@ class PackageMetadata:
             for item in config.shortcut
         ]
         self.only_portable = config.only_portable
-        return package_config_to_dict(config, self.identity), warnings
+        return raw_data, warnings
 
     def _load_from_dict(self, data: Dict[str, Any]) -> None:
         """Populate the compatibility fields from a raw config dictionary.
@@ -3928,7 +3923,7 @@ class PackageManager:
         try:
             metadata = PackageMetadata(package_path, platform=self.platform)
             metadata.set_scope(self.scope)
-            config_data, load_warnings = metadata.load_config(use_defaults=self.use_defaults)
+            raw_config_data, load_warnings = metadata.load_config(use_defaults=self.use_defaults)
         except DependencyError as exc:
             return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
         except (ConfigValidationError, RuntimeError, ValueError) as exc:
@@ -3955,7 +3950,7 @@ class PackageManager:
             )
 
         config_sync_changed = False
-        inconsistencies = metadata.check_metadata_consistency(config_data)
+        inconsistencies = metadata.check_metadata_consistency(raw_config_data)
         if inconsistencies:
             if not self.fix_config:
                 self.reporter.error("Configuration inconsistencies detected:")
