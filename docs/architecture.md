@@ -11,7 +11,8 @@ Windows-specific side effects.
 - `Windows integration boundary` exposes thin Python wrappers for direct
   Windows primitives.
 - `Package-management logic and CLI` decides what should happen at a package
-  level and orchestrates those wrappers through `WindowsPlatform`.
+  level and orchestrates those wrappers through package-management helpers plus
+  a small `WindowsPlatform` boundary.
 - `Script entry point` provides the executable handoff.
 
 This layout keeps raw Windows commands and APIs easy to audit in one place

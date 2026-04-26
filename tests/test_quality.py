@@ -149,6 +149,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         """Return the full source text of ``pkg.py``."""
         return PKG_PY.read_text(encoding="utf-8")
 
+    def _module_tree(self) -> ast.Module:
+        """Return the parsed syntax tree of ``pkg.py``."""
+        return ast.parse(self._source())
+
     def _section_ranges(self) -> dict[str, tuple[int, int]]:
         """Return byte ranges for each named section in ``pkg.py``."""
         source = self._source()
@@ -170,6 +174,60 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         source = self._source()
         for marker in SECTION_MARKERS.values():
             self.assertIn(marker, source)
+
+    def test_pkg_metadata_does_not_restore_removed_private_compatibility_methods(self) -> None:
+        """Ensure removed private compatibility wrappers stay out of ``PackageMetadata``."""
+        tree = self._module_tree()
+        class_node = next(
+            node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PackageMetadata"
+        )
+        method_names = {
+            node.name for node in class_node.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for removed_name in {
+            "_fill_from_directory",
+            "_fill_current",
+            "_validate_config_dict",
+            "_to_toml_scalar",
+            "_metadata_sync_payload",
+            "_create_starter_config_text",
+            "_locate_metadata_container",
+            "_load_from_dict",
+        }:
+            self.assertNotIn(removed_name, method_names)
+
+    def test_install_context_wrapper_class_does_not_return(self) -> None:
+        """Ensure install steps keep the direct reporter-based signature."""
+        tree = self._module_tree()
+        class_names = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+        self.assertNotIn("InstallContext", class_names)
+
+    def test_windows_platform_stays_small(self) -> None:
+        """Ensure ``WindowsPlatform`` does not grow new facade-only pass-throughs."""
+        tree = self._module_tree()
+        class_node = next(
+            node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WindowsPlatform"
+        )
+        method_names = {
+            node.name for node in class_node.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assigned_names = {
+            target.id
+            for node in class_node.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        self.assertNotIn("compute_scope_paths", method_names)
+        self.assertNotIn("install_steps", method_names)
+        for removed_name in {
+            "junction_manager",
+            "shortcut_installer",
+            "environment_manager",
+            "path_manager",
+            "bin_creator",
+        }:
+            self.assertNotIn(removed_name, assigned_names)
 
     def test_shared_windows_and_core_sections_begin_with_imports(self) -> None:
         """Ensure each implementation section begins with imports after its header."""

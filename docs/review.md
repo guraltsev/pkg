@@ -36,8 +36,11 @@
 - Moved orchestration classes such as `ShortcutInstaller`, `EnvironmentVariableManager`,
   `PATHManager`, `BinFileCreator`, and `JunctionManager` into the package-management
   section so the control flow stays expressive and visible.
-- Preserved the `WindowsPlatform` facade so package-management logic depends on
-  an explicit platform boundary rather than directly on Windows APIs.
+- Kept a smaller `WindowsPlatform` boundary for path resolution, privilege
+  checks, junction updates, and CLI pause behavior instead of a broader facade
+  with pass-through helpers.
+- Removed dead private compatibility helpers from `PackageMetadata` and
+  simplified the install pipeline so steps receive `Reporter` directly.
 - Added comprehensive function/class docstrings across the Python code.
 - Added discoverable documentation under `docs/`.
 - Added quality tests that enforce docstring coverage, documentation

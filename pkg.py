@@ -414,25 +414,6 @@ class PreparedShortcut:
     description: str = ""
 
 
-@dataclass(frozen=True)
-class InstallContext:
-    """Immutable context shared by install steps.
-
-    Attributes:
-        identity: Identity of the package version being installed.
-        config: Normalized runtime configuration.
-        scope_paths: Filesystem and registry locations for the chosen scope.
-        reporter: Reporter used for user-visible logging.
-        force: Whether the install should ignore downgrade protection.
-    """
-
-    identity: PackageIdentity
-    config: PackageConfig
-    scope_paths: ScopePaths
-    reporter: Any
-    force: bool
-
-
 class Reporter:
     """Minimal console reporter used by the orchestration layer.
 
@@ -1464,7 +1445,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-InstallStep = Callable[["PackageMetadata", InstallContext], StepResult]
+InstallStep = Callable[["PackageMetadata", Reporter], StepResult]
 
 
 def compute_scope_paths(scope: Scope) -> ScopePaths:
@@ -2445,12 +2426,12 @@ class BinFileCreator:
         return result
 
 
-def install_shortcuts_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+def install_shortcuts_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
     """Run the shortcut-install step for one package.
 
     Args:
         metadata: Package metadata to install.
-        context: Shared install context.
+        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the shortcut step outcome.
@@ -2458,17 +2439,17 @@ def install_shortcuts_step(metadata: "PackageMetadata", context: InstallContext)
 
     if not metadata.shortcut:
         return StepResult(ok=True, changed=False)
-    context.reporter.info("")
-    context.reporter.info("Creating shortcuts...")
-    return ShortcutInstaller.install_shortcuts(metadata, reporter=context.reporter)
+    reporter.info("")
+    reporter.info("Creating shortcuts...")
+    return ShortcutInstaller.install_shortcuts(metadata, reporter=reporter)
 
 
-def install_environment_variables_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+def install_environment_variables_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
     """Run the environment-variable step for one package.
 
     Args:
         metadata: Package metadata to install.
-        context: Shared install context.
+        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the environment-variable step outcome.
@@ -2476,33 +2457,33 @@ def install_environment_variables_step(metadata: "PackageMetadata", context: Ins
 
     if not metadata.environment:
         return StepResult(ok=True, changed=False)
-    context.reporter.info("")
-    context.reporter.info("Setting environment variables...")
-    return EnvironmentVariableManager.install_environment_variables(metadata, reporter=context.reporter)
+    reporter.info("")
+    reporter.info("Setting environment variables...")
+    return EnvironmentVariableManager.install_environment_variables(metadata, reporter=reporter)
 
 
-def ensure_bin_in_path_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+def ensure_bin_in_path_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
     """Run the scope ``bin`` directory/PATH bootstrap step.
 
     Args:
         metadata: Package metadata to install.
-        context: Shared install context.
+        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the bin-directory/PATH step outcome.
     """
 
-    context.reporter.info("")
-    context.reporter.info("Managing PATH...")
-    return PATHManager.ensure_bin_in_path(metadata, reporter=context.reporter)
+    reporter.info("")
+    reporter.info("Managing PATH...")
+    return PATHManager.ensure_bin_in_path(metadata, reporter=reporter)
 
 
-def install_extra_path_entries_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+def install_extra_path_entries_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
     """Run the package-specific extra PATH entry step.
 
     Args:
         metadata: Package metadata to install.
-        context: Shared install context.
+        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the extra PATH entry step outcome.
@@ -2510,15 +2491,15 @@ def install_extra_path_entries_step(metadata: "PackageMetadata", context: Instal
 
     if not metadata.path:
         return StepResult(ok=True, changed=False)
-    return PATHManager.add_to_path(metadata.path, metadata, reporter=context.reporter)
+    return PATHManager.add_to_path(metadata.path, metadata, reporter=reporter)
 
 
-def install_wrappers_step(metadata: "PackageMetadata", context: InstallContext) -> StepResult:
+def install_wrappers_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
     """Run the wrapper-install step for one package.
 
     Args:
         metadata: Package metadata to install.
-        context: Shared install context.
+        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the wrapper step outcome.
@@ -2526,9 +2507,9 @@ def install_wrappers_step(metadata: "PackageMetadata", context: InstallContext) 
 
     if not metadata.bin:
         return StepResult(ok=True, changed=False)
-    context.reporter.info("")
-    context.reporter.info("Creating executable wrappers...")
-    return BinFileCreator.install_wrappers(metadata, reporter=context.reporter)
+    reporter.info("")
+    reporter.info("Creating executable wrappers...")
+    return BinFileCreator.install_wrappers(metadata, reporter=reporter)
 
 
 INSTALL_STEPS: Tuple[InstallStep, ...] = (
@@ -2541,17 +2522,12 @@ INSTALL_STEPS: Tuple[InstallStep, ...] = (
 
 
 class WindowsPlatform:
-    """Facade that exposes Windows wrappers to the package-management layer.
+    """Small Windows boundary used by package-management orchestration.
 
-    The package-management layer depends on this class rather than directly on
-    ``winreg``, COM automation, or ``mklink`` command execution.
+    The package-management layer keeps a concrete platform object for the few
+    operations that are still convenient to patch in tests or centralize at one
+    boundary.
     """
-
-    junction_manager = JunctionManager
-    shortcut_installer = ShortcutInstaller
-    environment_manager = EnvironmentVariableManager
-    path_manager = PATHManager
-    bin_creator = BinFileCreator
 
     def resolve_input_path(self, raw_path: Path) -> ResolvedInput:
         """Delegate path resolution to :func:`resolve_input_path`.
@@ -2564,18 +2540,6 @@ class WindowsPlatform:
         """
 
         return resolve_input_path(raw_path)
-
-    def compute_scope_paths(self, scope: Scope) -> ScopePaths:
-        """Delegate scope-path resolution to :func:`compute_scope_paths`.
-
-        Args:
-            scope: Installation scope whose paths should be resolved.
-
-        Returns:
-            A :class:`ScopePaths` object.
-        """
-
-        return compute_scope_paths(scope)
 
     def is_admin(self) -> bool:
         """Return whether the current process has Administrator privileges.
@@ -2600,7 +2564,7 @@ class WindowsPlatform:
         wait_for_keypress()
 
     def update_current_junction_if_needed(self, metadata: "PackageMetadata", *, force: bool = False) -> bool:
-        """Delegate junction updates to :class:`JunctionManager`.
+        """Run package-level junction-update policy.
 
         Args:
             metadata: Package metadata describing the version being installed.
@@ -2611,16 +2575,7 @@ class WindowsPlatform:
             ``True`` when ``current`` was recreated or repointed.
         """
 
-        return self.junction_manager.update_current_junction_if_needed(metadata, force=force)
-
-    def install_steps(self) -> Tuple[InstallStep, ...]:
-        """Return the ordered install-step pipeline.
-
-        Returns:
-            Tuple of step callables to execute for an install action.
-        """
-
-        return INSTALL_STEPS
+        return JunctionManager.update_current_junction_if_needed(metadata, force=force)
 
 
 DEFAULT_PLATFORM = WindowsPlatform()
@@ -3033,26 +2988,6 @@ class PackageMetadata:
         self.shortcut: List[Dict[str, str]] = []
         self.runtime_config: Optional[PackageConfig] = None
 
-    def _fill_from_directory(self) -> None:
-        """Compatibility no-op retained for older integrations.
-
-        Returns:
-            ``None``. The modern implementation derives all metadata eagerly in
-            :meth:`__init__`.
-        """
-
-        return None
-
-    def _fill_current(self) -> None:
-        """Compatibility no-op retained for older integrations.
-
-        Returns:
-            ``None``. Current-junction resolution now happens in the platform
-            path resolver.
-        """
-
-        return None
-
     def check_metadata_consistency(self, config_data: Dict[str, Any]) -> List[str]:
         """Check directory/config metadata consistency for this package.
 
@@ -3233,142 +3168,6 @@ class PackageMetadata:
 
         return out
 
-    @staticmethod
-    def _validate_config_dict(data: Dict[str, Any]) -> None:
-        """Validate required keys in raw list-of-dicts config data.
-
-        Args:
-            data: Canonicalized raw config dictionary.
-
-        Raises:
-            ConfigValidationError: If required fields are missing.
-        """
-
-        errors: List[str] = []
-
-        def keys_str(block: Dict[str, Any]) -> str:
-            """Render the keys present in one config block.
-
-            Args:
-                block: Config block dictionary.
-
-            Returns:
-                Comma-separated key list for diagnostics.
-            """
-
-            return ", ".join(sorted(str(key) for key in block.keys()))
-
-        shortcuts = data.get("shortcut", [])
-        if isinstance(shortcuts, list):
-            for index, shortcut in enumerate(shortcuts):
-                if not isinstance(shortcut, dict):
-                    errors.append(f"shortcut[{index}] must be a dict")
-                    continue
-                name = str(shortcut.get("name", "") or "").strip()
-                target = str(shortcut.get("targetPath", "") or "").strip()
-                if not name or not target:
-                    missing = []
-                    if not name:
-                        missing.append("name")
-                    if not target:
-                        missing.append("targetPath")
-                    errors.append(
-                        f"shortcut[{index}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(shortcut)})"
-                    )
-
-        envs = data.get("environment", [])
-        if isinstance(envs, list):
-            for index, env in enumerate(envs):
-                if not isinstance(env, dict):
-                    errors.append(f"environment[{index}] must be a dict")
-                    continue
-                name = str(env.get("Name", "") or "").strip()
-                value = str(env.get("Value", "") or "").strip()
-                if not name or value == "":
-                    missing = []
-                    if not name:
-                        missing.append("Name")
-                    if value == "":
-                        missing.append("Value")
-                    errors.append(
-                        f"environment[{index}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(env)})"
-                    )
-
-        bins = data.get("bin", [])
-        if isinstance(bins, list):
-            for index, wrapper in enumerate(bins):
-                if not isinstance(wrapper, dict):
-                    errors.append(f"bin[{index}] must be a dict")
-                    continue
-                name = str(wrapper.get("name", "") or "").strip()
-                content = str(wrapper.get("content", "") or "")
-                if not name or content == "":
-                    missing = []
-                    if not name:
-                        missing.append("name")
-                    if content == "":
-                        missing.append("content")
-                    errors.append(
-                        f"bin[{index}] missing required key(s): {', '.join(missing)} "
-                        f"(present keys: {keys_str(wrapper)})"
-                    )
-
-        if errors:
-            joined = "\n  - " + "\n  - ".join(errors)
-            raise ConfigValidationError(f"Invalid configuration:{joined}")
-
-    @staticmethod
-    def _to_toml_scalar(value: Any) -> str:
-        """Compatibility wrapper around :func:`_to_toml_scalar`.
-
-        Args:
-            value: Python value to render as TOML.
-
-        Returns:
-            TOML literal text.
-        """
-
-        return _to_toml_scalar(value)
-
-    def _metadata_sync_payload(self) -> Dict[str, Any]:
-        """Return the metadata fields owned by ``pkg`` for this package.
-
-        Returns:
-            Dictionary containing only the metadata fields ``pkg`` is allowed to
-            synchronize automatically.
-        """
-
-        return metadata_sync_payload(self.identity)
-
-    def _create_starter_config_text(self, data: Optional[Dict[str, Any]] = None) -> str:
-        """Return a starter ``pkg.toml`` for this package.
-
-        Args:
-            data: Compatibility parameter retained for older callers. The modern
-                implementation derives starter content from the package identity.
-
-        Returns:
-            Documented TOML text with comments and commented examples.
-        """
-
-        _ = data
-        return create_starter_config(self.identity)
-
-    @staticmethod
-    def _locate_metadata_container(doc: Any) -> Any:
-        """Compatibility wrapper around :func:`locate_metadata_container`.
-
-        Args:
-            doc: Parsed TOML document or fallback text document.
-
-        Returns:
-            The document object that owns package metadata fields.
-        """
-
-        return locate_metadata_container(doc)
-
     def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
         """Load and normalize the package runtime configuration.
 
@@ -3400,35 +3199,6 @@ class PackageMetadata:
         ]
         self.only_portable = config.only_portable
         return raw_data, warnings
-
-    def _load_from_dict(self, data: Dict[str, Any]) -> None:
-        """Populate the compatibility fields from a raw config dictionary.
-
-        Args:
-            data: Raw configuration dictionary.
-        """
-
-        config = normalize_runtime_config(data, self.identity)
-        validate_runtime_config(config)
-        self.runtime_config = config
-        self.description = config.description
-        self.homepage = config.homepage
-        self.download_url = config.download_url
-        self.environment = [{"Name": item.name, "Value": item.value} for item in config.environment]
-        self.bin = [{"name": item.name, "content": item.content} for item in config.bin]
-        self.path = list(config.path)
-        self.shortcut = [
-            {
-                "name": item.name,
-                "targetPath": item.target_path,
-                "arguments": item.arguments,
-                "workingDirectory": item.working_directory,
-                "iconLocation": item.icon_location,
-                "description": item.description,
-            }
-            for item in config.shortcut
-        ]
-        self.only_portable = config.only_portable
 
     def update_config(self, reporter: Optional[Reporter] = None) -> StepResult:
         """Synchronize owned metadata fields back to ``pkg.toml``.
@@ -3499,7 +3269,7 @@ class PackageMetadata:
         """
 
         self.scope = scope
-        self.scope_paths = self.platform.compute_scope_paths(scope)
+        self.scope_paths = compute_scope_paths(scope)
         self.shortcut_dir = self.scope_paths.shortcut_root
 
 
@@ -4096,18 +3866,12 @@ class PackageManager:
             Aggregated :class:`StepResult` for all component steps.
         """
 
-        context = InstallContext(
-            identity=metadata.identity,
-            config=metadata.runtime_config or PackageConfig(),
-            scope_paths=metadata.scope_paths or self.platform.compute_scope_paths(metadata.scope),
-            reporter=self.reporter,
-            force=self.force,
-        )
-        metadata.scope_paths = context.scope_paths
+        if metadata.scope_paths is None:
+            metadata.scope_paths = compute_scope_paths(metadata.scope)
 
         results: List[StepResult] = []
-        for step in self.platform.install_steps():
-            step_result = step(metadata, context)
+        for step in INSTALL_STEPS:
+            step_result = step(metadata, self.reporter)
             results.append(step_result)
 
         if not results:

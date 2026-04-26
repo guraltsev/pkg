@@ -13,7 +13,7 @@ Notable public types and helpers defined in the shared section:
 
 - `Scope`, `Action`
 - `PackageIdentity`, `PackageConfig`, `ScopePaths`
-- `StepResult`, `ActionResult`, `InstallContext`
+- `StepResult`, `ActionResult`
 - `Reporter`
 - `compare_package_versions()`
 - `expand_text()` / `VariableExpander`
