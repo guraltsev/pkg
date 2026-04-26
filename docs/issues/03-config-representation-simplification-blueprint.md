@@ -91,7 +91,7 @@ Code: `pkg.py:2431-2514`
 
 Code: `pkg.py:2526-2605`
 
-A small boundary can still be useful for tests and for keeping the Windows section conceptually isolated, but the current shape is more general than the project needs.
+A small boundary is still useful for tests. The Windows section must be conceptually isolated, but the current shape is more general than the project needs.
 
 ## Simplification principles
 
@@ -156,7 +156,7 @@ Prefer the option that removes the most indirection without making step signatur
 
 ### Slice 4: shrink `WindowsPlatform` to a minimal boundary
 
-Do **not** remove the idea of a Windows boundary if it still helps tests and keeps the section structure readable.
+Do **not** remove the idea of a Windows boundary: it still helps tests and keeps the section structure readable.
 
 Do reduce the facade to the smallest surface the package manager truly needs.
 
@@ -166,9 +166,9 @@ Concretely:
 - remove pass-through attributes if direct references are simpler
 - avoid introducing an interface/protocol/adapter hierarchy
 
-### Slice 5: move obviously local imports next to the code that uses them when helpful
+### Slice 5: move obviously local imports and constants next to the code that uses them when helpful
 
-The project explicitly allows local imports when that improves readability in a single-file script.
+The project explicitly allows local imports and constants when that improves readability in a single-file script.
 
 Use that permission only where it makes a section more self-contained. Do not shuffle imports mechanically.
 
