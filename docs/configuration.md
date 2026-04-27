@@ -14,6 +14,17 @@
 
 Version directories must use the `v<upstream>.l<local>` naming convention.
 
+## Canonical schema only
+
+`pkg` accepts one canonical `pkg.toml` schema:
+
+- top-level package metadata lives at the top level
+- runtime data lives in `[[shortcut]]`, `[[environment]]`, `[[path]]`, and `[[bin]]`
+- legacy aliases and `[[main]]` are rejected
+
+Keys are validated exactly. The accepted spellings are the ones documented
+below.
+
 ## Top-level metadata owned by `pkg`
 
 These fields are synchronized from the directory layout during `UpdateConfig`
@@ -24,11 +35,17 @@ and are the only metadata fields automatically repaired by `--fix-config`:
 - `localVersion`
 - `only_portable`
 
+Additional top-level keys that belong to the runtime model:
+
+- `description`
+- `homepage`
+- `downloadURL`
+
 ## Runtime blocks
 
 ### `[[shortcut]]`
 
-Canonical keys:
+Accepted keys:
 
 - `name` (required)
 - `targetPath` (required)
@@ -37,29 +54,25 @@ Canonical keys:
 - `iconLocation`
 - `description`
 
-Supported aliases include `path`, `args`, `workdir`, and `desc`.
-
 ### `[[environment]]`
 
-Canonical keys:
+Accepted keys:
 
 - `Name` (required)
 - `Value` (required)
 
-Keys are accepted case-insensitively and normalized to the canonical spellings.
-
 ### `[[path]]`
 
-Canonical key:
+Accepted key:
 
 - `value` (required)
 
-The runtime model stores PATH entries internally as `list[str]`, regardless of
-whether the TOML used repeated tables or other accepted convenience forms.
+`pkg` stores PATH entries internally as `list[str]`, but the file format uses
+repeated `[[path]]` tables.
 
 ### `[[bin]]`
 
-Canonical keys:
+Accepted keys:
 
 - `name` (required)
 - `content` (required)
@@ -85,9 +98,9 @@ version directory.
 ### Environment variables
 
 - `${VAR}` expands everywhere and is treated as an error when unresolved.
-- Plain `$VAR` expands only in general config fields.
-- Plain `$VAR` stays literal inside wrapper content so PowerShell and similar
-  script languages keep their native variable syntax.
+- Plain non-package `$NAME` does not count as environment-variable syntax.
+- Inside `[[bin]]` content, plain non-package `$NAME` stays literal so shell and
+  PowerShell variables keep their native meaning.
 
 ### Escaping
 
@@ -99,6 +112,6 @@ version directory.
 - `UpdateConfig` creates a documented starter `pkg.toml` containing owned
   metadata fields plus commented examples for `[[shortcut]]`, `[[environment]]`,
   `[[path]]`, and `[[bin]]`.
-- If a package still has one of the recent metadata-only auto-generated files,
-  `UpdateConfig` upgrades it to the richer documented template while keeping a
-  `.bak` backup.
+- For an existing canonical `pkg.toml`, `UpdateConfig` syncs only the owned
+  top-level metadata keys and preserves surrounding comments and unrelated
+  content.

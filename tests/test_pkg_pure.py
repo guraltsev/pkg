@@ -153,9 +153,14 @@ name = "Broken"
             shutil.copytree(src, dst)
             version_dir = dst / "v0.9.0.l1"
             metadata = module.PackageMetadata(version_dir)
-            config, warnings = metadata.load_config()
-            self.assertEqual(config["name"], "NoConfigApp")
+            raw_config, warnings = metadata.load_config()
+            runtime = metadata.require_runtime_config()
+            self.assertEqual(raw_config, {})
             self.assertTrue(warnings)
+            self.assertEqual(runtime.shortcut, [])
+            self.assertEqual(runtime.environment, [])
+            self.assertEqual(runtime.path, [])
+            self.assertEqual(runtime.bin, [])
             self.assertFalse((version_dir / "pkg.toml").exists())
 
     def test_metadata_consistency_detects_raw_file_mismatches(self) -> None:
@@ -174,7 +179,7 @@ name = "Broken"
             self.assertEqual(config_data["version"], "1.9.9")
             self.assertEqual(config_data["localVersion"], 7)
             self.assertEqual(
-                metadata.check_metadata_consistency(config_data),
+                module.check_metadata_consistency(metadata.identity, config_data),
                 [
                     "Name mismatch: directory='MismatchApp', config='MismatchApp-OLD'",
                     "Version mismatch: directory='2.0.0', config='1.9.9'",
@@ -195,7 +200,7 @@ name = "Broken"
 
             self.assertEqual(warnings, [])
             self.assertEqual(config_data["name"], "GoodApp")
-            self.assertEqual(metadata.check_metadata_consistency(config_data), [])
+            self.assertEqual(module.check_metadata_consistency(metadata.identity, config_data), [])
 
     def test_missing_config_with_defaults_does_not_trigger_metadata_mismatch(self) -> None:
         module = load_pkg_module()
@@ -207,10 +212,12 @@ name = "Broken"
             metadata = module.PackageMetadata(version_dir)
 
             config_data, warnings = metadata.load_config(use_defaults=True)
+            runtime = metadata.require_runtime_config()
 
             self.assertTrue(warnings)
-            self.assertEqual(config_data["name"], "NoConfigApp")
-            self.assertEqual(metadata.check_metadata_consistency(config_data), [])
+            self.assertEqual(config_data, {})
+            self.assertEqual(module.check_metadata_consistency(metadata.identity, config_data), [])
+            self.assertEqual(runtime.shortcut, [])
             self.assertFalse((version_dir / "pkg.toml").exists())
 
     def test_install_aborts_on_metadata_mismatch_before_mutations(self) -> None:
@@ -232,7 +239,7 @@ name = "Broken"
                 return module.StepResult(ok=True, changed=False)
 
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
-                with mock.patch.object(manager.platform, "update_current_junction_if_needed", side_effect=fake_update_current):
+                with mock.patch.object(module.JunctionManager, "update_current_junction_if_needed", side_effect=fake_update_current):
                     with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
                         with contextlib.redirect_stdout(io.StringIO()) as output:
                             result = manager.install(version_dir)
@@ -264,7 +271,7 @@ name = "Broken"
                 return module.StepResult(ok=True, changed=False)
 
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
-                with mock.patch.object(manager.platform, "update_current_junction_if_needed", side_effect=fake_update_current):
+                with mock.patch.object(module.JunctionManager, "update_current_junction_if_needed", side_effect=fake_update_current):
                     with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
                         with contextlib.redirect_stdout(io.StringIO()) as output:
                             result = manager.install(version_dir)
@@ -346,7 +353,7 @@ name = "Broken"
         self.assertFalse(result.ok)
         self.assertIn("Operation: UpdateConfig", output.getvalue())
 
-    def test_alias_heavy_runtime_config_normalizes_to_runtime_model(self) -> None:
+    def test_legacy_aliases_and_main_wrapper_are_rejected(self) -> None:
         module = load_pkg_module()
         identity = module.PackageIdentity(
             name="AliasApp",
@@ -358,21 +365,16 @@ name = "Broken"
             is_current=False,
             only_portable_by_name=False,
         )
-        raw = {
-            "NAME": "AliasApp",
-            "Version": "1.0.0",
-            "local_version": 2,
-            "ENV": [{"name": "HOME", "value": "$App"}],
-            "Shortcuts": [{"name": "Alias", "path": r"$App\Alias.exe"}],
-            "PATH": [{"path": r"$App\bin"}],
-            "BIN": [{"name": "alias.cmd", "content": "@echo off"}],
-        }
-        config = module.normalize_runtime_config(raw, identity)
-        module.validate_runtime_config(config)
-        self.assertEqual(config.environment[0].name, "HOME")
-        self.assertEqual(config.shortcut[0].target_path, r"$App\Alias.exe")
-        self.assertEqual(config.path, [r"$App\bin"])
-        self.assertEqual(config.bin[0].name, "alias.cmd")
+        with self.assertRaises(module.ConfigValidationError) as alias_error:
+            module.normalize_runtime_config({"ENV": [{"Name": "HOME", "Value": "$App"}]}, identity)
+        self.assertIn("Unsupported legacy key 'ENV' in config. Use 'environment' instead.", str(alias_error.exception))
+
+        with self.assertRaises(module.ConfigValidationError) as main_error:
+            module.normalize_runtime_config({"main": [{"portable": True}]}, identity)
+        self.assertIn(
+            "Unsupported legacy key 'main' in config. Use canonical top-level metadata keys instead of [[main]].",
+            str(main_error.exception),
+        )
 
     def test_update_config_creates_starter_file_when_missing(self) -> None:
         module = load_pkg_module()
@@ -395,20 +397,28 @@ name = "Broken"
             )
 
             metadata = module.PackageMetadata(version_dir)
-            config, warnings = metadata.load_config()
+            raw_config, warnings = metadata.load_config()
+            runtime = metadata.require_runtime_config()
             self.assertFalse(warnings)
-            self.assertEqual(config["name"], "NoConfigApp")
-            self.assertEqual(config["shortcut"], [])
-            self.assertEqual(config["environment"], [])
-            self.assertEqual(config["path"], [])
-            self.assertEqual(config["bin"], [])
+            self.assertEqual(raw_config["name"], "NoConfigApp")
+            self.assertEqual(raw_config["version"], "0.9.0")
+            self.assertEqual(raw_config["localVersion"], 1)
+            self.assertEqual(raw_config["only_portable"], False)
+            self.assertEqual(runtime.shortcut, [])
+            self.assertEqual(runtime.environment, [])
+            self.assertEqual(runtime.path, [])
+            self.assertEqual(runtime.bin, [])
 
-    def test_update_config_upgrades_metadata_only_file_to_documented_template(self) -> None:
+    def test_update_config_syncs_existing_canonical_metadata_only_file_in_place(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "RegressionApp" / "v3.4.5.l6"
             version_dir.mkdir(parents=True)
-            original = """name = \"RegressionApp-OLD\"\nversion = \"0.0.1\"\nlocalVersion = 99\nonly_portable = false\n"""
+            original = """name = "RegressionApp-OLD"
+version = "0.0.1"
+localVersion = 99
+only_portable = false
+"""
             (version_dir / "pkg.toml").write_text(original, encoding="utf-8")
 
             manager = module.PackageManager()
@@ -421,12 +431,11 @@ name = "Broken"
             backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
 
             self.assertEqual(backup, original)
-            self.assert_documented_starter_config(
-                updated,
-                name="RegressionApp",
-                version="3.4.5",
-                local_version=6,
-            )
+            self.assertIn('name = "RegressionApp"', updated)
+            self.assertIn('version = "3.4.5"', updated)
+            self.assertIn('localVersion = 6', updated)
+            self.assertIn('only_portable = false', updated)
+            self.assertNotIn('[[shortcut]]', updated)
 
     def test_update_config_syncs_metadata_without_validating_runtime_entries(self) -> None:
         module = load_pkg_module()
@@ -468,7 +477,7 @@ x_note = "preserve me"
             version_dir = dst / "v5.4.3.l2"
             metadata = module.PackageMetadata(version_dir)
             metadata.load_config()
-            wrapper_content = metadata.bin[0]["content"] + "\n${SystemRoot}\n"
+            wrapper_content = metadata.require_runtime_config().bin[0].content + "\n${SystemRoot}\n"
             with mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}, clear=False):
                 expansion = module.expand_text(wrapper_content, metadata.identity, module.ExpansionMode.SCRIPT)
             self.assertEqual(expansion.unresolved, [])
@@ -486,7 +495,7 @@ x_note = "preserve me"
             version_dir = dst / "v1.0.0.l1"
             metadata = module.PackageMetadata(version_dir)
             with contextlib.redirect_stdout(io.StringIO()):
-                result = module.PATHManager.add_to_path(["$MISSING_VAR"], metadata, reporter=module.Reporter())
+                result = module.PATHManager.add_to_path([r"${MISSING_VAR}"], metadata, reporter=module.Reporter())
             self.assertFalse(result.ok)
             self.assertFalse(result.changed)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
@@ -497,15 +506,17 @@ x_note = "preserve me"
             version_dir = Path(tmpdir) / "ShortcutApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
             metadata = module.PackageMetadata(version_dir)
+            metadata.runtime_config = module.PackageConfig(
+                shortcut=[module.ShortcutSpec(name="Broken Shortcut", target_path=r"${MISSING_VAR}\App.exe")]
+            )
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                 metadata.set_scope(module.Scope.USER)
-                metadata.shortcut = [{"name": "Broken Shortcut", "targetPath": r"$MISSING_VAR\App.exe"}]
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = module.ShortcutInstaller.install_shortcuts(metadata, reporter=module.Reporter())
             self.assertFalse(result.ok)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
 
-    def test_powershell_shortcut_backend_escapes_apostrophes(self) -> None:
+    def test_shortcut_creation_escapes_apostrophes_in_powershell_command(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "ApostropheApp" / "v1.0.0.l1"
@@ -529,8 +540,8 @@ x_note = "preserve me"
 
                 with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        ok, error = module.ShortcutInstaller._create_shortcut_with_powershell(
-                            {"name": "O'Brien Tool", "targetPath": r"C:\Tools\app.exe"},
+                        ok, error = module.ShortcutInstaller.create_shortcut(
+                            module.ShortcutSpec(name="O'Brien Tool", target_path=r"C:\Tools\app.exe"),
                             metadata,
                         )
             self.assertTrue(ok, msg=error)
@@ -540,7 +551,7 @@ x_note = "preserve me"
             self.assertIn("O''Brien Tool.lnk", ps_command)
             self.assertIn("O''Brien", ps_command)
 
-    def test_help_hides_python_and_compress(self) -> None:
+    def test_help_hides_removed_compatibility_flags(self) -> None:
         module = load_pkg_module()
         stdout = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
@@ -549,6 +560,7 @@ x_note = "preserve me"
         self.assertEqual(cm.exception.code, 0)
         help_text = stdout.getvalue()
         self.assertNotIn("--python", help_text)
+        self.assertNotIn("--no-autoupdate-config", help_text)
         self.assertNotIn("Compress", help_text)
 
     def test_write_bytes_atomic_updates_wrapper_atomically(self) -> None:

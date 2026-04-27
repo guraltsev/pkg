@@ -1,52 +1,37 @@
 # Code review summary
 
-## Strengths in the original code
+## Main simplification wins
 
-- Good functional coverage for important behaviors, especially config loading,
-  `UpdateConfig`, variable expansion, and failure signaling.
-- Clear user-facing behavior around `Install` versus `UpdateConfig`.
-- Useful safeguards around unresolved variables and missing required config keys.
-- Thoughtful fallback behavior when `pywin32` or `tomlkit` are unavailable.
-- Atomic file writes already existed for wrapper/config updates.
+- The runtime now accepts one canonical `pkg.toml` schema instead of carrying
+  alias maps and old-shape config flattening.
+- `PackageConfig` is the single runtime representation used by the install
+  pipeline.
+- `PackageMetadata` is reduced to package identity, scope state, and the typed
+  runtime config.
+- TOML loading uses one stdlib path, and shortcut creation uses one backend
+  path.
+- `UpdateConfig` now has one narrow responsibility: create a starter config when
+  missing, or sync canonical top-level metadata in an existing canonical file.
 
-## Weaknesses in the original code
+## What was removed
 
-- Windows-specific side effects and package-management logic lived in one large,
-  undifferentiated file, which made responsibilities harder to audit and
-  maintain.
-- Documentation was uneven: many functions lacked docstrings, and architecture
-  details were mostly implicit.
-- Discoverability was limited because there was no documentation index and no
-  dedicated architecture/API documents.
-- The starter-config generator was tightly embedded in the monolith and easy to
-  miss during review.
+- schema aliases and the old `[[main]]` wrapper
+- dict-shadow compatibility fields on `PackageMetadata`
+- metadata-only upgrade branches and legacy `pkg.json` cleanup behavior
+- the legacy JSON conversion helper script
+- optional backend ladders for TOML loading and shortcut creation
+- the `WindowsPlatform` facade and deprecated CLI passthrough flags
 
-## Changes made
+## Resulting tradeoffs
 
-- Consolidated the implementation back into a single `pkg.py` file, per the
-  single-file requirement.
-- Introduced explicit section boundaries inside `pkg.py` for:
-  - shared models and pure helpers
-  - Windows integration
-  - package-management logic and CLI
-  - script entry point
-- Narrowed the Windows section further so it now contains thin wrappers for
-  shortcut creation, junction primitives, registry reads/writes, privilege
-  checks, and environment-change broadcasts.
-- Moved orchestration classes such as `ShortcutInstaller`, `EnvironmentVariableManager`,
-  `PATHManager`, `BinFileCreator`, and `JunctionManager` into the package-management
-  section so the control flow stays expressive and visible.
-- Kept a smaller `WindowsPlatform` boundary for path resolution, privilege
-  checks, junction updates, and CLI pause behavior instead of a broader facade
-  with pass-through helpers.
-- Removed dead private compatibility helpers from `PackageMetadata` and
-  simplified the install pipeline so steps receive `Reporter` directly.
-- Added comprehensive function/class docstrings across the Python code.
-- Added discoverable documentation under `docs/`.
-- Added quality tests that enforce docstring coverage, documentation
-  discoverability, the single-file layout, and Windows-boundary separation.
-- Restored starter `pkg.toml` generation so missing configs now become
-  documented templates with comments and commented examples instead of bare
-  metadata-only files.
-- Added a targeted upgrade path so the recent metadata-only auto-generated
-  configs can be expanded in place on the next `UpdateConfig` run.
+The code is smaller and easier to reason about, but the project is now stricter
+about what it accepts:
+
+- old config spellings are rejected instead of normalized
+- only the canonical top-level metadata keys are auto-synced
+- callers should rely on typed runtime config (`PackageConfig`) rather than ad
+  hoc dictionaries
+
+Those tradeoffs are intentional. They remove contradictory normalization logic,
+reduce duplicated maintenance surfaces, and keep the main package flow easy to
+audit.

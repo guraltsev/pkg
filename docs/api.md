@@ -4,19 +4,19 @@
 
 ### `pkg.py`
 
-`pkg.py` contains the full implementation and exposes the command-line entry
-point plus the importable public API.
+`pkg.py` contains the full implementation and exposes both the command-line
+entry point and the importable public API.
 
 ## Shared/public types and helpers
 
 Notable public types and helpers defined in the shared section:
 
 - `Scope`, `Action`
-- `PackageIdentity`, `PackageConfig`, `ScopePaths`
-- `StepResult`, `ActionResult`
+- `PackageIdentity`, `ShortcutSpec`, `EnvVarSpec`, `BinSpec`, `PackageConfig`, `ScopePaths`
+- `StepResult`, `ActionResult`, `ExpansionResult`
 - `Reporter`
 - `compare_package_versions()`
-- `expand_text()` / `VariableExpander`
+- `expand_text()`
 - `read_toml_file()`
 - `write_text_atomic()` / `write_bytes_atomic()`
 
@@ -28,16 +28,15 @@ Notable public API defined in the package-management section:
 - `compute_scope_paths()`
 - `normalize_runtime_config()`
 - `validate_runtime_config()`
-- `package_config_to_dict()`
 - `check_metadata_consistency()`
 - `read_runtime_config()`
+- `sync_config_metadata_text()`
+- `create_starter_config()`
 - `JunctionManager`
 - `ShortcutInstaller`
 - `EnvironmentVariableManager`
 - `PATHManager`
 - `BinFileCreator`
-- `WindowsPlatform`
-- `DEFAULT_PLATFORM`
 - `PackageMetadata`
 - `PackageManager`
 - `main()`
@@ -47,8 +46,6 @@ Notable public API defined in the package-management section:
 Notable public API defined in the Windows integration section:
 
 - `create_shortcut()`
-- `create_shortcut_with_pywin32()`
-- `create_shortcut_with_powershell()`
 - `create_junction()`
 - `is_junction()`
 - `get_junction_target()`
@@ -58,20 +55,9 @@ Notable public API defined in the Windows integration section:
 - `is_current_user_admin()`
 - `wait_for_keypress()`
 
-## Compatibility expectations
+## Notes for callers
 
-Existing callers and tests continue to rely on the following names from
-`pkg.py`:
-
-- `PackageManager`
-- `PackageMetadata`
-- `JunctionManager`
-- `ShortcutInstaller`
-- `EnvironmentVariableManager`
-- `PATHManager`
-- `BinFileCreator`
-- `compare_package_versions`
-- `expand_text`
-- `resolve_input_path`
-- `write_bytes_atomic`
-- `main`
+The runtime config surface is the typed `PackageConfig` model. `PackageMetadata`
+keeps the directory-derived package identity plus the loaded typed runtime
+config. `UpdateConfig` only synchronizes the canonical top-level metadata keys
+and does not perform alias rewriting or legacy-shape upgrades.

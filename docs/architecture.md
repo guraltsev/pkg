@@ -1,36 +1,32 @@
 # Architecture
 
-## Goals of the refactor
+## Goals of the cleanup
 
 The codebase now keeps the entire package-manager implementation in `pkg.py`
-while still drawing a hard boundary between package-management policy and
-Windows-specific side effects.
+while also removing the compatibility layers that used to preserve older config
+spellings, older config shapes, and optional backend ladders.
 
-- `Shared models and pure helpers` decides shared data structures, validation,
-  variable expansion, version comparison, and atomic file operations.
-- `Windows integration boundary` exposes thin Python wrappers for direct
-  Windows primitives.
-- `Package-management logic and CLI` decides what should happen at a package
-  level and orchestrates those wrappers through package-management helpers plus
-  a small `WindowsPlatform` boundary.
-- `Script entry point` provides the executable handoff.
+The resulting design is intentionally direct:
 
-This layout keeps raw Windows commands and APIs easy to audit in one place
-without letting package-management policy drift into the Windows wrapper
-section.
+- one canonical `pkg.toml` schema
+- one runtime model: `PackageConfig`
+- one shortcut backend path
+- one TOML read path
+- one metadata-sync path for `UpdateConfig`
 
 ## Section map
 
 ### `Shared models and pure helpers`
 
-Pure/shared code:
+Pure and shared code:
 
-- data models such as `PackageIdentity`, `PackageConfig`, `StepResult`
-- TOML backend discovery and read helpers
+- data models such as `PackageIdentity`, `ShortcutSpec`, `EnvVarSpec`,
+  `BinSpec`, `PackageConfig`, and `StepResult`
+- stdlib TOML loading helpers
 - atomic file writers
 - version comparison helpers
 - variable expansion rules
-- reporter and compatibility helpers
+- reporter utilities
 
 Imports for this section live immediately under its section header, matching the
 single-file organization requirement.
@@ -39,8 +35,7 @@ single-file organization requirement.
 
 Windows wrapper code:
 
-- shortcut writers (`create_shortcut()`, `create_shortcut_with_pywin32()`,
-  `create_shortcut_with_powershell()`)
+- shortcut creation through a single PowerShell-based writer
 - junction primitives (`create_junction()`, `is_junction()`,
   `get_junction_target()`)
 - registry wrappers (`read_registry_value()`, `write_registry_value()`)
@@ -55,16 +50,17 @@ section.
 
 Package-management logic:
 
-- config normalization and validation
-- package metadata facade
+- path resolution and scope-path calculation
+- exact-key config normalization and validation
 - metadata consistency checks
-- round-trip/fallback metadata synchronization for `pkg.toml`
-- install orchestrators such as `JunctionManager`, `ShortcutInstaller`,
-  `EnvironmentVariableManager`, `PATHManager`, and `BinFileCreator`
-- CLI parsing and high-level action orchestration
-
-This section depends on the Windows wrapper functions rather than embedding
-registry APIs, COM automation, or command execution details inline.
+- `PackageMetadata` and `PackageManager`
+- install-step orchestration classes:
+  - `JunctionManager`
+  - `ShortcutInstaller`
+  - `EnvironmentVariableManager`
+  - `PATHManager`
+  - `BinFileCreator`
+- CLI parsing and action dispatch
 
 ### `Script entry point`
 
@@ -75,14 +71,13 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
 ### Install
 
 1. CLI arguments are parsed in `main()`.
-2. `PackageManager.install()` resolves the input path through
-   `WindowsPlatform.resolve_input_path()`.
-3. `PackageMetadata` loads and normalizes `pkg.toml`.
-4. `PackageManager` validates portability and metadata consistency.
-5. If needed, `WindowsPlatform.update_current_junction_if_needed()` runs the
-   package-level junction policy and uses the raw junction wrappers to repoint
-   `current`. This step is not only for upgrades: reinstalling the currently
-   active version may still recreate `current`.
+2. `PackageManager.install()` resolves the input path with `resolve_input_path()`.
+3. `PackageMetadata` loads `pkg.toml` through `read_runtime_config()` and stores
+   the typed `PackageConfig` model.
+4. `PackageManager` validates portability and checks raw top-level metadata for
+   directory/config mismatches.
+5. If needed, `JunctionManager.update_current_junction_if_needed()` repoints the
+   package-level `current` junction.
 6. The install-step pipeline runs in order:
    - shortcuts
    - environment variables
@@ -90,28 +85,27 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
    - extra PATH entries
    - wrapper files
 
-   The pipeline is repair-oriented. Same-version reinstalls are not treated as
-   a no-op; the steps still run so broken shortcuts, environment variables,
-   PATH entries, and wrapper files can be restored.
+The pipeline is repair-oriented. Same-version reinstalls are not treated as a
+no-op; the steps still run so broken shortcuts, environment variables, PATH
+entries, and wrapper files can be restored.
 
 ### UpdateConfig
 
 1. CLI arguments are parsed in `main()`.
 2. `PackageManager.update_config()` resolves the target version directory.
-3. `PackageMetadata.update_config()` updates only owned metadata keys.
-4. Existing TOML structure/comments are preserved when possible.
-5. Bare metadata-only configs from the recent regression are upgraded to the
-   richer documented starter template.
-6. Missing `pkg.toml` files get a documented starter config with commented
-   examples for the supported runtime sections.
+3. `PackageMetadata.update_config()` either:
+   - creates a documented starter config when `pkg.toml` is missing, or
+   - syncs only the canonical top-level metadata keys in an existing canonical
+     `pkg.toml`
+4. Existing comments and unrelated content are preserved when possible.
 
 ## Why the section split matters
 
-The original code mixed policy and mutation details in one large, undifferentiated
-file. The new structure keeps the single-file requirement while still:
+The original code mixed policy and mutation details in one large,
+undifferentiated file. The current structure keeps the single-file requirement
+while also:
 
 - making Windows side effects discoverable in one place
 - keeping package logic easier to test on non-Windows hosts
+- removing alias and facade churn from the install path
 - clarifying ownership of config metadata versus runtime content
-- reducing the chance of accidentally introducing Windows-specific behavior into
-  general package logic

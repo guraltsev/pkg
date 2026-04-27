@@ -3,8 +3,6 @@
 name = "GoodApp"
 version = "1.2.3"
 localVersion = 1
-# This key is intentionally unknown to pkg.
-maintainer_note = "preserve me"
 only_portable = false
 
 [[environment]]
