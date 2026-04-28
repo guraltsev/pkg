@@ -1,36 +1,23 @@
 # pkg
 
-`pkg` is a Windows package tool for locally cached applications.
+`pkg` is a Windows package tool for locally cached applications that already
+live on disk in versioned directories.
 
-It is implemented entirely in one python `pkg.py`. The file is intentionally
-organized into clearly labeled sections so the architecture stays easy to audit
-without reintroducing separate implementation modules:
+It does four main things:
 
-- `Shared models and pure helpers`
-- `Windows integration boundary`
-- `Package-management logic and CLI`
-- `Script entry point`
+- keeps the package-level `current` junction pointed at the active version
+- creates shortcuts from `pkg.toml`
+- writes environment variables and PATH entries for the selected scope
+- creates wrapper files in the selected scope bin directory
 
-The section layout preserves a strict separation of concerns: the
-`Windows integration boundary` section contains thin wrappers around direct
-Windows primitives such as shortcut creation, registry reads and writes,
-junction creation, privilege checks, and environment-change broadcasts, while
-package-management orchestration lives in the `Package-management logic and
-CLI` section.
+`pkg` is repair-oriented. Re-running install for the same version is expected:
+it will reapply shortcuts, environment variables, PATH entries, and wrapper
+files so a broken install can be restored without downloading anything again.
 
-## Documentation
+## Requirements
 
-Documentation is intentionally redundant and easy to find:
-
-- [`README.md`](README.md) — user overview and quick start
-- [`docs/README.md`](docs/README.md) — documentation index
-- [`docs/architecture.md`](docs/architecture.md) — section boundaries and execution flow
-- [`docs/configuration.md`](docs/configuration.md) — `pkg.toml` schema and variable rules
-- [`docs/api.md`](docs/api.md) — public API and developer reference
-- [`docs/review.md`](docs/review.md) — strengths, tradeoffs, and cleanup summary
-
-In addition, every function and class in the Python codebase has an in-code
-module, class, or function docstring.
+- Windows
+- Python 3.11+
 
 ## Package layout
 
@@ -44,76 +31,78 @@ module, class, or function docstring.
     pkg.toml
 ```
 
-You can run `pkg` from a version directory, a `current` junction, or the
-package root.
+You can point `pkg` at any of these:
 
-## Actions
+- a version directory
+- the package root
+- the `current` junction
 
-- `Install` is repair-oriented: rerunning it for the same version is
-  intentional and reapplies package state so broken shortcuts, environment
-  variables, PATH entries, and wrapper files can be restored. It may also
-  recreate the `current` junction.
-- `UpdateConfig` creates a documented starter `pkg.toml` when the file is
-  missing, or syncs the canonical top-level metadata fields in an existing
-  canonical `pkg.toml`.
+Version directories use this naming scheme:
 
-## Exit codes
+```text
+v<upstream-version>.l<local-version>
+```
 
-- `0` success, including “no changes needed”
-- `2` user, config, or input problem
-- `3` system mutation failure
-- `4` unexpected internal failure
+## Commands
 
-## Config notes
+Install in User scope from the current directory:
 
-`Install` does not auto-create `pkg.toml` when it is missing.
+```bat
+python pkg.py
+```
 
-When `pkg.toml` is missing, `UpdateConfig` creates a self-documenting file that
-includes the synchronized metadata plus commented examples for shortcuts,
-environment variables, PATH entries, and wrapper scripts.
+Install a specific package:
 
-For an existing canonical `pkg.toml`, `UpdateConfig` preserves comments,
-unrelated runtime content, and existing layout while syncing only these owned
-metadata keys:
+```bat
+python pkg.py C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+Install in Machine scope:
+
+```bat
+python pkg.py --scope Machine C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+Synchronize or create `pkg.toml` metadata only:
+
+```bat
+python pkg.py --action UpdateConfig C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+Repair mismatched top-level metadata during install:
+
+```bat
+python pkg.py --fix-config C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+The convenience wrappers call the same entry point:
+
+- `install.cmd`
+- `install-machine.cmd`
+- `update-config.cmd`
+- `pkg.cmd`
+
+Run `python pkg.py --help` for the full CLI reference.
+
+## `pkg.toml`
+
+`pkg` accepts one canonical schema.
+
+Top-level metadata owned by `pkg`:
 
 - `name`
 - `version`
 - `localVersion`
 - `only_portable`
 
-`pkg` accepts one canonical `pkg.toml` schema. Legacy aliases and the old
-`[[main]]` wrapper are not accepted.
+Runtime tables:
 
-Variable rules are intentionally simple:
+- `[[shortcut]]`
+- `[[environment]]`
+- `[[path]]`
+- `[[bin]]`
 
-- package variables: `$App`, `$Icons`, `$Shortcuts`
-- environment variables: `${VAR}`
-- escaping: `$$` for a literal `$`
-
-In regular config fields, unresolved `${VAR}` values are errors. Inside
-`[[bin]]` content, plain non-package `$NAME` text is left literal so shell or
-PowerShell variables keep their native meaning.
-
-`[[shortcut]].name` and `[[bin]].name` are intentionally flexible. After
-variable expansion they may be simple output names, nested relative paths under
-the default shortcut/bin root, or path-like destinations outside those roots.
-Absolute paths and escaping `..` traversal are allowed, but install warns when
-the final output lands outside the default root because that placement is more
-surprising than the common in-root case.
-
-## Bootstrap interpreter selection
-
-`pkg.cmd` chooses Python in this order:
-
-1. `--python <exe-or-command>`
-2. `PKG_PYTHON`
-3. `pkg.python` next to `pkg.cmd`
-4. `python` from `PATH`
-
-`pkg.py` intentionally accepts the hidden `--python` argument so the launcher
-can forward that bootstrap choice unchanged.
-
-## Minimal config example
+Minimal example:
 
 ```toml
 name = "Ripgrep"
@@ -137,7 +126,42 @@ name = "rg.cmd"
 content = "@echo off\r\n\"$App\\rg.exe\" %*\r\n"
 ```
 
-## Runtime requirement
+## Variable rules
 
-`pkg` uses Python 3.11+ and reads `pkg.toml` through the standard-library
-`tomllib` parser.
+Package variables:
+
+- `$App`
+- `$Icons`
+- `$Shortcuts`
+
+Environment-variable syntax:
+
+- `${VAR}` expands from the process environment
+- `$$` becomes a literal `$`
+
+In normal config fields, unresolved `${VAR}` values are errors. Inside
+`[[bin]]` content, plain non-package `$NAME` text is left alone so batch,
+PowerShell, and shell variables keep their native meaning.
+
+## `UpdateConfig` behavior
+
+`UpdateConfig` is intentionally narrow:
+
+- if `pkg.toml` is missing, it creates a starter file with synchronized
+  metadata and commented examples
+- if `pkg.toml` already exists and uses the canonical schema, it synchronizes
+  only the owned top-level metadata keys
+- it preserves unrelated runtime content and comments when possible
+
+`Install` does not create `pkg.toml` when it is missing. It uses defaults and
+continues.
+
+## Helper scripts
+
+Best-effort migration helpers live in [`helper_scripts/`](helper_scripts/README.md).
+They are for manual transitions from older formats and are not part of the
+supported runtime surface.
+
+## Development notes
+
+Contributor notes live in [`docs/development.md`](docs/development.md).

@@ -65,16 +65,17 @@ class PkgPureImportTests(unittest.TestCase):
         self.assertTrue(module.is_version_directory_name("v1.2.3.l4"))
         self.assertEqual(module.compare_package_versions("v2.0.0.l1", "v1.9.9.l9"), 1)
 
-    def test_machine_scope_manager_init_does_not_exit(self) -> None:
+    def test_install_package_accepts_machine_scope_argument(self) -> None:
         module = load_pkg_module()
-        manager = module.PackageManager(scope=module.Scope.MACHINE)
-        self.assertEqual(manager.scope, module.Scope.MACHINE)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = module.install_package(ROOT / "does-not-exist", scope=module.Scope.MACHINE)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
 
     def test_invalid_install_path_returns_nonzero(self) -> None:
         module = load_pkg_module()
-        manager = module.PackageManager()
         with contextlib.redirect_stdout(io.StringIO()):
-            result = manager.install(ROOT / "does-not-exist")
+            result = module.install_package(ROOT / "does-not-exist")
         self.assertFalse(result.ok)
         self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
 
@@ -93,10 +94,9 @@ name = "Broken"
 """,
                 encoding="utf-8",
             )
-            manager = module.PackageManager()
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    result = manager.install(version_dir)
+                    result = module.install_package(version_dir)
             self.assertFalse(result.ok)
             self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
 
@@ -107,41 +107,35 @@ name = "Broken"
             dst = Path(tmpdir) / "GoodApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v1.2.3.l1"
-            manager = module.PackageManager()
-
-            original_update_current = module.JunctionManager.update_current_junction_if_needed
-            original_install_shortcuts = module.ShortcutInstaller.install_shortcuts
-            original_install_environment = module.EnvironmentVariableManager.install_environment_variables
-            original_ensure_bin = module.PATHManager.ensure_bin_in_path
-            original_add_to_path = module.PATHManager.add_to_path
-            original_install_wrappers = module.BinFileCreator.install_wrappers
-            try:
-                module.JunctionManager.update_current_junction_if_needed = staticmethod(lambda metadata, force=False: True)
-                module.ShortcutInstaller.install_shortcuts = staticmethod(
-                    lambda metadata: module.StepResult(ok=False, errors=["Failed to create shortcut: Good App"])
-                )
-                module.EnvironmentVariableManager.install_environment_variables = staticmethod(
-                    lambda metadata: module.StepResult(ok=True, changed=False)
-                )
-                module.PATHManager.ensure_bin_in_path = staticmethod(
-                    lambda metadata: module.StepResult(ok=True, changed=False)
-                )
-                module.PATHManager.add_to_path = staticmethod(
-                    lambda new_entries, metadata: module.StepResult(ok=True, changed=False)
-                )
-                module.BinFileCreator.install_wrappers = staticmethod(
-                    lambda metadata: module.StepResult(ok=True, changed=False)
-                )
-                with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        result = manager.install(version_dir)
-            finally:
-                module.JunctionManager.update_current_junction_if_needed = original_update_current
-                module.ShortcutInstaller.install_shortcuts = original_install_shortcuts
-                module.EnvironmentVariableManager.install_environment_variables = original_install_environment
-                module.PATHManager.ensure_bin_in_path = original_ensure_bin
-                module.PATHManager.add_to_path = original_add_to_path
-                module.BinFileCreator.install_wrappers = original_install_wrappers
+            with mock.patch.object(module, "update_current_junction_if_needed", side_effect=lambda metadata, force=False: True):
+                with mock.patch.object(
+                    module,
+                    "install_shortcuts",
+                    side_effect=lambda metadata: module.StepResult(ok=False, errors=["Failed to create shortcut: Good App"]),
+                ):
+                    with mock.patch.object(
+                        module,
+                        "install_environment_variables",
+                        side_effect=lambda metadata: module.StepResult(ok=True, changed=False),
+                    ):
+                        with mock.patch.object(
+                            module,
+                            "ensure_bin_in_path",
+                            side_effect=lambda metadata: module.StepResult(ok=True, changed=False),
+                        ):
+                            with mock.patch.object(
+                                module,
+                                "add_to_path",
+                                side_effect=lambda new_entries, metadata: module.StepResult(ok=True, changed=False),
+                            ):
+                                with mock.patch.object(
+                                    module,
+                                    "install_wrappers",
+                                    side_effect=lambda metadata: module.StepResult(ok=True, changed=False),
+                                ):
+                                    with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                                        with contextlib.redirect_stdout(io.StringIO()):
+                                            result = module.install_package(version_dir)
 
             self.assertFalse(result.ok)
             self.assertEqual(result.exit_code, module.EXIT_MUTATION_ERROR)
@@ -153,7 +147,7 @@ name = "Broken"
             dst = Path(tmpdir) / "NoConfigApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v0.9.0.l1"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             raw_config, warnings = metadata.load_config()
             runtime = metadata.require_runtime_config()
             self.assertEqual(raw_config, {})
@@ -171,7 +165,7 @@ name = "Broken"
             dst = Path(tmpdir) / "MismatchApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v2.0.0.l3"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
 
             config_data, warnings = metadata.load_config()
 
@@ -195,7 +189,7 @@ name = "Broken"
             dst = Path(tmpdir) / "GoodApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v1.2.3.l1"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
 
             config_data, warnings = metadata.load_config()
 
@@ -210,7 +204,7 @@ name = "Broken"
             dst = Path(tmpdir) / "NoConfigApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v0.9.0.l1"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
 
             config_data, warnings = metadata.load_config(use_defaults=True)
             runtime = metadata.require_runtime_config()
@@ -228,7 +222,6 @@ name = "Broken"
             dst = Path(tmpdir) / "MismatchApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v2.0.0.l3"
-            manager = module.PackageManager()
             calls = []
 
             def fake_update_current(metadata, force=False):
@@ -240,10 +233,10 @@ name = "Broken"
                 return module.StepResult(ok=True, changed=False)
 
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
-                with mock.patch.object(module.JunctionManager, "update_current_junction_if_needed", side_effect=fake_update_current):
-                    with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
+                with mock.patch.object(module, "update_current_junction_if_needed", side_effect=fake_update_current):
+                    with mock.patch.object(module, "install_components", side_effect=fake_install_components):
                         with contextlib.redirect_stdout(io.StringIO()) as output:
-                            result = manager.install(version_dir)
+                            result = module.install_package(version_dir)
 
             self.assertFalse(result.ok)
             self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
@@ -260,7 +253,6 @@ name = "Broken"
             dst = Path(tmpdir) / "MismatchApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v2.0.0.l3"
-            manager = module.PackageManager(fix_config=True)
             calls = []
 
             def fake_update_current(metadata, force=False):
@@ -272,10 +264,10 @@ name = "Broken"
                 return module.StepResult(ok=True, changed=False)
 
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
-                with mock.patch.object(module.JunctionManager, "update_current_junction_if_needed", side_effect=fake_update_current):
-                    with mock.patch.object(manager, "_install_components", side_effect=fake_install_components):
+                with mock.patch.object(module, "update_current_junction_if_needed", side_effect=fake_update_current):
+                    with mock.patch.object(module, "install_components", side_effect=fake_install_components):
                         with contextlib.redirect_stdout(io.StringIO()) as output:
-                            result = manager.install(version_dir)
+                            result = module.install_package(version_dir, fix_config=True)
 
             self.assertTrue(result.ok)
             self.assertEqual(result.exit_code, module.EXIT_SUCCESS)
@@ -295,9 +287,8 @@ name = "Broken"
             dst = Path(tmpdir) / "MismatchApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v2.0.0.l3"
-            manager = module.PackageManager(scope=module.Scope.MACHINE)
             with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.update_config(version_dir)
+                result = module.update_package_config(version_dir, scope=module.Scope.MACHINE)
             self.assertTrue(result.ok)
             self.assertTrue(result.changed)
 
@@ -340,17 +331,15 @@ name = "Broken"
 
     def test_install_banner_includes_operation_name(self) -> None:
         module = load_pkg_module()
-        manager = module.PackageManager()
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            result = manager.install(ROOT / "does-not-exist")
+            result = module.install_package(ROOT / "does-not-exist")
         self.assertFalse(result.ok)
         self.assertIn("Operation: Install", output.getvalue())
 
     def test_update_config_banner_includes_operation_name(self) -> None:
         module = load_pkg_module()
-        manager = module.PackageManager()
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            result = manager.update_config(ROOT / "does-not-exist")
+            result = module.update_package_config(ROOT / "does-not-exist")
         self.assertFalse(result.ok)
         self.assertIn("Operation: UpdateConfig", output.getvalue())
 
@@ -384,9 +373,8 @@ name = "Broken"
             dst = Path(tmpdir) / "NoConfigApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v0.9.0.l1"
-            manager = module.PackageManager()
             with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.update_config(version_dir)
+                result = module.update_package_config(version_dir)
             self.assertTrue(result.ok)
             self.assertTrue(result.changed)
             pkg_toml = (version_dir / "pkg.toml").read_text(encoding="utf-8")
@@ -397,7 +385,7 @@ name = "Broken"
                 local_version=1,
             )
 
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             raw_config, warnings = metadata.load_config()
             runtime = metadata.require_runtime_config()
             self.assertFalse(warnings)
@@ -422,9 +410,8 @@ only_portable = false
 """
             (version_dir / "pkg.toml").write_text(original, encoding="utf-8")
 
-            manager = module.PackageManager()
             with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.update_config(version_dir)
+                result = module.update_package_config(version_dir)
 
             self.assertTrue(result.ok)
             self.assertTrue(result.changed)
@@ -456,9 +443,8 @@ x_note = "preserve me"
 """,
                 encoding="utf-8",
             )
-            manager = module.PackageManager()
             with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.update_config(version_dir)
+                result = module.update_package_config(version_dir)
             self.assertTrue(result.ok)
             self.assertTrue(result.changed)
             updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
@@ -485,9 +471,8 @@ description = "preserve me"
                 encoding="utf-8",
             )
 
-            manager = module.PackageManager()
             with contextlib.redirect_stdout(io.StringIO()):
-                result = manager.update_config(version_dir)
+                result = module.update_package_config(version_dir)
 
             self.assertTrue(result.ok)
             updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
@@ -510,7 +495,6 @@ only_portable = true
                 encoding="utf-8",
             )
 
-            manager = module.PackageManager(scope=module.Scope.MACHINE, fix_config=True)
             stdout = io.StringIO()
             with mock.patch.dict(
                 os.environ,
@@ -521,18 +505,14 @@ only_portable = true
                 clear=False,
             ):
                 with mock.patch.object(module, "is_current_user_admin", return_value=True):
-                    with mock.patch.object(
-                        module.JunctionManager,
-                        "update_current_junction_if_needed",
-                        return_value=True,
-                    ):
-                        with mock.patch.object(
-                            module.PackageManager,
-                            "_install_components",
-                            return_value=module.StepResult(ok=True, changed=False),
-                        ):
+                    with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                        with mock.patch.object(module, "install_components", return_value=module.StepResult(ok=True, changed=False)):
                             with contextlib.redirect_stdout(stdout):
-                                result = manager.install(version_dir)
+                                result = module.install_package(
+                                    version_dir,
+                                    scope=module.Scope.MACHINE,
+                                    fix_config=True,
+                                )
 
             self.assertTrue(result.ok)
             updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
@@ -546,7 +526,7 @@ only_portable = true
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "WarnBinApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             metadata.runtime_config = module.PackageConfig(
                 bin=[module.BinSpec(name="../outside.cmd", content="@echo off\r\n")]
             )
@@ -554,7 +534,7 @@ only_portable = true
                 metadata.set_scope(module.Scope.USER)
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    result = module.BinFileCreator.install_wrappers(metadata)
+                    result = module.install_wrappers(metadata)
 
             self.assertTrue(result.ok)
             self.assertTrue((Path(tmpdir) / "outside.cmd").exists())
@@ -565,12 +545,12 @@ only_portable = true
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "WarnShortcutApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                 metadata.set_scope(module.Scope.USER)
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    prepared = module.ShortcutInstaller._prepare_shortcut(
+                    prepared = module.prepare_shortcut(
                         module.ShortcutSpec(name="../outside", target_path=r"C:\Tools\tool.exe"),
                         metadata,
                     )
@@ -589,7 +569,7 @@ only_portable = true
             dst = Path(tmpdir) / "PwshApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v5.4.3.l2"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             metadata.load_config()
             wrapper_content = metadata.require_runtime_config().bin[0].content + "\n${SystemRoot}\n"
             with mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}, clear=False):
@@ -607,9 +587,9 @@ only_portable = true
             dst = Path(tmpdir) / "BadPathApp"
             shutil.copytree(src, dst)
             version_dir = dst / "v1.0.0.l1"
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             with contextlib.redirect_stdout(io.StringIO()):
-                result = module.PATHManager.add_to_path([r"${MISSING_VAR}"], metadata)
+                result = module.add_to_path([r"${MISSING_VAR}"], metadata)
             self.assertFalse(result.ok)
             self.assertFalse(result.changed)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
@@ -619,14 +599,14 @@ only_portable = true
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "ShortcutApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             metadata.runtime_config = module.PackageConfig(
                 shortcut=[module.ShortcutSpec(name="Broken Shortcut", target_path=r"${MISSING_VAR}\App.exe")]
             )
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                 metadata.set_scope(module.Scope.USER)
                 with contextlib.redirect_stdout(io.StringIO()):
-                    result = module.ShortcutInstaller.install_shortcuts(metadata)
+                    result = module.install_shortcuts(metadata)
             self.assertFalse(result.ok)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
 
@@ -635,7 +615,7 @@ only_portable = true
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "ApostropheApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
-            metadata = module.PackageMetadata(version_dir)
+            metadata = module.PackageMetadata.from_path(version_dir)
             appdata = Path(tmpdir) / "O'Brien"
             appdata.mkdir(parents=True, exist_ok=True)
             with mock.patch.dict(os.environ, {"APPDATA": str(appdata), "USERPROFILE": tmpdir}, clear=False):
@@ -654,7 +634,7 @@ only_portable = true
 
                 with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        ok, error = module.ShortcutInstaller.create_shortcut(
+                        ok, error = module.create_shortcut_from_spec(
                             module.ShortcutSpec(name="O'Brien Tool", target_path=r"C:\Tools\app.exe"),
                             metadata,
                         )
@@ -701,8 +681,8 @@ only_portable = true
     def test_main_accepts_hidden_python_bootstrap_arg(self) -> None:
         module = load_pkg_module()
         with mock.patch.object(
-            module.PackageManager,
-            "install",
+            module,
+            "install_package",
             return_value=module.ActionResult(ok=True, changed=False, exit_code=module.EXIT_SUCCESS),
         ) as install_mock:
             with contextlib.redirect_stdout(io.StringIO()):

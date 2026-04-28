@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """Single-file implementation of ``pkg``.
 
-The package manager implementation now lives entirely in ``pkg.py`` while still
-keeping Windows-specific mutation code strictly isolated from package-management
-logic through clearly labeled sections in this file.
+The package manager lives entirely in ``pkg.py`` and stays organized through
+clearly labeled sections instead of a heavier internal layering scheme.
 
-Documentation map
------------------
-
-- ``README.md`` explains the tool from a user perspective.
-- ``docs/README.md`` is the documentation index.
-- ``docs/architecture.md`` describes the single-file section boundaries.
-- ``docs/configuration.md`` documents ``pkg.toml``.
-- ``docs/api.md`` summarizes the public API.
-- ``docs/review.md`` records the review findings and applied changes.
+User-facing usage notes live in ``README.md``. Contributor notes live in
+``docs/development.md``.
 
 Section guide
 -------------
@@ -24,8 +16,8 @@ Section guide
   direct Windows primitives such as shortcut creation, registry access,
   junction creation, privilege checks, and environment-change broadcasts.
 - ``Package-management logic and CLI`` contains config normalization, metadata
-  synchronization, runtime validation, and the classes that orchestrate those
-  Windows wrappers.
+  synchronization, runtime validation, and direct action functions that
+  coordinate those Windows wrappers.
 """
 
 from __future__ import annotations
@@ -1540,585 +1532,501 @@ def resolve_input_path(raw_path: Path) -> ResolvedInput:
     )
 
 
-class JunctionManager:
-    """Decide when and how ``pkg`` should repoint the ``current`` junction."""
 
-    @staticmethod
-    def compare_versions(version1: str, version2: str) -> int:
-        """Compare two package version directory names.
 
-        Args:
-            version1: Left-hand version string.
-            version2: Right-hand version string.
+def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
+    r"""Update ``<package>\current`` unless a newer version should win.
 
-        Returns:
-            ``1`` when *version1* is newer, ``-1`` when *version2* is newer, or
-            ``0`` when they match.
-        """
+    When this function runs for the version that is already active, it may
+    still refresh ``current`` by recreating the junction. That behavior is
+    intentional: install uses reruns as a repair path for external state,
+    so same-version targets are not treated as a junction no-op here.
 
-        return compare_package_versions(version1, version2)
+    Args:
+        metadata: Package metadata describing the version being installed.
+        force: Whether to allow replacing ``current`` when it already
+            points to a newer version. Same-version targets may still
+            refresh ``current`` without ``force``.
 
-    @staticmethod
-    def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
-        r"""Update ``<package>\current`` unless a newer version should win.
+    Returns:
+        ``True`` when ``current`` was recreated or repointed; ``False``
+        only when ``current`` was intentionally left untouched because a
+        newer version was already active.
 
-        When this method runs for the version that is already active, it may
-        still refresh ``current`` by recreating the junction. That behavior is
-        intentional: install uses reruns as a repair path for external state,
-        so same-version targets are not treated as a junction no-op here.
+    Raises:
+        ValueError: If the existing ``current`` path is unsafe or malformed.
+        RuntimeError: If the junction replacement fails.
+    """
 
-        Args:
-            metadata: Package metadata describing the version being installed.
-            force: Whether to allow replacing ``current`` when it already
-                points to a newer version. Same-version targets may still
-                refresh ``current`` without ``force``.
+    current_path = metadata.identity.package_root / "current"
+    desired_target = metadata.identity.version_path
 
-        Returns:
-            ``True`` when ``current`` was recreated or repointed; ``False``
-            only when ``current`` was intentionally left untouched because a
-            newer version was already active.
+    if not desired_target.exists() or not desired_target.is_dir():
+        raise RuntimeError(f"Junction target does not exist or is not a directory: {desired_target}")
 
-        Raises:
-            ValueError: If the existing ``current`` path is unsafe or malformed.
-            RuntimeError: If the junction replacement fails.
-        """
+    if os.path.lexists(str(current_path)):
+        if not is_junction(current_path):
+            raise ValueError(f"{current_path} exists but is not a junction. Aborting all operations.")
 
-        current_path = metadata.pkg_path / "current"
-        desired_target = metadata.version_path
+        current_target = get_junction_target(current_path)
+        if current_target is None:
+            raise ValueError(f"{current_path} is a junction but its target is not resolvable. Aborting.")
 
-        if not desired_target.exists() or not desired_target.is_dir():
-            raise RuntimeError(f"Junction target does not exist or is not a directory: {desired_target}")
-
-        if os.path.lexists(str(current_path)):
-            if not is_junction(current_path):
-                raise ValueError(f"{current_path} exists but is not a junction. Aborting all operations.")
-
-            current_target = get_junction_target(current_path)
-            if current_target is None:
-                raise ValueError(f"{current_path} is a junction but its target is not resolvable. Aborting.")
-
-            current_target = current_target.resolve()
-            if not current_target.is_dir():
-                log_info(f"JUNCTION: stale current target detected: {current_target}")
-            else:
-                if current_target.parent != metadata.pkg_path:
-                    raise ValueError(
-                        f"{current_path} is a junction but its target {current_target} "
-                        f"is not under {metadata.pkg_path}. Aborting."
-                    )
-
-                current_version = current_target.name
-                log_info(f"'current' junction version: {current_version}")
-                comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
-                # Same-version reinstalls are a supported refresh path. Only
-                # keep the existing junction untouched when it points to a
-                # newer version and --force was not requested.
-                if not force and comparison < 0:
-                    log_info(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
-                    return False
-                if force:
-                    log_info(f"JUNCTION: --force: updating current to {metadata.version_string}")
-        
-        # Refreshing the currently active version may still recreate
-        # ``current`` so install can reassert the active package view.
-        new_path = current_path.with_name(f"{current_path.name}.__new__.{uuid.uuid4().hex[:8]}")
-        old_path = current_path.with_name(f"{current_path.name}.__old__.{uuid.uuid4().hex[:8]}")
-        moved_current = False
-        try:
-            if os.path.lexists(str(new_path)):
-                if is_junction(new_path):
-                    os.rmdir(str(new_path))
-                else:
-                    raise RuntimeError(f"Temporary junction path already exists and is unsafe to replace: {new_path}")
-
-            create_junction(new_path, desired_target)
-            new_target = get_junction_target(new_path)
-            if new_target is None or normalize_path(new_target) != normalize_path(desired_target):
-                raise RuntimeError(
-                    f"Temporary junction verification failed: expected {desired_target}, got {new_target}"
+        current_target = current_target.resolve()
+        if not current_target.is_dir():
+            log_info(f"JUNCTION: stale current target detected: {current_target}")
+        else:
+            if current_target.parent != metadata.identity.package_root:
+                raise ValueError(
+                    f"{current_path} is a junction but its target {current_target} "
+                    f"is not under {metadata.identity.package_root}. Aborting."
                 )
 
-            if os.path.lexists(str(current_path)):
-                os.replace(str(current_path), str(old_path))
-                moved_current = True
+            current_version = current_target.name
+            log_info(f"'current' junction version: {current_version}")
+            comparison = compare_package_versions(metadata.identity.version_string, current_version)
+            # Same-version reinstalls are a supported refresh path. Only
+            # keep the existing junction untouched when it points to a
+            # newer version and --force was not requested.
+            if not force and comparison < 0:
+                log_info(f"JUNCTION: keeping current ({current_version} > {metadata.identity.version_string})")
+                return False
+            if force:
+                log_info(f"JUNCTION: --force: updating current to {metadata.identity.version_string}")
 
-            os.replace(str(new_path), str(current_path))
+    # Refreshing the currently active version may still recreate
+    # ``current`` so install can reassert the active package view.
+    new_path = current_path.with_name(f"{current_path.name}.__new__.{uuid.uuid4().hex[:8]}")
+    old_path = current_path.with_name(f"{current_path.name}.__old__.{uuid.uuid4().hex[:8]}")
+    moved_current = False
+    try:
+        if os.path.lexists(str(new_path)):
+            if is_junction(new_path):
+                os.rmdir(str(new_path))
+            else:
+                raise RuntimeError(f"Temporary junction path already exists and is unsafe to replace: {new_path}")
 
-            if os.path.lexists(str(old_path)):
-                os.rmdir(str(old_path))
-        except Exception:
-            if not os.path.lexists(str(current_path)) and moved_current and os.path.lexists(str(old_path)):
-                try:
-                    os.replace(str(old_path), str(current_path))
-                except Exception:
-                    pass
-            raise
-        finally:
-            if os.path.lexists(str(new_path)):
-                try:
-                    os.rmdir(str(new_path))
-                except OSError:
-                    pass
-            if os.path.lexists(str(old_path)) and not os.path.lexists(str(current_path)):
-                try:
-                    os.replace(str(old_path), str(current_path))
-                except OSError:
-                    pass
+        create_junction(new_path, desired_target)
+        new_target = get_junction_target(new_path)
+        if new_target is None or normalize_path(new_target) != normalize_path(desired_target):
+            raise RuntimeError(
+                f"Temporary junction verification failed: expected {desired_target}, got {new_target}"
+            )
 
-        log_info(f"JUNCTION: created: {current_path.name} -> {desired_target}")
-        return True
+        if os.path.lexists(str(current_path)):
+            os.replace(str(current_path), str(old_path))
+            moved_current = True
 
+        os.replace(str(new_path), str(current_path))
 
-class ShortcutInstaller:
-    """Expand shortcut config and orchestrate Start Menu shortcut creation."""
+        if os.path.lexists(str(old_path)):
+            os.rmdir(str(old_path))
+    except Exception:
+        if not os.path.lexists(str(current_path)) and moved_current and os.path.lexists(str(old_path)):
+            try:
+                os.replace(str(old_path), str(current_path))
+            except Exception:
+                pass
+        raise
+    finally:
+        if os.path.lexists(str(new_path)):
+            try:
+                os.rmdir(str(new_path))
+            except OSError:
+                pass
+        if os.path.lexists(str(old_path)) and not os.path.lexists(str(current_path)):
+            try:
+                os.replace(str(old_path), str(current_path))
+            except OSError:
+                pass
 
-    @staticmethod
-    def _prepare_shortcut(shortcut_spec: ShortcutSpec, metadata: "PackageMetadata") -> PreparedShortcut:
-        """Normalize and expand shortcut data before shortcut creation.
-
-        Args:
-            shortcut_spec: Canonical shortcut specification from the runtime config.
-            metadata: Package metadata for the package being installed.
-
-        Returns:
-            A fully expanded :class:`PreparedShortcut` object.
-        """
-
-        scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
-        metadata.scope_paths = scope_paths
-        return prepare_shortcut_spec(shortcut_spec, metadata.identity, scope_paths)
-
-    @staticmethod
-    def create_shortcut(shortcut_spec: ShortcutSpec, metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
-        """Create a single ``.lnk`` shortcut.
-
-        Args:
-            shortcut_spec: Canonical shortcut specification from the runtime config.
-            metadata: Package metadata for the package being installed.
-
-        Returns:
-            ``(True, None)`` on success; otherwise ``(False, error_message)``.
-        """
-
-        try:
-            prepared = ShortcutInstaller._prepare_shortcut(shortcut_spec, metadata)
-            create_shortcut(prepared)
-            log_info(f"SHORTCUT: created: {prepared.shortcut_path.name}")
-            return True, None
-        except Exception as exc:
-            name = shortcut_spec.name or "unknown"
-            log_error(f"SHORTCUT error creating {name}: {exc}")
-            return False, f"Failed to create shortcut '{name}': {exc}"
-
-    @staticmethod
-    def install_shortcuts(metadata: "PackageMetadata") -> StepResult:
-        """Install every shortcut declared by a package.
-
-        Returns:
-            A :class:`StepResult` summarizing the shortcut step.
-        """
-
-        result = StepResult(ok=True, changed=False)
-        shortcuts = metadata.require_runtime_config().shortcut
-        for shortcut_spec in shortcuts:
-            ok, error = ShortcutInstaller.create_shortcut(shortcut_spec, metadata)
-            if ok:
-                result.changed = True
-                continue
-            result.ok = False
-            message = error or f"Failed to create shortcut: {shortcut_spec.name or 'unknown'}"
-            log_error(message)
-            result.errors.append(message)
-
-        return result
+    log_info(f"JUNCTION: created: {current_path.name} -> {desired_target}")
+    return True
 
 
-class EnvironmentVariableManager:
-    """Expand package config and orchestrate registry-backed env updates."""
+def prepare_shortcut(shortcut_spec: ShortcutSpec, metadata: "PackageMetadata") -> PreparedShortcut:
+    """Normalize and expand shortcut data before shortcut creation.
 
-    @staticmethod
-    def _get_registry_key(scope: Scope) -> Tuple[Any, str]:
-        """Return the registry location used for environment updates.
+    Args:
+        shortcut_spec: Canonical shortcut specification from the runtime config.
+        metadata: Package metadata for the package being installed.
 
-        Args:
-            scope: Target installation scope.
+    Returns:
+        A fully expanded :class:`PreparedShortcut` object.
+    """
 
-        Returns:
-            A tuple ``(root_hkey, subkey)``.
-        """
+    return prepare_shortcut_spec(shortcut_spec, metadata.identity, metadata.require_scope_paths())
 
-        return environment_registry_location(scope)
 
-    @staticmethod
-    def broadcast_environment_change() -> None:
-        """Notify Windows that environment values changed.
+def create_shortcut_from_spec(
+    shortcut_spec: ShortcutSpec,
+    metadata: "PackageMetadata",
+) -> Tuple[bool, Optional[str]]:
+    """Create a single ``.lnk`` shortcut.
 
-        Returns:
-            ``None``. Failures are reported to stdout as warnings because the
-            registry write may still have succeeded.
-        """
+    Args:
+        shortcut_spec: Canonical shortcut specification from the runtime config.
+        metadata: Package metadata for the package being installed.
 
+    Returns:
+        ``(True, None)`` on success; otherwise ``(False, error_message)``.
+    """
+
+    try:
+        prepared = prepare_shortcut(shortcut_spec, metadata)
+        create_shortcut(prepared)
+        log_info(f"SHORTCUT: created: {prepared.shortcut_path.name}")
+        return True, None
+    except Exception as exc:
+        name = shortcut_spec.name or "unknown"
+        log_error(f"SHORTCUT error creating {name}: {exc}")
+        return False, f"Failed to create shortcut '{name}': {exc}"
+
+
+def install_shortcuts(metadata: "PackageMetadata") -> StepResult:
+    """Install every shortcut declared by a package.
+
+    Returns:
+        A :class:`StepResult` summarizing the shortcut step.
+    """
+
+    result = StepResult(ok=True, changed=False)
+    shortcuts = metadata.require_runtime_config().shortcut
+    for shortcut_spec in shortcuts:
+        ok, error = create_shortcut_from_spec(shortcut_spec, metadata)
+        if ok:
+            result.changed = True
+            continue
+        result.ok = False
+        message = error or f"Failed to create shortcut: {shortcut_spec.name or 'unknown'}"
+        log_error(message)
+        result.errors.append(message)
+
+    return result
+
+
+def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
+    """Set one environment variable in the Windows registry.
+
+    Args:
+        name: Variable name.
+        value: Variable value.
+        scope: Target installation scope.
+        expand: Whether to store the value as ``REG_EXPAND_SZ``.
+
+    Returns:
+        ``True`` on success; ``False`` on failure.
+    """
+
+    try:
+        root, subkey = environment_registry_location(scope)
+        reg = require_winreg()
+        reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
+        write_registry_value(root, subkey, name, value, reg_type)
+        log_info(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
         try:
             broadcast_environment_change()
         except Exception as exc:
             log_warning(f"failed to broadcast environment change notification: {exc}")
+        return True
+    except PermissionError:
+        log_error(f"Insufficient permissions to set {scope.value} environment variable: {name}")
+        return False
+    except Exception as exc:
+        log_error(f"ENVIRONMENT error setting {name}: {exc}")
+        return False
 
-    @staticmethod
-    def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
-        """Set one environment variable in the Windows registry.
 
-        Args:
-            name: Variable name.
-            value: Variable value.
-            scope: Target installation scope.
-            expand: Whether to store the value as ``REG_EXPAND_SZ``.
+def install_environment_variables(metadata: "PackageMetadata") -> StepResult:
+    """Install every environment variable declared by a package.
 
-        Returns:
-            ``True`` on success; ``False`` on failure.
-        """
+    Returns:
+        A :class:`StepResult` summarizing the environment-variable step.
+    """
 
-        try:
-            root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            reg = require_winreg()
-            reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
-            write_registry_value(root, subkey, name, value, reg_type)
-            log_info(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
-            EnvironmentVariableManager.broadcast_environment_change()
-            return True
-        except PermissionError:
-            log_error(f"Insufficient permissions to set {scope.value} environment variable: {name}")
-            return False
-        except Exception as exc:
-            log_error(f"ENVIRONMENT error setting {name}: {exc}")
-            return False
-
-    @staticmethod
-    def install_environment_variables(metadata: "PackageMetadata") -> StepResult:
-        """Install every environment variable declared by a package.
-
-        Returns:
-            A :class:`StepResult` summarizing the environment-variable step.
-        """
-
-        result = StepResult(ok=True, changed=False)
-        for env_var in metadata.require_runtime_config().environment:
-            name = env_var.name.strip()
-            value = env_var.value
-            if not name:
-                message = f"Environment variable entry is missing Name: {env_var}"
-                log_error(message)
-                result.ok = False
-                result.errors.append(message)
-                continue
-            expansion = expand_text(str(value), metadata.identity, ExpansionMode.GENERAL)
-            if expansion.unresolved:
-                unresolved = ", ".join(expansion.unresolved)
-                message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
-                log_error(message)
-                result.ok = False
-                result.errors.append(message)
-                continue
-            ok = EnvironmentVariableManager.set_environment_variable(
-                name, expansion.value, metadata.scope, expand=True
-            )
-            if ok:
-                result.changed = True
-                continue
-            message = f"Failed to set environment variable: {name}"
+    result = StepResult(ok=True, changed=False)
+    for env_var in metadata.require_runtime_config().environment:
+        name = env_var.name.strip()
+        value = env_var.value
+        if not name:
+            message = f"Environment variable entry is missing Name: {env_var}"
             log_error(message)
             result.ok = False
             result.errors.append(message)
-        return result
-
-
-class PATHManager:
-    """Expand package config and orchestrate registry-backed PATH updates."""
-
-    @staticmethod
-    def _path_key(path_value: str) -> str:
-        """Normalize a PATH entry for de-duplication.
-
-        Args:
-            path_value: Original PATH entry.
-
-        Returns:
-            A normalized, case-insensitive comparison key.
-        """
-
-        key = os.path.normcase(os.path.normpath(path_value))
-        return key.rstrip("\\/")
-
-    @staticmethod
-    def get_current_path(scope: Scope) -> List[str]:
-        """Read PATH entries from the Windows registry.
-
-        Args:
-            scope: Installation scope whose PATH should be read.
-
-        Returns:
-            A list of PATH components. Missing values return an empty list.
-        """
-
-        try:
-            root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            value, reg_type = read_registry_value(root, subkey, "Path")
-            reg = require_winreg()
-            if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
-                return [item.strip() for item in str(value).split(";") if item.strip()]
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            log_error(f"PATH error reading {scope.value} PATH: {exc}")
-
-        return []
-
-    @staticmethod
-    def set_path(path_entries: List[str], scope: Scope) -> bool:
-        """Write PATH entries to the registry.
-
-        Args:
-            path_entries: Ordered PATH components to store.
-            scope: Installation scope whose PATH should be updated.
-
-        Returns:
-            ``True`` on success; otherwise ``False``.
-        """
-
-        try:
-            path_value = ";".join(path_entries)
-            root, subkey = EnvironmentVariableManager._get_registry_key(scope)
-            reg = require_winreg()
-            write_registry_value(root, subkey, "Path", path_value, reg.REG_EXPAND_SZ)
-            EnvironmentVariableManager.broadcast_environment_change()
-            return True
-        except PermissionError:
-            log_error(f"Insufficient permissions to set {scope.value} PATH")
-            return False
-        except Exception as exc:
-            log_error(f"PATH error setting {scope.value} PATH: {exc}")
-            return False
-
-    @staticmethod
-    def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResult:
-        """Append directories to PATH while avoiding duplicates.
-
-        Returns:
-            A :class:`StepResult` summarizing the PATH update.
-        """
-
-        result = StepResult(ok=True, changed=False)
-        valid_entries: List[str] = []
-
-        for entry in new_entries:
-            expansion = expand_text(str(entry), metadata.identity, ExpansionMode.GENERAL)
-            if expansion.unresolved:
-                unresolved = ", ".join(expansion.unresolved)
-                message = f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
-                log_error(message)
-                result.ok = False
-                result.errors.append(message)
-                continue
-
-            expanded = expansion.value.strip()
-            if expanded == "":
-                message = f"PATH entry '{entry}' expands to an empty value and will not be added."
-                log_error(message)
-                result.ok = False
-                result.errors.append(message)
-                continue
-
-            normalized = os.path.normpath(expanded)
-            if normalized == "":
-                message = f"PATH entry '{entry}' normalized to an empty value and will not be added."
-                log_error(message)
-                result.ok = False
-                result.errors.append(message)
-                continue
-
-            valid_entries.append(normalized)
-
-        if not valid_entries:
-            return result if result.errors else StepResult(ok=True, changed=False)
-
-        current_path = PATHManager.get_current_path(metadata.scope)
-        updated_path = current_path.copy()
-        existing_keys = {PATHManager._path_key(item) for item in current_path if item}
-        added_entries: List[str] = []
-
-        for entry in valid_entries:
-            key = PATHManager._path_key(entry)
-            if key not in existing_keys:
-                updated_path.append(entry)
-                existing_keys.add(key)
-                added_entries.append(entry)
-                log_info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
-
-        if not added_entries:
-            return result
-
-        if PATHManager.set_path(updated_path, metadata.scope):
+            continue
+        expansion = expand_text(str(value), metadata.identity, ExpansionMode.GENERAL)
+        if expansion.unresolved:
+            unresolved = ", ".join(expansion.unresolved)
+            message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
+            log_error(message)
+            result.ok = False
+            result.errors.append(message)
+            continue
+        ok = set_environment_variable(name, expansion.value, metadata.scope, expand=True)
+        if ok:
             result.changed = True
-            return result
-
-        message = f"Failed to update {metadata.scope.value} PATH."
+            continue
+        message = f"Failed to set environment variable: {name}"
         log_error(message)
         result.ok = False
         result.errors.append(message)
-        return result
+    return result
 
-    @staticmethod
-    def _system_drive_root() -> str:
-        """Return the system drive root, defaulting to ``C:\\``.
 
-        Returns:
-            A drive-root string ending with a trailing backslash.
-        """
+def _path_key(path_value: str) -> str:
+    """Normalize a PATH entry for de-duplication.
 
-        return system_drive_root()
+    Args:
+        path_value: Original PATH entry.
 
-    @staticmethod
-    def ensure_bin_in_path(metadata: "PackageMetadata") -> StepResult:
-        """Ensure the per-scope ``bin`` directory exists and is on PATH.
+    Returns:
+        A normalized, case-insensitive comparison key.
+    """
 
-        Returns:
-            A :class:`StepResult` summarizing the bin-directory and PATH work.
-        """
+    key = os.path.normcase(os.path.normpath(path_value))
+    return key.rstrip("\\/")
 
-        scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
-        metadata.scope_paths = scope_paths
-        bin_dir = scope_paths.bin_dir
 
-        changed = False
+def get_current_path(scope: Scope) -> List[str]:
+    """Read PATH entries from the Windows registry.
+
+    Args:
+        scope: Installation scope whose PATH should be read.
+
+    Returns:
+        A list of PATH components. Missing values return an empty list.
+    """
+
+    try:
+        root, subkey = environment_registry_location(scope)
+        value, reg_type = read_registry_value(root, subkey, "Path")
+        reg = require_winreg()
+        if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
+            return [item.strip() for item in str(value).split(";") if item.strip()]
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log_error(f"PATH error reading {scope.value} PATH: {exc}")
+
+    return []
+
+
+def set_path(path_entries: List[str], scope: Scope) -> bool:
+    """Write PATH entries to the registry.
+
+    Args:
+        path_entries: Ordered PATH components to store.
+        scope: Installation scope whose PATH should be updated.
+
+    Returns:
+        ``True`` on success; otherwise ``False``.
+    """
+
+    try:
+        path_value = ";".join(path_entries)
+        root, subkey = environment_registry_location(scope)
+        reg = require_winreg()
+        write_registry_value(root, subkey, "Path", path_value, reg.REG_EXPAND_SZ)
         try:
-            existed_before = bin_dir.exists()
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            changed = not existed_before
-        except OSError as exc:
-            return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"])
-
-        current_path = PATHManager.get_current_path(metadata.scope)
-        bin_dir_str = str(bin_dir)
-        bin_key = PATHManager._path_key(bin_dir_str)
-        current_keys = {PATHManager._path_key(item) for item in current_path if item}
-        if bin_key not in current_keys:
-            path_result = PATHManager.add_to_path([bin_dir_str], metadata)
-            path_result.changed = path_result.changed or changed
-            return path_result
-
-        return StepResult(ok=True, changed=changed)
-
-
-class BinFileCreator:
-    """Expand wrapper config and orchestrate writes to the scope ``bin`` directory."""
-
-    @staticmethod
-    def get_bin_dir(scope: Scope) -> Path:
-        """Return the scope-specific ``bin`` directory.
-
-        Args:
-            scope: Installation scope for which to compute the bin directory.
-
-        Returns:
-            The path to the user or machine bin directory.
-        """
-
-        if scope == Scope.USER:
-            return Path.home() / "bin"
-        return Path(PATHManager._system_drive_root()) / "bin"
-
-    @staticmethod
-    def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
-        """Create one wrapper file.
-
-        Args:
-            wrapper_spec: Canonical wrapper specification from the runtime config.
-            metadata: Package metadata for the package being installed.
-
-        Returns:
-            ``(True, None)`` when the wrapper changed, ``(True, "unchanged")``
-            when it was already up to date, or ``(False, error_message)`` on
-            failure.
-        """
-
-        try:
-            raw_name = wrapper_spec.name
-            raw_content = wrapper_spec.content
-            if not raw_name:
-                raise ValueError("wrapper entry is missing name")
-
-            expanded_name = _expanded_text_or_error(
-                raw_name,
-                metadata.identity,
-                ExpansionMode.GENERAL,
-                field_label=f"wrapper name for '{raw_name}'",
-            ).strip()
-            expanded_content_result = expand_text(raw_content, metadata.identity, ExpansionMode.SCRIPT)
-            if expanded_content_result.unresolved:
-                unresolved = ", ".join(expanded_content_result.unresolved)
-                raise ValueError(
-                    f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
-                )
-            expanded_content = expanded_content_result.value
-
-            scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
-            metadata.scope_paths = scope_paths
-            bin_dir = scope_paths.bin_dir
-            bin_dir.mkdir(parents=True, exist_ok=True)
-
-            wrapper_path = bin_dir / expanded_name
-            _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
-            wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-
-            extension = wrapper_path.suffix.lower()
-            if extension in (".cmd", ".bat"):
-                try:
-                    desired_bytes = expanded_content.encode("ascii")
-                except UnicodeEncodeError:
-                    log_warning(
-                        f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
-                    )
-                    desired_bytes = expanded_content.encode("utf-8-sig")
-            else:
-                desired_bytes = expanded_content.encode("utf-8")
-
-            existed_before = wrapper_path.exists()
-            if existed_before:
-                try:
-                    if wrapper_path.read_bytes() == desired_bytes:
-                        log_info(f"BIN: up-to-date: {wrapper_path}")
-                        return True, "unchanged"
-                except OSError:
-                    pass
-
-            write_bytes_atomic(wrapper_path, desired_bytes)
-            action = "updated" if existed_before else "created"
-            log_info(f"BIN: {action}: {wrapper_path}")
-            return True, None
+            broadcast_environment_change()
         except Exception as exc:
-            name = wrapper_spec.name or "unknown"
-            log_error(f"BIN error creating {name}: {exc}")
-            return False, f"Failed to create wrapper '{name}': {exc}"
+            log_warning(f"failed to broadcast environment change notification: {exc}")
+        return True
+    except PermissionError:
+        log_error(f"Insufficient permissions to set {scope.value} PATH")
+        return False
+    except Exception as exc:
+        log_error(f"PATH error setting {scope.value} PATH: {exc}")
+        return False
 
-    @staticmethod
-    def install_wrappers(metadata: "PackageMetadata") -> StepResult:
-        """Install every wrapper declared by a package.
 
-        Returns:
-            A :class:`StepResult` summarizing the wrapper-install step.
-        """
+def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResult:
+    """Append directories to PATH while avoiding duplicates.
 
-        result = StepResult(ok=True, changed=False)
-        for wrapper_spec in metadata.require_runtime_config().bin:
-            ok, error = BinFileCreator.create_wrapper(wrapper_spec, metadata)
-            if ok:
-                if error != "unchanged":
-                    result.changed = True
-                continue
-            message = error or f"Failed to create wrapper: {wrapper_spec.name or 'unknown'}"
+    Returns:
+        A :class:`StepResult` summarizing the PATH update.
+    """
+
+    result = StepResult(ok=True, changed=False)
+    valid_entries: List[str] = []
+
+    for entry in new_entries:
+        expansion = expand_text(str(entry), metadata.identity, ExpansionMode.GENERAL)
+        if expansion.unresolved:
+            unresolved = ", ".join(expansion.unresolved)
+            message = f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
             log_error(message)
             result.ok = False
             result.errors.append(message)
+            continue
+
+        expanded = expansion.value.strip()
+        if expanded == "":
+            message = f"PATH entry '{entry}' expands to an empty value and will not be added."
+            log_error(message)
+            result.ok = False
+            result.errors.append(message)
+            continue
+
+        normalized = os.path.normpath(expanded)
+        if normalized == "":
+            message = f"PATH entry '{entry}' normalized to an empty value and will not be added."
+            log_error(message)
+            result.ok = False
+            result.errors.append(message)
+            continue
+
+        valid_entries.append(normalized)
+
+    if not valid_entries:
+        return result if result.errors else StepResult(ok=True, changed=False)
+
+    current_path = get_current_path(metadata.scope)
+    updated_path = current_path.copy()
+    existing_keys = {_path_key(item) for item in current_path if item}
+    added_entries: List[str] = []
+
+    for entry in valid_entries:
+        key = _path_key(entry)
+        if key not in existing_keys:
+            updated_path.append(entry)
+            existing_keys.add(key)
+            added_entries.append(entry)
+            log_info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
+
+    if not added_entries:
         return result
+
+    if set_path(updated_path, metadata.scope):
+        result.changed = True
+        return result
+
+    message = f"Failed to update {metadata.scope.value} PATH."
+    log_error(message)
+    result.ok = False
+    result.errors.append(message)
+    return result
+
+
+def ensure_bin_in_path(metadata: "PackageMetadata") -> StepResult:
+    """Ensure the per-scope ``bin`` directory exists and is on PATH.
+
+    Returns:
+        A :class:`StepResult` summarizing the bin-directory and PATH work.
+    """
+
+    bin_dir = metadata.require_scope_paths().bin_dir
+
+    changed = False
+    try:
+        existed_before = bin_dir.exists()
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        changed = not existed_before
+    except OSError as exc:
+        return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"])
+
+    current_path = get_current_path(metadata.scope)
+    bin_dir_str = str(bin_dir)
+    bin_key = _path_key(bin_dir_str)
+    current_keys = {_path_key(item) for item in current_path if item}
+    if bin_key not in current_keys:
+        path_result = add_to_path([bin_dir_str], metadata)
+        path_result.changed = path_result.changed or changed
+        return path_result
+
+    return StepResult(ok=True, changed=changed)
+
+
+def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
+    """Create one wrapper file.
+
+    Args:
+        wrapper_spec: Canonical wrapper specification from the runtime config.
+        metadata: Package metadata for the package being installed.
+
+    Returns:
+        ``(True, None)`` when the wrapper changed, ``(True, "unchanged")``
+        when it was already up to date, or ``(False, error_message)`` on
+        failure.
+    """
+
+    try:
+        raw_name = wrapper_spec.name
+        raw_content = wrapper_spec.content
+        if not raw_name:
+            raise ValueError("wrapper entry is missing name")
+
+        expanded_name = _expanded_text_or_error(
+            raw_name,
+            metadata.identity,
+            ExpansionMode.GENERAL,
+            field_label=f"wrapper name for '{raw_name}'",
+        ).strip()
+        expanded_content_result = expand_text(raw_content, metadata.identity, ExpansionMode.SCRIPT)
+        if expanded_content_result.unresolved:
+            unresolved = ", ".join(expanded_content_result.unresolved)
+            raise ValueError(
+                f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
+            )
+        expanded_content = expanded_content_result.value
+
+        bin_dir = metadata.require_scope_paths().bin_dir
+        bin_dir.mkdir(parents=True, exist_ok=True)
+
+        wrapper_path = bin_dir / expanded_name
+        _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
+        wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+
+        extension = wrapper_path.suffix.lower()
+        if extension in (".cmd", ".bat"):
+            try:
+                desired_bytes = expanded_content.encode("ascii")
+            except UnicodeEncodeError:
+                log_warning(
+                    f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+                )
+                desired_bytes = expanded_content.encode("utf-8-sig")
+        else:
+            desired_bytes = expanded_content.encode("utf-8")
+
+        existed_before = wrapper_path.exists()
+        if existed_before:
+            try:
+                if wrapper_path.read_bytes() == desired_bytes:
+                    log_info(f"BIN: up-to-date: {wrapper_path}")
+                    return True, "unchanged"
+            except OSError:
+                pass
+
+        write_bytes_atomic(wrapper_path, desired_bytes)
+        action = "updated" if existed_before else "created"
+        log_info(f"BIN: {action}: {wrapper_path}")
+        return True, None
+    except Exception as exc:
+        name = wrapper_spec.name or "unknown"
+        log_error(f"BIN error creating {name}: {exc}")
+        return False, f"Failed to create wrapper '{name}': {exc}"
+
+
+def install_wrappers(metadata: "PackageMetadata") -> StepResult:
+    """Install every wrapper declared by a package.
+
+    Returns:
+        A :class:`StepResult` summarizing the wrapper-install step.
+    """
+
+    result = StepResult(ok=True, changed=False)
+    for wrapper_spec in metadata.require_runtime_config().bin:
+        ok, error = create_wrapper(wrapper_spec, metadata)
+        if ok:
+            if error != "unchanged":
+                result.changed = True
+            continue
+        message = error or f"Failed to create wrapper: {wrapper_spec.name or 'unknown'}"
+        log_error(message)
+        result.ok = False
+        result.errors.append(message)
+    return result
 
 
 def install_shortcuts_step(metadata: "PackageMetadata") -> StepResult:
@@ -2132,7 +2040,7 @@ def install_shortcuts_step(metadata: "PackageMetadata") -> StepResult:
         return StepResult(ok=True, changed=False)
     log_info("")
     log_info("Creating shortcuts...")
-    return ShortcutInstaller.install_shortcuts(metadata)
+    return install_shortcuts(metadata)
 
 
 def install_environment_variables_step(metadata: "PackageMetadata") -> StepResult:
@@ -2146,7 +2054,7 @@ def install_environment_variables_step(metadata: "PackageMetadata") -> StepResul
         return StepResult(ok=True, changed=False)
     log_info("")
     log_info("Setting environment variables...")
-    return EnvironmentVariableManager.install_environment_variables(metadata)
+    return install_environment_variables(metadata)
 
 
 def ensure_bin_in_path_step(metadata: "PackageMetadata") -> StepResult:
@@ -2158,7 +2066,7 @@ def ensure_bin_in_path_step(metadata: "PackageMetadata") -> StepResult:
 
     log_info("")
     log_info("Managing PATH...")
-    return PATHManager.ensure_bin_in_path(metadata)
+    return ensure_bin_in_path(metadata)
 
 
 def install_extra_path_entries_step(metadata: "PackageMetadata") -> StepResult:
@@ -2171,7 +2079,7 @@ def install_extra_path_entries_step(metadata: "PackageMetadata") -> StepResult:
     extra_entries = metadata.require_runtime_config().path
     if not extra_entries:
         return StepResult(ok=True, changed=False)
-    return PATHManager.add_to_path(extra_entries, metadata)
+    return add_to_path(extra_entries, metadata)
 
 
 def install_wrappers_step(metadata: "PackageMetadata") -> StepResult:
@@ -2185,8 +2093,7 @@ def install_wrappers_step(metadata: "PackageMetadata") -> StepResult:
         return StepResult(ok=True, changed=False)
     log_info("")
     log_info("Creating executable wrappers...")
-    return BinFileCreator.install_wrappers(metadata)
-
+    return install_wrappers(metadata)
 
 INSTALL_STEPS: Tuple[InstallStep, ...] = (
     install_shortcuts_step,
@@ -2211,7 +2118,7 @@ Notes:
   - ``Install`` does not auto-create ``pkg.toml``.
   - ``UpdateConfig`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``UpdateConfig`` syncs only canonical top-level metadata keys in an existing file.
-  - Architecture and developer docs live in ``docs/architecture.md`` and ``docs/api.md``.
+  - Contributor notes live in ``docs/development.md``.
 
 Run the tool from inside a *version directory*:
 
@@ -2837,85 +2744,52 @@ def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -
     return config, {}, warnings
 
 
-class PackageMetadata:
-    """Package identity, scope, and runtime config for one package version."""
 
-    def __init__(self, version_path: Path):
-        """Create package metadata for a concrete version directory.
+class PackageMetadata:
+    """Package identity, resolved input, scope, and runtime config for one version."""
+
+    def __init__(self, resolved_input: ResolvedInput):
+        """Create package metadata for a resolved package input.
 
         Args:
-            version_path: Path pointing at a version directory, the package root,
-                or the ``current`` junction.
+            resolved_input: Classified package path information produced by
+                :func:`resolve_input_path`.
         """
 
-        resolved = resolve_input_path(Path(version_path))
-        self.resolved_input = resolved
-        self.identity = PackageIdentity.from_resolved_input(resolved)
+        self.resolved_input = resolved_input
+        self.identity = PackageIdentity.from_resolved_input(resolved_input)
         self.scope: Scope = Scope.USER
         self.scope_paths: Optional[ScopePaths] = None
         self.runtime_config: Optional[PackageConfig] = None
 
-    @property
-    def version_path(self) -> Path:
-        """Return the concrete version directory path.
+    @classmethod
+    def from_path(cls, package_path: Path) -> "PackageMetadata":
+        """Resolve *package_path* and construct metadata from the result.
+
+        Args:
+            package_path: Path pointing at a version directory, the package
+                root, or the ``current`` junction.
 
         Returns:
-            The package version directory.
+            A :class:`PackageMetadata` instance backed by one
+            :class:`ResolvedInput`.
         """
 
-        return self.identity.version_path
+        return cls(resolve_input_path(Path(package_path)))
 
-    @property
-    def pkg_path(self) -> Path:
-        """Return the package root directory.
+    def require_scope_paths(self) -> ScopePaths:
+        """Return the selected scope paths or raise a clear error.
 
         Returns:
-            The directory that owns ``current`` and version folders.
+            The cached scope-specific paths.
+
+        Raises:
+            RuntimeError: If :meth:`set_scope` has not run yet.
         """
 
-        return self.identity.package_root
-
-    @property
-    def name(self) -> str:
-        """Return the directory-derived package name.
-
-        Returns:
-            The package name.
-        """
-
-        return self.identity.name
-
-    @property
-    def version_string(self) -> str:
-        """Return the version-directory name.
-
-        Returns:
-            The full version-directory name such as ``v1.2.3.l4``.
-        """
-
-        return self.identity.version_string
-
-    @property
-    def is_current(self) -> bool:
-        """Return whether this version already matches ``current``.
-
-        Returns:
-            ``True`` when the version is current.
-        """
-
-        return self.identity.is_current
-
-    @property
-    def only_portable(self) -> bool:
-        """Return the effective package portability flag.
-
-        Returns:
-            ``True`` when the package must stay portable.
-        """
-
-        if self.runtime_config is None:
-            return self.identity.only_portable_by_name
-        return self.runtime_config.only_portable
+        if self.scope_paths is None:
+            raise RuntimeError("Install scope has not been set yet.")
+        return self.scope_paths
 
     def require_runtime_config(self) -> PackageConfig:
         """Return the loaded runtime config or raise a clear error.
@@ -2954,7 +2828,7 @@ class PackageMetadata:
             updated only when they already use canonical top-level metadata keys.
         """
 
-        toml_path = self.version_path / "pkg.toml"
+        toml_path = self.identity.version_path / "pkg.toml"
 
         if not toml_path.exists():
             rendered = create_starter_config(self.identity)
@@ -3297,304 +3171,276 @@ def create_starter_config(identity: PackageIdentity) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-class PackageManager:
-    """Orchestrate install and config-update operations for packages."""
 
-    def __init__(
-        self,
-        scope: Scope = Scope.USER,
-        pause: bool = False,
-        fix_config: bool = False,
-        use_defaults: bool = False,
-        force: bool = False,
-    ):
-        """Create a :class:`PackageManager`.
 
-        Args:
-            scope: Installation scope to use for mutations.
-            pause: Whether the CLI should pause before exit.
-            fix_config: Whether installs may synchronize mismatched metadata
-                automatically.
-            use_defaults: Whether installs may fall back to runtime defaults when
-                TOML loading fails.
-            force: Whether installs may replace ``current`` even when it already
-                points to a newer version. Ordinary same-version repair reruns do
-                not require ``force``.
-        """
+def print_action_banner(operation: Action, scope: Scope) -> None:
+    """Emit the standard CLI banner for one operation.
 
-        self.scope = scope
-        self.pause = pause
-        self.fix_config = fix_config
-        self.use_defaults = use_defaults
-        self.force = force
+    Args:
+        operation: Action currently being executed.
+        scope: Installation scope selected by the caller.
+    """
 
-    def _print_banner(self, operation: Action) -> None:
-        """Emit the standard CLI banner for one operation.
+    log_info("")
+    log_info("=" * 60)
+    log_info("gurlatsev/pkg: Package Manager")
+    log_info(f"Operation: {operation.value}")
+    log_info(f"Scope: {scope.value}")
+    log_info("=" * 60)
+    log_info("")
 
-        Args:
-            operation: Action currently being executed.
-        """
 
-        log_info("")
-        log_info("=" * 60)
-        log_info("gurlatsev/pkg: Package Manager")
-        log_info(f"Operation: {operation.value}")
-        log_info(f"Scope: {self.scope.value}")
-        log_info("=" * 60)
-        log_info("")
+def action_failure(message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
+    """Create a failed action result and report the error.
 
-    def _failure(self, message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
-        """Create a failed action result and report the error.
+    Args:
+        message: Human-readable error message.
+        exit_code: Exit code that should be returned to the caller.
+        warnings: Optional list of already-collected warnings.
 
-        Args:
-            message: Human-readable error message.
-            exit_code: Exit code that should be returned to the caller.
-            warnings: Optional list of already-collected warnings.
+    Returns:
+        An :class:`ActionResult` representing the failure.
+    """
 
-        Returns:
-            An :class:`ActionResult` representing the failure.
-        """
+    log_error(message)
+    return ActionResult(
+        ok=False,
+        changed=False,
+        warnings=warnings or [],
+        errors=[message],
+        exit_code=exit_code,
+    )
 
-        log_error(message)
-        return ActionResult(
-            ok=False,
-            changed=False,
-            warnings=warnings or [],
-            errors=[message],
-            exit_code=exit_code,
-        )
 
-    def install(self, package_path: Path) -> ActionResult:
-        """Install or reinstall a package and return a truthful action result.
+def install_components(metadata: PackageMetadata) -> StepResult:
+    """Run the ordered component-install pipeline for one package.
 
-        Same-version installs are intentionally not treated as a no-op. Once the
-        selected version is allowed to proceed, the component pipeline reruns so
-        broken shortcuts, environment variables, PATH entries, and wrapper files
-        can be restored. Depending on *package_path*, reinstall may also refresh
-        the ``current`` junction.
+    Args:
+        metadata: Package metadata describing the package being installed.
 
-        Args:
-            package_path: User-supplied path to a version directory, package
-                root, or ``current`` junction.
+    Returns:
+        Aggregated :class:`StepResult` for all component steps.
+    """
 
-        Returns:
-            An :class:`ActionResult` describing the install outcome.
-        """
+    metadata.require_scope_paths()
+    results = [step(metadata) for step in INSTALL_STEPS]
+    if not results:
+        return StepResult(ok=True, changed=False)
+    return combine_step_results(*results)
 
-        self._print_banner(Action.INSTALL)
 
-        try:
-            package_path, installing_from_current = self._resolve_install_path(package_path)
-        except ValueError as exc:
-            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
+def install_package(
+    package_path: Path,
+    *,
+    scope: Scope = Scope.USER,
+    fix_config: bool = False,
+    use_defaults: bool = False,
+    force: bool = False,
+) -> ActionResult:
+    """Install or reinstall a package and return a truthful action result.
 
-        try:
-            metadata = PackageMetadata(package_path)
-            metadata.set_scope(self.scope)
-            raw_config_data, load_warnings = metadata.load_config(use_defaults=self.use_defaults)
-        except (ConfigValidationError, RuntimeError, ValueError) as exc:
-            return self._failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_USER_ERROR)
-        except OSError as exc:
-            return self._failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_MUTATION_ERROR)
+    Same-version installs are intentionally not treated as a no-op. Once the
+    selected version is allowed to proceed, the component pipeline reruns so
+    broken shortcuts, environment variables, PATH entries, and wrapper files
+    can be restored. Depending on *package_path*, reinstall may also refresh
+    the ``current`` junction.
 
-        warnings = list(load_warnings)
-        for warning in load_warnings:
-            log_warning(warning)
+    Args:
+        package_path: User-supplied path to a version directory, package root,
+            or ``current`` junction.
+        scope: Installation scope to use for mutations.
+        fix_config: Whether installs may synchronize mismatched metadata
+            automatically.
+        use_defaults: Whether installs may fall back to runtime defaults when
+            TOML loading fails.
+        force: Whether installs may replace ``current`` even when it already
+            points to a newer version. Ordinary same-version repair reruns do
+            not require ``force``.
 
-        config_sync_changed = False
-        inconsistencies = check_metadata_consistency(metadata.identity, raw_config_data)
-        if inconsistencies:
-            if not self.fix_config:
-                log_error("Configuration inconsistencies detected:")
-                for message in inconsistencies:
-                    log_error(f"  - {message}")
-                log_info("Aborting installation to avoid mutating configs as a side effect.")
-                log_info("To fix the config, run one of:")
-                log_info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.version_path}")
-                log_info("  - re-run this install with --fix-config")
-                return ActionResult(
-                    ok=False,
-                    changed=False,
-                    warnings=warnings,
-                    errors=inconsistencies,
-                    exit_code=EXIT_USER_ERROR,
-                )
+    Returns:
+        An :class:`ActionResult` describing the install outcome.
+    """
 
-            log_warning("Configuration inconsistencies detected:")
+    print_action_banner(Action.INSTALL, scope)
+
+    try:
+        resolved = resolve_input_path(Path(package_path))
+    except ValueError as exc:
+        return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
+
+    try:
+        metadata = PackageMetadata(resolved)
+        metadata.set_scope(scope)
+        raw_config_data, load_warnings = metadata.load_config(use_defaults=use_defaults)
+    except (ConfigValidationError, RuntimeError, ValueError) as exc:
+        return action_failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_USER_ERROR)
+    except OSError as exc:
+        return action_failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_MUTATION_ERROR)
+
+    warnings = list(load_warnings)
+    for warning in load_warnings:
+        log_warning(warning)
+
+    config_sync_changed = False
+    inconsistencies = check_metadata_consistency(metadata.identity, raw_config_data)
+    if inconsistencies:
+        if not fix_config:
+            log_error("Configuration inconsistencies detected:")
             for message in inconsistencies:
-                log_warning(f"  - {message}")
-            log_info("--fix-config enabled: syncing configuration metadata to match directory structure...")
-            try:
-                update_result = metadata.update_config()
-            except (ConfigValidationError, RuntimeError, ValueError) as exc:
-                return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR, warnings=warnings)
-            except OSError as exc:
-                return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
-            warnings.extend(update_result.warnings)
-            config_sync_changed = update_result.changed
-            if not update_result.ok:
-                return ActionResult(
-                    ok=False,
-                    changed=config_sync_changed,
-                    warnings=warnings,
-                    errors=update_result.errors,
-                    exit_code=EXIT_MUTATION_ERROR,
-                )
-            log_info("Configuration updated successfully.")
-            try:
-                raw_config_data, reload_warnings = metadata.load_config(use_defaults=self.use_defaults)
-            except (ConfigValidationError, RuntimeError, ValueError) as exc:
-                return self._failure(
-                    f"Failed to reload configuration after update: {exc}",
-                    exit_code=EXIT_USER_ERROR,
-                    warnings=warnings,
-                )
-            except OSError as exc:
-                return self._failure(
-                    f"Failed to reload configuration after update: {exc}",
-                    exit_code=EXIT_MUTATION_ERROR,
-                    warnings=warnings,
-                )
-            warnings.extend(reload_warnings)
-            for warning in reload_warnings:
-                log_warning(warning)
-            log_info("")
-
-        effective_only_portable = metadata.identity.only_portable_by_name or metadata.only_portable
-        log_info(f"Package: {metadata.name}")
-        log_info(f"Version: {metadata.version_string}")
-        log_info(f"Path: {metadata.version_path}")
-        log_info(f"only_portable: {effective_only_portable}")
-        log_info("")
-
-        if effective_only_portable and self.scope == Scope.MACHINE:
-            return self._failure(
-                "only_portable packages cannot be installed system-wide. Please use User scope.",
-                exit_code=EXIT_USER_ERROR,
-                warnings=warnings,
-            )
-
-        if self.scope == Scope.MACHINE and not is_current_user_admin():
-            return self._failure(
-                "Machine scope requires administrator privileges. Please run as administrator.",
-                exit_code=EXIT_USER_ERROR,
-                warnings=warnings,
-            )
-
-        junction_changed = False
-        if installing_from_current:
-            log_info("Installing from resolved 'current' target (skipping junction management)")
-        else:
-            log_info("Managing 'current' junction...")
-            try:
-                junction_changed = JunctionManager.update_current_junction_if_needed(metadata, force=self.force)
-            except ValueError as exc:
-                return self._failure(str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings)
-            except Exception as exc:
-                return self._failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
-
-            if not junction_changed and not metadata.is_current:
-                log_info("Skipping component installation (newer version already installed)")
-                return ActionResult(
-                    ok=True,
-                    changed=config_sync_changed,
-                    warnings=warnings,
-                    exit_code=EXIT_SUCCESS,
-                )
-
-        log_info("")
-        log_info("Installing components...")
-        component_result = self._install_components(metadata)
-        warnings.extend(component_result.warnings)
-
-        if not component_result.ok:
-            log_error("One or more install steps failed:")
-            for error in component_result.errors:
-                log_error(f"  - {error}")
+                log_error(f"  - {message}")
+            log_info("Aborting installation to avoid mutating configs as a side effect.")
+            log_info("To fix the config, run one of:")
+            log_info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.identity.version_path}")
+            log_info("  - re-run this install with --fix-config")
             return ActionResult(
                 ok=False,
-                changed=junction_changed or config_sync_changed or component_result.changed,
+                changed=False,
                 warnings=warnings,
-                errors=component_result.errors,
-                exit_code=EXIT_MUTATION_ERROR,
+                errors=inconsistencies,
+                exit_code=EXIT_USER_ERROR,
             )
 
+        log_warning("Configuration inconsistencies detected:")
+        for message in inconsistencies:
+            log_warning(f"  - {message}")
+        log_info("--fix-config enabled: syncing configuration metadata to match directory structure...")
+        try:
+            update_result = metadata.update_config()
+        except (ConfigValidationError, RuntimeError, ValueError) as exc:
+            return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR, warnings=warnings)
+        except OSError as exc:
+            return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
+        warnings.extend(update_result.warnings)
+        config_sync_changed = update_result.changed
+        if not update_result.ok:
+            return ActionResult(
+                ok=False,
+                changed=config_sync_changed,
+                warnings=warnings,
+                errors=update_result.errors,
+                exit_code=EXIT_MUTATION_ERROR,
+            )
+        log_info("Configuration updated successfully.")
+        try:
+            raw_config_data, reload_warnings = metadata.load_config(use_defaults=use_defaults)
+        except (ConfigValidationError, RuntimeError, ValueError) as exc:
+            return action_failure(
+                f"Failed to reload configuration after update: {exc}",
+                exit_code=EXIT_USER_ERROR,
+                warnings=warnings,
+            )
+        except OSError as exc:
+            return action_failure(
+                f"Failed to reload configuration after update: {exc}",
+                exit_code=EXIT_MUTATION_ERROR,
+                warnings=warnings,
+            )
+        warnings.extend(reload_warnings)
+        for warning in reload_warnings:
+            log_warning(warning)
+        log_info("")
+
+    runtime_config = metadata.require_runtime_config()
+    log_info(f"Package: {metadata.identity.name}")
+    log_info(f"Version: {metadata.identity.version_string}")
+    log_info(f"Path: {metadata.identity.version_path}")
+    log_info(f"only_portable: {runtime_config.only_portable}")
+    log_info("")
+
+    if runtime_config.only_portable and scope == Scope.MACHINE:
+        return action_failure(
+            "only_portable packages cannot be installed system-wide. Please use User scope.",
+            exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
+        )
+
+    if scope == Scope.MACHINE and not is_current_user_admin():
+        return action_failure(
+            "Machine scope requires administrator privileges. Please run as administrator.",
+            exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
+        )
+
+    junction_changed = False
+    if metadata.resolved_input.installing_from_current:
+        log_info("Installing from resolved 'current' target (skipping junction management)")
+    else:
+        log_info("Managing 'current' junction...")
+        try:
+            junction_changed = update_current_junction_if_needed(metadata, force=force)
+        except ValueError as exc:
+            return action_failure(str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings)
+        except Exception as exc:
+            return action_failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
+
+        if not junction_changed and not metadata.identity.is_current:
+            log_info("Skipping component installation (newer version already installed)")
+            return ActionResult(
+                ok=True,
+                changed=config_sync_changed,
+                warnings=warnings,
+                exit_code=EXIT_SUCCESS,
+            )
+
+    log_info("")
+    log_info("Installing components...")
+    component_result = install_components(metadata)
+    warnings.extend(component_result.warnings)
+
+    if not component_result.ok:
+        log_error("One or more install steps failed:")
+        for error in component_result.errors:
+            log_error(f"  - {error}")
         return ActionResult(
-            ok=True,
+            ok=False,
             changed=junction_changed or config_sync_changed or component_result.changed,
             warnings=warnings,
-            exit_code=EXIT_SUCCESS,
+            errors=component_result.errors,
+            exit_code=EXIT_MUTATION_ERROR,
         )
 
-    def _resolve_install_path(self, package_path: Path) -> Tuple[Path, bool]:
-        """Resolve an install input into a concrete version path.
+    return ActionResult(
+        ok=True,
+        changed=junction_changed or config_sync_changed or component_result.changed,
+        warnings=warnings,
+        exit_code=EXIT_SUCCESS,
+    )
 
-        Args:
-            package_path: User-supplied path to resolve.
 
-        Returns:
-            Tuple ``(version_path, installing_from_current)``.
-        """
+def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> ActionResult:
+    """Synchronize ``pkg.toml`` metadata for one package.
 
-        resolved = resolve_input_path(package_path)
-        return resolved.version_path, resolved.installing_from_current
+    Args:
+        package_path: User-supplied path to a version directory, package root,
+            or ``current`` junction.
+        scope: Selected CLI scope, used only for the standard banner output.
 
-    def _install_components(self, metadata: PackageMetadata) -> StepResult:
-        """Run the ordered component-install pipeline for one package.
+    Returns:
+        An :class:`ActionResult` describing the metadata-update outcome.
+    """
 
-        Args:
-            metadata: Package metadata describing the package being installed.
+    print_action_banner(Action.UPDATE_CONFIG, scope)
 
-        Returns:
-            Aggregated :class:`StepResult` for all component steps.
-        """
+    try:
+        resolved = resolve_input_path(Path(package_path))
+    except ValueError as exc:
+        return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
 
-        if metadata.scope_paths is None:
-            metadata.scope_paths = compute_scope_paths(metadata.scope)
+    try:
+        metadata = PackageMetadata(resolved)
+        step_result = metadata.update_config()
+    except (ConfigValidationError, RuntimeError, ValueError) as exc:
+        return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR)
+    except OSError as exc:
+        return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR)
 
-        results: List[StepResult] = []
-        for step in INSTALL_STEPS:
-            step_result = step(metadata)
-            results.append(step_result)
-
-        if not results:
-            return StepResult(ok=True, changed=False)
-
-        return combine_step_results(*results)
-
-    def update_config(self, package_path: Path) -> ActionResult:
-        """Synchronize ``pkg.toml`` metadata for one package.
-
-        Args:
-            package_path: User-supplied path to a version directory, package
-                root, or ``current`` junction.
-
-        Returns:
-            An :class:`ActionResult` describing the metadata-update outcome.
-        """
-
-        self._print_banner(Action.UPDATE_CONFIG)
-
-        try:
-            resolved_path, _ = self._resolve_install_path(package_path)
-        except ValueError as exc:
-            return self._failure(str(exc), exit_code=EXIT_USER_ERROR)
-
-        try:
-            metadata = PackageMetadata(resolved_path)
-            step_result = metadata.update_config()
-        except (ConfigValidationError, RuntimeError, ValueError) as exc:
-            return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR)
-        except OSError as exc:
-            return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR)
-
-        return ActionResult(
-            ok=step_result.ok,
-            changed=step_result.changed,
-            warnings=step_result.warnings,
-            errors=step_result.errors,
-            exit_code=EXIT_SUCCESS if step_result.ok else EXIT_MUTATION_ERROR,
-        )
+    return ActionResult(
+        ok=step_result.ok,
+        changed=step_result.changed,
+        warnings=step_result.warnings,
+        errors=step_result.errors,
+        exit_code=EXIT_SUCCESS if step_result.ok else EXIT_MUTATION_ERROR,
+    )
 
 
 class _ExtendedHelpAction(argparse.Action):
@@ -3734,19 +3580,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     result: ActionResult
 
     try:
-        manager = PackageManager(
-            scope=scope,
-            pause=args.pause,
-            fix_config=args.fix_config,
-            use_defaults=args.use_defaults,
-            force=args.force,
-        )
         package_path = Path(args.path).expanduser()
 
         if action == Action.INSTALL:
-            result = manager.install(package_path)
+            result = install_package(
+                package_path,
+                scope=scope,
+                fix_config=args.fix_config,
+                use_defaults=args.use_defaults,
+                force=args.force,
+            )
         elif action == Action.UPDATE_CONFIG:
-            result = manager.update_config(package_path)
+            result = update_package_config(package_path, scope=scope)
         else:
             message = f"Unknown action: {action}"
             log_error(message)

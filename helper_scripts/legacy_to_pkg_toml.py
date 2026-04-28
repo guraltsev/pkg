@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Best-effort converter from legacy package config files to ``pkg.toml``.
 
-The script scans a directory for known legacy JSON files and merges whatever it
-can into a single TOML document. It is intentionally tolerant: missing files and
-partially malformed input are treated as warnings rather than hard failures.
+The helper scans a directory for older JSON files and rewrites what it can into
+one canonical ``pkg.toml`` file. It prefers producing current schema that
+``pkg.py`` accepts today over preserving every old shape. Missing files,
+partially malformed input, and uncertain metadata are treated as warnings rather
+than hard failures, so manual review is still expected.
 """
 
 from __future__ import annotations
@@ -12,22 +14,26 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
-DEFAULTS: dict[str, Any] = {
-    "name": "",
-    "version": "",
-    "localVersion": "",
-    "only_portable": False,
-    "description": "",
-    "homepage": "",
-    "downloadURL": "",
-    "path": [],
-    "environment": [],
-    "shortcut": [],
-    "bin": [],
-}
+VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
+def new_config() -> dict[str, Any]:
+    """Create an empty canonical config dictionary."""
+
+    return {
+        "name": None,
+        "version": None,
+        "localVersion": None,
+        "only_portable": None,
+        "description": None,
+        "homepage": None,
+        "downloadURL": None,
+        "path": [],
+        "environment": [],
+        "shortcut": [],
+        "bin": [],
+    }
 
 
 def to_toml_scalar(value: Any) -> str:
@@ -51,24 +57,14 @@ def to_toml_scalar(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def toml_path_lines(path_entries: list[Any]) -> list[str]:
-    """Render ``[[path]]`` tables for a list of PATH entries.
-
-    Args:
-        path_entries: Values that should become repeated ``[[path]]`` tables.
-
-    Returns:
-        List of TOML lines for the supplied PATH entries.
-    """
-
-    if not path_entries:
-        return []
+def toml_path_lines(path_entries: list[str]) -> list[str]:
+    """Render canonical ``[[path]]`` tables for a list of PATH entries."""
 
     lines: list[str] = []
     for entry in path_entries:
         lines.extend([
             "[[path]]",
-            f"value = {to_toml_scalar(str(entry))}",
+            f"value = {to_toml_scalar(entry)}",
             "",
         ])
     return lines
@@ -97,15 +93,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 
 def find_legacy_file(base_dir: Path, exact_name: str) -> Path | None:
-    """Find a legacy file by exact or case-insensitive name.
-
-    Args:
-        base_dir: Directory to scan.
-        exact_name: Preferred file name.
-
-    Returns:
-        Matching file path, or ``None`` when no match exists.
-    """
+    """Find a legacy file by exact or case-insensitive name."""
 
     exact = base_dir / exact_name
     if exact.exists():
@@ -119,15 +107,7 @@ def find_legacy_file(base_dir: Path, exact_name: str) -> Path | None:
 
 
 def pick_all_matching(base_dir: Path, prefix: str) -> list[Path]:
-    """Collect all legacy JSON files that share a prefix.
-
-    Args:
-        base_dir: Directory to scan.
-        prefix: Lower-case prefix such as ``shortcut`` or ``bin``.
-
-    Returns:
-        Sorted list of matching JSON files.
-    """
+    """Collect all legacy JSON files that share a prefix."""
 
     files: list[Path] = []
     for candidate in sorted(base_dir.glob("*.json")):
@@ -137,16 +117,59 @@ def pick_all_matching(base_dir: Path, prefix: str) -> list[Path]:
     return files
 
 
+def normalize_legacy_variable_path(value: str) -> str:
+    """Normalize legacy package-variable spellings to canonical forms."""
+
+    normalized = value
+    component_patterns = [
+        (r"\$AppPath[\\/]+App(?=[\\/]+|$)", "$App"),
+        (r"\$AppPath[\\/]+Icons(?=[\\/]+|$)", "$Icons"),
+        (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
+        (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
+        (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
+        (r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)", "$Shortcuts"),
+        (r"\$AppPath(?=[\\/]+|$)", "$App"),
+    ]
+    for pattern, replacement in component_patterns:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _normalize_optional_int(value: Any, *, label: str, source_name: str) -> int | None:
+    """Normalize a best-effort integer metadata value."""
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        print(f"Warning: {source_name}: '{label}' should be an integer; ignoring {value!r}")
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    print(f"Warning: {source_name}: '{label}' should be an integer; ignoring {value!r}")
+    return None
+
+
+def _normalize_optional_bool(value: Any, *, label: str, source_name: str) -> bool | None:
+    """Normalize a best-effort boolean metadata value."""
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    print(f"Warning: {source_name}: '{label}' should be a boolean; ignoring {value!r}")
+    return None
+
+
 def normalize_shortcut(item: dict[str, Any]) -> dict[str, str]:
-    """Normalize one legacy shortcut declaration.
-
-    Args:
-        item: Legacy shortcut dictionary.
-
-    Returns:
-        Canonical shortcut dictionary suitable for ``pkg.toml``. Invalid or
-        incomplete entries return an empty dictionary.
-    """
+    """Normalize one legacy shortcut declaration."""
 
     key_map = {
         "name": "name",
@@ -179,16 +202,26 @@ def normalize_shortcut(item: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def normalize_environment(item: dict[str, Any]) -> dict[str, str]:
+    """Normalize one legacy environment-variable declaration."""
+
+    key_map = {
+        "name": "Name",
+        "value": "Value",
+    }
+    out: dict[str, str] = {}
+    for key, value in item.items():
+        canon = key_map.get(str(key).lower())
+        if canon is None or value is None:
+            continue
+        out[canon] = normalize_legacy_variable_path(str(value))
+    if not out.get("Name") or out.get("Value", "") == "":
+        return {}
+    return out
+
+
 def normalize_bin(item: dict[str, Any]) -> dict[str, str]:
-    """Normalize one legacy wrapper declaration.
-
-    Args:
-        item: Legacy wrapper dictionary.
-
-    Returns:
-        Canonical wrapper dictionary suitable for ``pkg.toml``. Invalid or
-        incomplete entries return an empty dictionary.
-    """
+    """Normalize one legacy wrapper declaration."""
 
     name = ""
     content = ""
@@ -203,65 +236,54 @@ def normalize_bin(item: dict[str, Any]) -> dict[str, str]:
     return {"name": name, "content": content}
 
 
-def normalize_legacy_variable_path(value: str) -> str:
-    """Normalize legacy path variable spellings to canonical forms.
-
-    Args:
-        value: Raw legacy text that may contain old variable names.
-
-    Returns:
-        Text with legacy package-variable spellings rewritten to modern
-        ``$App``/``$Icons``/``$Shortcuts`` forms.
-    """
-
-    normalized = value
-
-    component_patterns = [
-        (r"\$AppPath[\\/]+App(?=[\\/]+|$)", "$App"),
-        (r"\$AppPath[\\/]+Icons(?=[\\/]+|$)", "$Icons"),
-        (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
-        (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
-        (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
-        (r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)", "$Shortcuts"),
-        (r"\$AppPath(?=[\\/]+|$)", "$App"),
-    ]
-
-    for pattern, replacement in component_patterns:
-        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
-
-    return normalized
-
-
 def extend_normalized_list(
     output: dict[str, Any],
     source: dict[str, Any],
-    key: str,
-    normalizer,
+    source_keys: list[str],
+    dest_key: str,
+    normalizer: Callable[[dict[str, Any]], dict[str, str]],
     source_name: str,
 ) -> None:
-    """Normalize a list block from legacy data and append valid rows.
+    """Normalize one or more legacy list blocks and append valid rows."""
 
-    Args:
-        output: Destination config dictionary being built.
-        source: Legacy source dictionary.
-        key: Key whose value should be interpreted as a list block.
-        normalizer: Callable that normalizes one row.
-        source_name: Human-readable source name for warnings.
-    """
-
-    rows = source.get(key, [])
-    if rows is None:
-        return
-    if not isinstance(rows, list):
-        print(f"Warning: {source_name}: '{key}' should be a list")
-        return
-
-    for row in rows:
-        if not isinstance(row, dict):
+    for source_key in source_keys:
+        rows = source.get(source_key)
+        if rows is None:
             continue
-        normalized = normalizer(row)
-        if normalized:
-            output[key].append(normalized)
+        if not isinstance(rows, list):
+            print(f"Warning: {source_name}: '{source_key}' should be a list")
+            continue
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = normalizer(row)
+            if normalized:
+                output[dest_key].append(normalized)
+
+
+def infer_metadata_from_directory(base_dir: Path) -> dict[str, Any]:
+    """Infer metadata from a conventional version-directory path."""
+
+    inferred = new_config()
+    match = VERSION_DIR_NAME_RE.match(base_dir.name)
+    if not match:
+        return inferred
+
+    package_name = base_dir.parent.name
+    inferred["name"] = package_name or None
+    inferred["version"] = match.group(1)
+    inferred["localVersion"] = int(match.group(2))
+    inferred["only_portable"] = package_name.lower().endswith("-portable")
+    return inferred
+
+
+def merge_missing_metadata(output: dict[str, Any], inferred: dict[str, Any]) -> None:
+    """Fill unset metadata fields from inferred values."""
+
+    for key in ["name", "version", "localVersion", "only_portable"]:
+        if output.get(key) is None and inferred.get(key) is not None:
+            output[key] = inferred[key]
 
 
 def build_config(base_dir: Path) -> dict[str, Any]:
@@ -274,7 +296,8 @@ def build_config(base_dir: Path) -> dict[str, Any]:
         Canonical configuration dictionary.
     """
 
-    out = dict(DEFAULTS)
+    out = new_config()
+    inferred = infer_metadata_from_directory(base_dir)
 
     opt_pkg = find_legacy_file(base_dir, "opt_pkg.json")
     if opt_pkg:
@@ -283,67 +306,89 @@ def build_config(base_dir: Path) -> dict[str, Any]:
             top_map = {
                 "name": "name",
                 "version": "version",
-                "localversion": "localVersion",
-                "local_version": "localVersion",
                 "description": "description",
                 "homepage": "homepage",
                 "downloadurl": "downloadURL",
                 "download_url": "downloadURL",
-                "only_portable": "only_portable",
-                "onlyportable": "only_portable",
-                "portable": "only_portable",
-                "path": "path",
             }
             for key, value in data.items():
                 canon = top_map.get(str(key).lower())
-                if canon is None or value is None:
+                if canon is None or value in (None, ""):
                     continue
-                if canon == "path" and isinstance(value, list):
-                    out["path"] = [str(item) for item in value if item is not None]
-                else:
-                    out[canon] = value
+                out[canon] = str(value)
 
-            extend_normalized_list(out, data, "shortcut", normalize_shortcut, opt_pkg.name)
-            extend_normalized_list(out, data, "bin", normalize_bin, opt_pkg.name)
+            local_value = data.get("localVersion")
+            if local_value is None:
+                local_value = data.get("local_version")
+            out["localVersion"] = _normalize_optional_int(local_value, label="localVersion", source_name=opt_pkg.name)
+
+            portable_value = data.get("only_portable")
+            if portable_value is None:
+                portable_value = data.get("onlyportable")
+            if portable_value is None:
+                portable_value = data.get("portable")
+            out["only_portable"] = _normalize_optional_bool(
+                portable_value,
+                label="only_portable",
+                source_name=opt_pkg.name,
+            )
+
+            raw_path_entries = data.get("path")
+            if isinstance(raw_path_entries, list):
+                out["path"] = [normalize_legacy_variable_path(str(item)) for item in raw_path_entries if item is not None]
+            elif raw_path_entries is not None:
+                print(f"Warning: {opt_pkg.name}: 'path' should be a list")
+
+            extend_normalized_list(out, data, ["environment", "env"], "environment", normalize_environment, opt_pkg.name)
+            extend_normalized_list(out, data, ["shortcut"], "shortcut", normalize_shortcut, opt_pkg.name)
+            extend_normalized_list(out, data, ["bin"], "bin", normalize_bin, opt_pkg.name)
+
+    for env_file in [*pick_all_matching(base_dir, "environment"), *pick_all_matching(base_dir, "env")]:
+        data = read_json(env_file)
+        if not data:
+            continue
+        extend_normalized_list(out, data, ["environment", "env"], "environment", normalize_environment, env_file.name)
 
     for shortcut_file in pick_all_matching(base_dir, "shortcut"):
         data = read_json(shortcut_file)
         if not data:
             continue
-        extend_normalized_list(out, data, "shortcut", normalize_shortcut, shortcut_file.name)
+        extend_normalized_list(out, data, ["shortcut"], "shortcut", normalize_shortcut, shortcut_file.name)
 
     for bin_file in pick_all_matching(base_dir, "bin"):
         data = read_json(bin_file)
         if not data:
             continue
-        extend_normalized_list(out, data, "bin", normalize_bin, bin_file.name)
+        extend_normalized_list(out, data, ["bin"], "bin", normalize_bin, bin_file.name)
 
+    merge_missing_metadata(out, inferred)
     return out
 
 
-def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
-    """Write a canonical ``pkg.toml`` file.
-
-    Args:
-        path: Output TOML path.
-        cfg: Canonical configuration dictionary to serialize.
-    """
+def render_pkg_toml(cfg: dict[str, Any]) -> str:
+    """Render canonical ``pkg.toml`` text for a config dictionary."""
 
     lines = [
         "# Auto-generated from legacy config files.",
         "# Please review and edit as needed.",
-        "[[main]]",
-        f"name = {to_toml_scalar(cfg.get('name', ''))}",
-        f"version = {to_toml_scalar(cfg.get('version', ''))}",
-        f"localVersion = {to_toml_scalar(cfg.get('localVersion', ''))}",
-        f"only_portable = {to_toml_scalar(cfg.get('only_portable', False))}",
-        f"description = {to_toml_scalar(cfg.get('description', ''))}",
-        f"homepage = {to_toml_scalar(cfg.get('homepage', ''))}",
-        f"downloadURL = {to_toml_scalar(cfg.get('downloadURL', ''))}",
         "",
     ]
+
+    if cfg.get("name") not in (None, ""):
+        lines.append(f"name = {to_toml_scalar(cfg['name'])}")
+    if cfg.get("version") not in (None, ""):
+        lines.append(f"version = {to_toml_scalar(cfg['version'])}")
+    if cfg.get("localVersion") is not None:
+        lines.append(f"localVersion = {to_toml_scalar(cfg['localVersion'])}")
+    if cfg.get("only_portable") is not None:
+        lines.append(f"only_portable = {to_toml_scalar(cfg['only_portable'])}")
+    for key in ["description", "homepage", "downloadURL"]:
+        if cfg.get(key) not in (None, ""):
+            lines.append(f"{key} = {to_toml_scalar(cfg[key])}")
+    if lines[-1] != "":
+        lines.append("")
+
     lines.extend(toml_path_lines(cfg.get("path", [])))
-    lines.append("")
 
     for entry in cfg.get("environment", []):
         lines.extend([
@@ -368,7 +413,13 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
             "",
         ])
 
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
+    """Write canonical ``pkg.toml`` text to *path*."""
+
+    path.write_text(render_pkg_toml(cfg), encoding="utf-8")
 
 
 def main() -> int:
@@ -378,7 +429,7 @@ def main() -> int:
         Process exit code.
     """
 
-    parser = argparse.ArgumentParser(description="Construct pkg.toml from legacy files in current dir")
+    parser = argparse.ArgumentParser(description="Construct canonical pkg.toml from legacy files in one directory")
     parser.add_argument("--dir", default=".", help="Directory that contains legacy JSON files (default: current directory)")
     parser.add_argument("--output", default="pkg.toml", help="Output TOML path (default: ./pkg.toml)")
     parser.add_argument("--dry-run", action="store_true", help="Print resulting TOML to stdout instead of writing")
@@ -393,10 +444,7 @@ def main() -> int:
         out_path = (Path.cwd() / out_path).resolve()
 
     if args.dry_run:
-        temp = out_path.with_suffix(out_path.suffix + ".preview")
-        write_pkg_toml(temp, cfg)
-        print(temp.read_text(encoding="utf-8"))
-        temp.unlink(missing_ok=True)
+        print(render_pkg_toml(cfg), end="")
         return 0
 
     if out_path.exists() and not args.force:
