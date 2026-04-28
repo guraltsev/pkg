@@ -439,6 +439,10 @@ Evidence:
 - `PackageManager.__init__()` explicitly labels `no_autoupdate_config` deprecated compatibility - `pkg.py:3641-3642`
 - `--python` is hidden and otherwise unused inside `pkg.py`; it exists to tolerate wrapper forwarding
 
+Note (superseded by later cleanup): the repo now treats hidden `--python` as an
+intentional bootstrap contract with `pkg.cmd`, not as disposable legacy
+compatibility.
+
 ### Plan
 
 1. Delete `no_autoupdate_config` from the constructor.

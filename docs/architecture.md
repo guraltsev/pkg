@@ -26,7 +26,7 @@ Pure and shared code:
 - atomic file writers
 - version comparison helpers
 - variable expansion rules
-- reporter utilities
+- module-level stdout logging helpers
 
 Imports for this section live immediately under its section header, matching the
 single-file organization requirement.
@@ -74,11 +74,16 @@ A minimal `if __name__ == "__main__":` handoff that runs `main()`.
 2. `PackageManager.install()` resolves the input path with `resolve_input_path()`.
 3. `PackageMetadata` loads `pkg.toml` through `read_runtime_config()` and stores
    the typed `PackageConfig` model.
-4. `PackageManager` validates portability and checks raw top-level metadata for
+4. `PackageManager` collects load warnings and checks raw top-level metadata for
    directory/config mismatches.
-5. If needed, `JunctionManager.update_current_junction_if_needed()` repoints the
+5. When `--fix-config` is enabled and owned metadata is stale, install runs
+   `PackageMetadata.update_config()`, reloads `pkg.toml`, and replaces the
+   in-memory runtime config before continuing.
+6. Only after that repair/reload step does install derive effective
+   `only_portable` and apply the Machine-scope portability gate.
+7. If needed, `JunctionManager.update_current_junction_if_needed()` repoints the
    package-level `current` junction.
-6. The install-step pipeline runs in order:
+8. The install-step pipeline runs in order:
    - shortcuts
    - environment variables
    - ensuring the scope bin directory is on PATH
@@ -97,7 +102,16 @@ entries, and wrapper files can be restored.
    - creates a documented starter config when `pkg.toml` is missing, or
    - syncs only the canonical top-level metadata keys in an existing canonical
      `pkg.toml`
-4. Existing comments and unrelated content are preserved when possible.
+4. Existing comments and unrelated content are preserved when possible, and the
+   rendered text is parsed again before it is written back out.
+
+## Bootstrap interpreter contract
+
+`pkg.cmd` is the bootstrap launcher for `pkg.py`. It chooses Python in this
+order: `--python`, `PKG_PYTHON`, `pkg.python`, then `python` from `PATH`.
+`pkg.py` intentionally keeps a hidden `--python` parser entry so the launcher
+can forward that choice unchanged on systems where Python is not otherwise
+discoverable in the usual way.
 
 ## Why the section split matters
 

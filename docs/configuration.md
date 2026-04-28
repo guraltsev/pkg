@@ -54,6 +54,17 @@ Accepted keys:
 - `iconLocation`
 - `description`
 
+`name` is expanded before placement. It may be:
+
+- a simple output name such as `Ripgrep`
+- a nested relative path under the default shortcut root such as `Tools\Ripgrep`
+- a path-like destination that resolves outside the default shortcut root
+
+Absolute paths and escaping parent traversal are intentionally allowed. This is
+powerful and sometimes useful, but package authors should use it sparingly.
+When install detects that the final shortcut path lands outside the default
+scope shortcut root, it prints a warning and still creates the shortcut.
+
 ### `[[environment]]`
 
 Accepted keys:
@@ -76,6 +87,14 @@ Accepted keys:
 
 - `name` (required)
 - `content` (required)
+
+`name` follows the same placement rule as `[[shortcut]].name`: expansion runs
+first, then the result may be a simple file name, a nested relative path under
+the default bin root, or a path-like destination outside that root.
+
+Absolute paths and escaping parent traversal are intentionally allowed here as
+well. Install warns when the final wrapper path lands outside the default bin
+root, but it does not block creation.
 
 ## Variable expansion rules
 

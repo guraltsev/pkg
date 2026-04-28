@@ -34,6 +34,7 @@ from __future__ import annotations
 # Section: Shared models and pure helpers
 #------------------------------------------
 import json
+import logging
 import os
 import re
 import shutil
@@ -354,47 +355,57 @@ class PreparedShortcut:
     description: str = ""
 
 
-class Reporter:
-    """Minimal console reporter used by the orchestration layer.
+class _DynamicStdoutHandler(logging.Handler):
+    """Logging handler that writes to the current stdout stream.
 
-    The reporter intentionally keeps formatting simple so unit tests and humans
-    can both understand the output without additional adapters.
+    ``contextlib.redirect_stdout()`` swaps out ``sys.stdout`` at runtime. The
+    handler writes through :func:`print` during ``emit()`` so test capture keeps
+    working even though the logger is configured once at import time.
     """
 
-    def info(self, msg: str) -> None:
-        """Emit an informational message.
+    def emit(self, record: logging.LogRecord) -> None:
+        """Render and print one log record to stdout."""
 
-        Args:
-            msg: Text to print verbatim.
-        """
+        try:
+            print(self.format(record))
+        except Exception:
+            self.handleError(record)
 
-        print(msg)
 
-    def warn(self, msg: str) -> None:
-        """Emit a warning message.
+_LOGGER = logging.getLogger("pkg.stdout")
+for _existing_handler in list(_LOGGER.handlers):
+    _LOGGER.removeHandler(_existing_handler)
+    try:
+        _existing_handler.close()
+    except Exception:
+        pass
+_LOGGER.setLevel(logging.INFO)
+_LOGGER.propagate = False
+_stdout_handler = _DynamicStdoutHandler()
+_stdout_handler.setFormatter(logging.Formatter("%(message)s"))
+_LOGGER.addHandler(_stdout_handler)
 
-        Args:
-            msg: Warning text. The ``WARNING:`` prefix is added automatically if
-                the caller did not provide it.
-        """
 
-        if msg.startswith("WARNING:"):
-            print(msg)
-        else:
-            print(f"WARNING: {msg}")
+def log_info(message: str) -> None:
+    """Emit one informational line to stdout."""
 
-    def error(self, msg: str) -> None:
-        """Emit an error message.
+    _LOGGER.info(message)
 
-        Args:
-            msg: Error text. The ``ERROR:`` prefix is added automatically if the
-                caller did not provide it.
-        """
 
-        if msg.startswith("ERROR:"):
-            print(msg)
-        else:
-            print(f"ERROR: {msg}")
+def log_warning(message: str) -> None:
+    """Emit one warning line to stdout with a stable prefix."""
+
+    if not message.startswith("WARNING:"):
+        message = f"WARNING: {message}"
+    _LOGGER.warning(message)
+
+
+def log_error(message: str) -> None:
+    """Emit one error line to stdout with a stable prefix."""
+
+    if not message.startswith("ERROR:"):
+        message = f"ERROR: {message}"
+    _LOGGER.error(message)
 
 
 
@@ -1197,7 +1208,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-InstallStep = Callable[["PackageMetadata", Reporter], StepResult]
+InstallStep = Callable[["PackageMetadata"], StepResult]
 
 
 def compute_scope_paths(scope: Scope) -> ScopePaths:
@@ -1275,6 +1286,47 @@ def _expanded_text_or_error(
     return expansion.value
 
 
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _warn_if_output_path_is_unusual(kind: str, default_root: Path, expanded_name: str, final_path: Path) -> None:
+    """Warn when a shortcut/bin output lands outside its default root.
+
+    Relative nested paths inside the default root are allowed without warning.
+    Absolute names and escaping parent traversal remain allowed, but they are
+    noisy enough that install should call them out explicitly.
+    """
+
+    looks_absolute = expanded_name.startswith(("/", "\\")) or _WINDOWS_ABSOLUTE_PATH_RE.match(expanded_name) is not None
+
+    depth = 0
+    escapes_by_parent_traversal = False
+    for segment in re.split(r"[\\/]+", expanded_name):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if depth == 0:
+                escapes_by_parent_traversal = True
+                break
+            depth -= 1
+            continue
+        depth += 1
+
+    outside_default_root = escapes_by_parent_traversal
+    try:
+        outside_default_root = outside_default_root or not final_path.resolve(strict=False).is_relative_to(
+            default_root.resolve(strict=False)
+        )
+    except OSError:
+        outside_default_root = True
+
+    if looks_absolute or outside_default_root:
+        destination = expanded_name if looks_absolute else str(final_path)
+        log_warning(
+            f"{kind} output resolves outside the default {kind} root; this is allowed but unusual: {destination}"
+        )
+
+
 def prepare_shortcut_spec(
     spec: ShortcutSpec,
     identity: PackageIdentity,
@@ -1349,6 +1401,7 @@ def prepare_shortcut_spec(
     shortcut_path = scope_paths.shortcut_root / expanded_name
     if shortcut_path.suffix.lower() != ".lnk":
         shortcut_path = shortcut_path.with_suffix(".lnk")
+    _warn_if_output_path_is_unusual("shortcut", scope_paths.shortcut_root, expanded_name, shortcut_path)
     shortcut_path.parent.mkdir(parents=True, exist_ok=True)
 
     return PreparedShortcut(
@@ -1546,7 +1599,7 @@ class JunctionManager:
 
             current_target = current_target.resolve()
             if not current_target.is_dir():
-                print(f"JUNCTION: stale current target detected: {current_target}")
+                log_info(f"JUNCTION: stale current target detected: {current_target}")
             else:
                 if current_target.parent != metadata.pkg_path:
                     raise ValueError(
@@ -1555,16 +1608,16 @@ class JunctionManager:
                     )
 
                 current_version = current_target.name
-                print(f"'current' junction version: {current_version}")
+                log_info(f"'current' junction version: {current_version}")
                 comparison = JunctionManager.compare_versions(metadata.version_string, current_version)
                 # Same-version reinstalls are a supported refresh path. Only
                 # keep the existing junction untouched when it points to a
                 # newer version and --force was not requested.
                 if not force and comparison < 0:
-                    print(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
+                    log_info(f"JUNCTION: keeping current ({current_version} > {metadata.version_string})")
                     return False
                 if force:
-                    print(f"JUNCTION: --force: updating current to {metadata.version_string}")
+                    log_info(f"JUNCTION: --force: updating current to {metadata.version_string}")
         
         # Refreshing the currently active version may still recreate
         # ``current`` so install can reassert the active package view.
@@ -1612,7 +1665,7 @@ class JunctionManager:
                 except OSError:
                     pass
 
-        print(f"JUNCTION: created: {current_path.name} -> {desired_target}")
+        log_info(f"JUNCTION: created: {current_path.name} -> {desired_target}")
         return True
 
 
@@ -1650,28 +1703,21 @@ class ShortcutInstaller:
         try:
             prepared = ShortcutInstaller._prepare_shortcut(shortcut_spec, metadata)
             create_shortcut(prepared)
-            print(f"SHORTCUT: created: {prepared.shortcut_path.name}")
+            log_info(f"SHORTCUT: created: {prepared.shortcut_path.name}")
             return True, None
         except Exception as exc:
             name = shortcut_spec.name or "unknown"
-            print(f"SHORTCUT error creating {name}: {exc}")
+            log_error(f"SHORTCUT error creating {name}: {exc}")
             return False, f"Failed to create shortcut '{name}': {exc}"
 
     @staticmethod
-    def install_shortcuts(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+    def install_shortcuts(metadata: "PackageMetadata") -> StepResult:
         """Install every shortcut declared by a package.
-
-        Args:
-            metadata: Package metadata whose runtime config contains shortcut
-                declarations.
-            reporter: Optional reporter used for user-visible warnings and
-                errors.
 
         Returns:
             A :class:`StepResult` summarizing the shortcut step.
         """
 
-        reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         shortcuts = metadata.require_runtime_config().shortcut
         for shortcut_spec in shortcuts:
@@ -1681,7 +1727,7 @@ class ShortcutInstaller:
                 continue
             result.ok = False
             message = error or f"Failed to create shortcut: {shortcut_spec.name or 'unknown'}"
-            reporter.error(message)
+            log_error(message)
             result.errors.append(message)
 
         return result
@@ -1715,7 +1761,7 @@ class EnvironmentVariableManager:
         try:
             broadcast_environment_change()
         except Exception as exc:
-            print(f"Warning: failed to broadcast environment change notification: {exc}")
+            log_warning(f"failed to broadcast environment change notification: {exc}")
 
     @staticmethod
     def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
@@ -1736,39 +1782,31 @@ class EnvironmentVariableManager:
             reg = require_winreg()
             reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
             write_registry_value(root, subkey, name, value, reg_type)
-            print(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
+            log_info(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
             EnvironmentVariableManager.broadcast_environment_change()
             return True
         except PermissionError:
-            print(f"ERROR: Insufficient permissions to set {scope.value} environment variable: {name}")
+            log_error(f"Insufficient permissions to set {scope.value} environment variable: {name}")
             return False
         except Exception as exc:
-            print(f"ENVIRONMENT error setting {name}: {exc}")
+            log_error(f"ENVIRONMENT error setting {name}: {exc}")
             return False
 
     @staticmethod
-    @staticmethod
-    def install_environment_variables(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+    def install_environment_variables(metadata: "PackageMetadata") -> StepResult:
         """Install every environment variable declared by a package.
-
-        Args:
-            metadata: Package metadata whose runtime config contains variable
-                declarations.
-            reporter: Optional reporter used for user-visible warnings and
-                errors.
 
         Returns:
             A :class:`StepResult` summarizing the environment-variable step.
         """
 
-        reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         for env_var in metadata.require_runtime_config().environment:
             name = env_var.name.strip()
             value = env_var.value
             if not name:
                 message = f"Environment variable entry is missing Name: {env_var}"
-                reporter.error(message)
+                log_error(message)
                 result.ok = False
                 result.errors.append(message)
                 continue
@@ -1776,7 +1814,7 @@ class EnvironmentVariableManager:
             if expansion.unresolved:
                 unresolved = ", ".join(expansion.unresolved)
                 message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
-                reporter.error(message)
+                log_error(message)
                 result.ok = False
                 result.errors.append(message)
                 continue
@@ -1787,7 +1825,7 @@ class EnvironmentVariableManager:
                 result.changed = True
                 continue
             message = f"Failed to set environment variable: {name}"
-            reporter.error(message)
+            log_error(message)
             result.ok = False
             result.errors.append(message)
         return result
@@ -1830,7 +1868,7 @@ class PATHManager:
         except FileNotFoundError:
             pass
         except Exception as exc:
-            print(f"PATH error reading {scope.value} PATH: {exc}")
+            log_error(f"PATH error reading {scope.value} PATH: {exc}")
 
         return []
 
@@ -1854,28 +1892,20 @@ class PATHManager:
             EnvironmentVariableManager.broadcast_environment_change()
             return True
         except PermissionError:
-            print(f"ERROR: Insufficient permissions to set {scope.value} PATH")
+            log_error(f"Insufficient permissions to set {scope.value} PATH")
             return False
         except Exception as exc:
-            print(f"PATH error setting {scope.value} PATH: {exc}")
+            log_error(f"PATH error setting {scope.value} PATH: {exc}")
             return False
 
     @staticmethod
-    def add_to_path(new_entries: List[str], metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+    def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResult:
         """Append directories to PATH while avoiding duplicates.
-
-        Args:
-            new_entries: Candidate directories to add.
-            metadata: Package metadata used for variable expansion and scope
-                selection.
-            reporter: Optional reporter used for user-visible warnings and
-                errors.
 
         Returns:
             A :class:`StepResult` summarizing the PATH update.
         """
 
-        reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         valid_entries: List[str] = []
 
@@ -1884,7 +1914,7 @@ class PATHManager:
             if expansion.unresolved:
                 unresolved = ", ".join(expansion.unresolved)
                 message = f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
-                reporter.error(message)
+                log_error(message)
                 result.ok = False
                 result.errors.append(message)
                 continue
@@ -1892,7 +1922,7 @@ class PATHManager:
             expanded = expansion.value.strip()
             if expanded == "":
                 message = f"PATH entry '{entry}' expands to an empty value and will not be added."
-                reporter.error(message)
+                log_error(message)
                 result.ok = False
                 result.errors.append(message)
                 continue
@@ -1900,7 +1930,7 @@ class PATHManager:
             normalized = os.path.normpath(expanded)
             if normalized == "":
                 message = f"PATH entry '{entry}' normalized to an empty value and will not be added."
-                reporter.error(message)
+                log_error(message)
                 result.ok = False
                 result.errors.append(message)
                 continue
@@ -1921,7 +1951,7 @@ class PATHManager:
                 updated_path.append(entry)
                 existing_keys.add(key)
                 added_entries.append(entry)
-                reporter.info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
+                log_info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
 
         if not added_entries:
             return result
@@ -1931,7 +1961,7 @@ class PATHManager:
             return result
 
         message = f"Failed to update {metadata.scope.value} PATH."
-        reporter.error(message)
+        log_error(message)
         result.ok = False
         result.errors.append(message)
         return result
@@ -1947,19 +1977,13 @@ class PATHManager:
         return system_drive_root()
 
     @staticmethod
-    def ensure_bin_in_path(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+    def ensure_bin_in_path(metadata: "PackageMetadata") -> StepResult:
         """Ensure the per-scope ``bin`` directory exists and is on PATH.
-
-        Args:
-            metadata: Package metadata that determines the target scope.
-            reporter: Optional reporter used for user-visible warnings and
-                errors.
 
         Returns:
             A :class:`StepResult` summarizing the bin-directory and PATH work.
         """
 
-        reporter = reporter or Reporter()
         scope_paths = metadata.scope_paths or compute_scope_paths(metadata.scope)
         metadata.scope_paths = scope_paths
         bin_dir = scope_paths.bin_dir
@@ -1977,7 +2001,7 @@ class PATHManager:
         bin_key = PATHManager._path_key(bin_dir_str)
         current_keys = {PATHManager._path_key(item) for item in current_path if item}
         if bin_key not in current_keys:
-            path_result = PATHManager.add_to_path([bin_dir_str], metadata, reporter=reporter)
+            path_result = PATHManager.add_to_path([bin_dir_str], metadata)
             path_result.changed = path_result.changed or changed
             return path_result
 
@@ -2002,7 +2026,6 @@ class BinFileCreator:
             return Path.home() / "bin"
         return Path(PATHManager._system_drive_root()) / "bin"
 
-    @staticmethod
     @staticmethod
     def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
         """Create one wrapper file.
@@ -2043,6 +2066,7 @@ class BinFileCreator:
             bin_dir.mkdir(parents=True, exist_ok=True)
 
             wrapper_path = bin_dir / expanded_name
+            _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
             wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
             extension = wrapper_path.suffix.lower()
@@ -2050,8 +2074,8 @@ class BinFileCreator:
                 try:
                     desired_bytes = expanded_content.encode("ascii")
                 except UnicodeEncodeError:
-                    print(
-                        f"Warning: non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+                    log_warning(
+                        f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
                     )
                     desired_bytes = expanded_content.encode("utf-8-sig")
             else:
@@ -2061,35 +2085,28 @@ class BinFileCreator:
             if existed_before:
                 try:
                     if wrapper_path.read_bytes() == desired_bytes:
-                        print(f"BIN: up-to-date: {wrapper_path}")
+                        log_info(f"BIN: up-to-date: {wrapper_path}")
                         return True, "unchanged"
                 except OSError:
                     pass
 
             write_bytes_atomic(wrapper_path, desired_bytes)
             action = "updated" if existed_before else "created"
-            print(f"BIN: {action}: {wrapper_path}")
+            log_info(f"BIN: {action}: {wrapper_path}")
             return True, None
         except Exception as exc:
             name = wrapper_spec.name or "unknown"
-            print(f"BIN error creating {name}: {exc}")
+            log_error(f"BIN error creating {name}: {exc}")
             return False, f"Failed to create wrapper '{name}': {exc}"
 
     @staticmethod
-    def install_wrappers(metadata: "PackageMetadata", reporter: Optional[Reporter] = None) -> StepResult:
+    def install_wrappers(metadata: "PackageMetadata") -> StepResult:
         """Install every wrapper declared by a package.
-
-        Args:
-            metadata: Package metadata whose runtime config contains wrapper
-                declarations.
-            reporter: Optional reporter used for user-visible warnings and
-                errors.
 
         Returns:
             A :class:`StepResult` summarizing the wrapper-install step.
         """
 
-        reporter = reporter or Reporter()
         result = StepResult(ok=True, changed=False)
         for wrapper_spec in metadata.require_runtime_config().bin:
             ok, error = BinFileCreator.create_wrapper(wrapper_spec, metadata)
@@ -2098,18 +2115,14 @@ class BinFileCreator:
                     result.changed = True
                 continue
             message = error or f"Failed to create wrapper: {wrapper_spec.name or 'unknown'}"
-            reporter.error(message)
+            log_error(message)
             result.ok = False
             result.errors.append(message)
         return result
 
 
-def install_shortcuts_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
+def install_shortcuts_step(metadata: "PackageMetadata") -> StepResult:
     """Run the shortcut-install step for one package.
-
-    Args:
-        metadata: Package metadata to install.
-        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the shortcut step outcome.
@@ -2117,17 +2130,13 @@ def install_shortcuts_step(metadata: "PackageMetadata", reporter: Reporter) -> S
 
     if not metadata.require_runtime_config().shortcut:
         return StepResult(ok=True, changed=False)
-    reporter.info("")
-    reporter.info("Creating shortcuts...")
-    return ShortcutInstaller.install_shortcuts(metadata, reporter=reporter)
+    log_info("")
+    log_info("Creating shortcuts...")
+    return ShortcutInstaller.install_shortcuts(metadata)
 
 
-def install_environment_variables_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
+def install_environment_variables_step(metadata: "PackageMetadata") -> StepResult:
     """Run the environment-variable step for one package.
-
-    Args:
-        metadata: Package metadata to install.
-        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the environment-variable step outcome.
@@ -2135,33 +2144,25 @@ def install_environment_variables_step(metadata: "PackageMetadata", reporter: Re
 
     if not metadata.require_runtime_config().environment:
         return StepResult(ok=True, changed=False)
-    reporter.info("")
-    reporter.info("Setting environment variables...")
-    return EnvironmentVariableManager.install_environment_variables(metadata, reporter=reporter)
+    log_info("")
+    log_info("Setting environment variables...")
+    return EnvironmentVariableManager.install_environment_variables(metadata)
 
 
-def ensure_bin_in_path_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
+def ensure_bin_in_path_step(metadata: "PackageMetadata") -> StepResult:
     """Run the scope ``bin`` directory/PATH bootstrap step.
-
-    Args:
-        metadata: Package metadata to install.
-        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the bin-directory/PATH step outcome.
     """
 
-    reporter.info("")
-    reporter.info("Managing PATH...")
-    return PATHManager.ensure_bin_in_path(metadata, reporter=reporter)
+    log_info("")
+    log_info("Managing PATH...")
+    return PATHManager.ensure_bin_in_path(metadata)
 
 
-def install_extra_path_entries_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
+def install_extra_path_entries_step(metadata: "PackageMetadata") -> StepResult:
     """Run the package-specific extra PATH entry step.
-
-    Args:
-        metadata: Package metadata to install.
-        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the extra PATH entry step outcome.
@@ -2170,15 +2171,11 @@ def install_extra_path_entries_step(metadata: "PackageMetadata", reporter: Repor
     extra_entries = metadata.require_runtime_config().path
     if not extra_entries:
         return StepResult(ok=True, changed=False)
-    return PATHManager.add_to_path(extra_entries, metadata, reporter=reporter)
+    return PATHManager.add_to_path(extra_entries, metadata)
 
 
-def install_wrappers_step(metadata: "PackageMetadata", reporter: Reporter) -> StepResult:
+def install_wrappers_step(metadata: "PackageMetadata") -> StepResult:
     """Run the wrapper-install step for one package.
-
-    Args:
-        metadata: Package metadata to install.
-        reporter: Reporter used for user-visible logging.
 
     Returns:
         A :class:`StepResult` describing the wrapper step outcome.
@@ -2186,9 +2183,9 @@ def install_wrappers_step(metadata: "PackageMetadata", reporter: Reporter) -> St
 
     if not metadata.require_runtime_config().bin:
         return StepResult(ok=True, changed=False)
-    reporter.info("")
-    reporter.info("Creating executable wrappers...")
-    return BinFileCreator.install_wrappers(metadata, reporter=reporter)
+    log_info("")
+    log_info("Creating executable wrappers...")
+    return BinFileCreator.install_wrappers(metadata)
 
 
 INSTALL_STEPS: Tuple[InstallStep, ...] = (
@@ -2248,7 +2245,9 @@ Canonical config keys
 1) Shortcuts (``shortcut`` list)
    Supported keys:
 
-   - ``name`` (required): file name without extension or with ``.lnk``
+   - ``name`` (required): output name after expansion; may be a simple name,
+     a nested relative path under the default shortcut root, or a path-like
+     destination that resolves outside that root
    - ``targetPath`` (required): executable path
    - ``arguments`` (optional)
    - ``workingDirectory`` (optional)
@@ -2262,9 +2261,33 @@ Canonical config keys
    Use repeated ``[[path]]`` tables with the single key ``value``.
 
 4) Bin wrappers (``bin`` list)
-   Each entry has ``name`` and ``content``. Wrapper content uses the script
-   expansion mode so PowerShell variables such as ``$PSScriptRoot`` remain
-   literal unless they are package variables.
+   Each entry has ``name`` and ``content``. ``name`` follows the same output
+   placement rule as shortcuts: it may be a simple name, a nested relative
+   path, or a path-like destination outside the default bin root. Wrapper
+   content uses the script expansion mode so PowerShell variables such as
+   ``$PSScriptRoot`` remain literal unless they are package variables.
+
+Output placement notes
+~~~~~~~~~~~~~~~~~~~~~~
+
+- ``shortcut.name`` and ``bin.name`` are expanded before placement.
+- Nested relative paths inside the default scope root are allowed.
+- Absolute paths and escaping parent traversal are also allowed.
+- When the final destination lands outside the default shortcut/bin root,
+  install prints a warning but still creates the output.
+
+Bootstrap interpreter selection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``pkg.cmd`` chooses Python in this order:
+
+1. ``--python <exe-or-command>``
+2. ``PKG_PYTHON``
+3. ``pkg.python`` next to ``pkg.cmd``
+4. ``python`` from ``PATH``
+
+``pkg.py`` intentionally accepts the hidden ``--python`` argument so the
+launcher can forward it unchanged.
 
 Variable expansion
 ~~~~~~~~~~~~~~~~~~
@@ -2922,12 +2945,8 @@ class PackageMetadata:
         self.runtime_config = config
         return raw_data, warnings
 
-    def update_config(self, reporter: Optional[Reporter] = None) -> StepResult:
+    def update_config(self) -> StepResult:
         """Synchronize owned metadata fields back to ``pkg.toml``.
-
-        Args:
-            reporter: Optional reporter used for user-visible progress and
-                warnings.
 
         Returns:
             A :class:`StepResult` describing the update. Missing configs are
@@ -2935,23 +2954,22 @@ class PackageMetadata:
             updated only when they already use canonical top-level metadata keys.
         """
 
-        reporter = reporter or Reporter()
         toml_path = self.version_path / "pkg.toml"
 
         if not toml_path.exists():
             rendered = create_starter_config(self.identity)
             write_text_atomic(toml_path, rendered, backup=False)
-            reporter.info(f"Created: {toml_path}")
+            log_info(f"Created: {toml_path}")
             return StepResult(ok=True, changed=True)
 
         original_text = toml_path.read_text(encoding="utf-8")
         rendered, changed = sync_config_metadata_text(original_text, self.identity)
         if not changed or rendered == original_text:
-            reporter.info(f"Configuration already up to date: {toml_path}")
+            log_info(f"Configuration already up to date: {toml_path}")
             return StepResult(ok=True, changed=False)
 
         write_text_atomic(toml_path, rendered, backup=True)
-        reporter.info(f"Updated: {toml_path}")
+        log_info(f"Updated: {toml_path}")
         return StepResult(ok=True, changed=True)
 
     def set_scope(self, scope: Scope) -> None:
@@ -3004,6 +3022,88 @@ def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
     }
 
 
+def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, str]:
+    """Parse one editable top-level metadata line.
+
+    The helper is intentionally narrow: it supports the single-line assignment
+    shape that ``UpdateConfig`` rewrites safely and understands ``#`` only when
+    it appears outside quoted strings.
+    """
+
+    index = 0
+    while index < len(line) and line[index].isspace():
+        index += 1
+    indent = line[:index]
+
+    key_start = index
+    if key_start >= len(line) or not (line[key_start].isalpha() or line[key_start] == "_"):
+        raise ConfigValidationError("pkg.toml contains a metadata line that UpdateConfig cannot rewrite safely. Edit the line manually.")
+    index += 1
+    while index < len(line) and (line[index].isalnum() or line[index] == "_"):
+        index += 1
+    key = line[key_start:index]
+
+    while index < len(line) and line[index] in " \t":
+        index += 1
+    if index >= len(line) or line[index] != "=":
+        raise ConfigValidationError(f"pkg.toml metadata line for '{key}' cannot be updated safely. Edit the line manually.")
+    index += 1
+    while index < len(line) and line[index] in " \t":
+        index += 1
+    value_start = index
+
+    in_basic_string = False
+    in_literal_string = False
+    escaped = False
+
+    while index < len(line):
+        char = line[index]
+        if in_basic_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_basic_string = False
+            index += 1
+            continue
+
+        if in_literal_string:
+            if char == "'":
+                in_literal_string = False
+            index += 1
+            continue
+
+        if char == "#":
+            break
+        if char == '"':
+            if line.startswith('"""', index):
+                raise ConfigValidationError(
+                    f"pkg.toml metadata line for '{key}' cannot be updated safely because multi-line strings are not supported here. Edit the line manually."
+                )
+            in_basic_string = True
+        elif char == "'":
+            if line.startswith("'''", index):
+                raise ConfigValidationError(
+                    f"pkg.toml metadata line for '{key}' cannot be updated safely because multi-line strings are not supported here. Edit the line manually."
+                )
+            in_literal_string = True
+        index += 1
+
+    if in_basic_string or in_literal_string or escaped:
+        raise ConfigValidationError(
+            f"pkg.toml metadata line for '{key}' cannot be updated safely because the value is not a supported single-line scalar. Edit the line manually."
+        )
+
+    raw_value = line[value_start:index]
+    value_text = raw_value.rstrip(" \t")
+    comment_text = raw_value[len(value_text):] + line[index:]
+    if value_text == "":
+        raise ConfigValidationError(f"pkg.toml metadata line for '{key}' is missing a value. Edit the line manually.")
+
+    return indent, key, value_text, comment_text
+
+
 def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str, bool]:
     """Synchronize owned metadata directly in canonical ``pkg.toml`` text.
 
@@ -3030,7 +3130,7 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
 
     _validate_exact_keys(
         parsed,
-        allowed=CANONICAL_TOP_LEVEL_KEYS | set(parsed.keys()),
+        allowed=CANONICAL_TOP_LEVEL_KEYS,
         context="config",
         ordered_allowed=list(CANONICAL_TOP_LEVEL_KEYS),
         legacy_hints=LEGACY_TOP_LEVEL_KEY_HINTS,
@@ -3038,7 +3138,7 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
 
     metadata = metadata_sync_payload(identity)
     lines = text.splitlines(keepends=True)
-    pattern = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>[^\n#]*)(?P<comment>\s*(?:#.*)?)$", re.MULTILINE)
+    key_pattern = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
 
     in_table = False
     first_table_index = len(lines)
@@ -3060,11 +3160,12 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
             continue
         if in_table:
             continue
-        match = pattern.match(line.rstrip("\r\n"))
+        match = key_pattern.match(line.rstrip("\r\n"))
         if match is None:
             continue
         key = match.group("key")
         if key in metadata:
+            _parse_editable_top_level_metadata_line(line.rstrip("\r\n"))
             if key in line_indexes:
                 raise ConfigValidationError(f"Duplicate metadata key '{key}' in config.")
             line_indexes[key] = index
@@ -3085,15 +3186,12 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
         line_index = line_indexes.get(key)
         if line_index is not None:
             line = lines[line_index].rstrip("\r\n")
-            match = pattern.match(line)
-            assert match is not None
-            if match.group("value").strip() != rendered_value:
+            indent, _, existing_value, comment_text = _parse_editable_top_level_metadata_line(line)
+            if existing_value != rendered_value:
                 line_ending = "\n"
                 if lines[line_index].endswith("\r\n"):
                     line_ending = "\r\n"
-                lines[line_index] = (
-                    f"{match.group('indent')}{key} = {rendered_value}{match.group('comment')}{line_ending}"
-                )
+                lines[line_index] = f"{indent}{key} = {rendered_value}{comment_text}{line_ending}"
                 changed = True
             continue
         insert_index = first_table_index if first_table_index != len(lines) else len(lines)
@@ -3111,7 +3209,17 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
             first_table_index += 1
         changed = True
 
-    return "".join(lines), changed
+    rendered = "".join(lines)
+    try:
+        reparsed = tomllib.loads(rendered)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigValidationError(
+            f"pkg.toml metadata rewrite produced invalid TOML and was aborted: {exc}. Edit the config manually."
+        ) from exc
+    if not isinstance(reparsed, dict):
+        raise ConfigValidationError("pkg.toml metadata rewrite produced an invalid top-level structure.")
+
+    return rendered, changed
 
 
 def create_starter_config(identity: PackageIdentity) -> str:
@@ -3219,7 +3327,6 @@ class PackageManager:
         self.fix_config = fix_config
         self.use_defaults = use_defaults
         self.force = force
-        self.reporter = Reporter()
 
     def _print_banner(self, operation: Action) -> None:
         """Emit the standard CLI banner for one operation.
@@ -3228,13 +3335,13 @@ class PackageManager:
             operation: Action currently being executed.
         """
 
-        self.reporter.info("")
-        self.reporter.info("=" * 60)
-        self.reporter.info("gurlatsev/pkg: Package Manager")
-        self.reporter.info(f"Operation: {operation.value}")
-        self.reporter.info(f"Scope: {self.scope.value}")
-        self.reporter.info("=" * 60)
-        self.reporter.info("")
+        log_info("")
+        log_info("=" * 60)
+        log_info("gurlatsev/pkg: Package Manager")
+        log_info(f"Operation: {operation.value}")
+        log_info(f"Scope: {self.scope.value}")
+        log_info("=" * 60)
+        log_info("")
 
     def _failure(self, message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
         """Create a failed action result and report the error.
@@ -3248,7 +3355,7 @@ class PackageManager:
             An :class:`ActionResult` representing the failure.
         """
 
-        self.reporter.error(message)
+        log_error(message)
         return ActionResult(
             ok=False,
             changed=False,
@@ -3292,33 +3399,19 @@ class PackageManager:
 
         warnings = list(load_warnings)
         for warning in load_warnings:
-            self.reporter.warn(warning)
-
-        self.reporter.info(f"Package: {metadata.name}")
-        self.reporter.info(f"Version: {metadata.version_string}")
-        self.reporter.info(f"Path: {metadata.version_path}")
-        effective_only_portable = metadata.identity.only_portable_by_name or metadata.only_portable
-        self.reporter.info(f"only_portable: {effective_only_portable}")
-        self.reporter.info("")
-
-        if effective_only_portable and self.scope == Scope.MACHINE:
-            return self._failure(
-                "only_portable packages cannot be installed system-wide. Please use User scope.",
-                exit_code=EXIT_USER_ERROR,
-                warnings=warnings,
-            )
+            log_warning(warning)
 
         config_sync_changed = False
         inconsistencies = check_metadata_consistency(metadata.identity, raw_config_data)
         if inconsistencies:
             if not self.fix_config:
-                self.reporter.error("Configuration inconsistencies detected:")
+                log_error("Configuration inconsistencies detected:")
                 for message in inconsistencies:
-                    self.reporter.error(f"  - {message}")
-                self.reporter.info("Aborting installation to avoid mutating configs as a side effect.")
-                self.reporter.info("To fix the config, run one of:")
-                self.reporter.info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.version_path}")
-                self.reporter.info("  - re-run this install with --fix-config")
+                    log_error(f"  - {message}")
+                log_info("Aborting installation to avoid mutating configs as a side effect.")
+                log_info("To fix the config, run one of:")
+                log_info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.version_path}")
+                log_info("  - re-run this install with --fix-config")
                 return ActionResult(
                     ok=False,
                     changed=False,
@@ -3327,12 +3420,12 @@ class PackageManager:
                     exit_code=EXIT_USER_ERROR,
                 )
 
-            self.reporter.warn("Configuration inconsistencies detected:")
+            log_warning("Configuration inconsistencies detected:")
             for message in inconsistencies:
-                self.reporter.warn(f"  - {message}")
-            self.reporter.info("--fix-config enabled: syncing configuration metadata to match directory structure...")
+                log_warning(f"  - {message}")
+            log_info("--fix-config enabled: syncing configuration metadata to match directory structure...")
             try:
-                update_result = metadata.update_config(reporter=self.reporter)
+                update_result = metadata.update_config()
             except (ConfigValidationError, RuntimeError, ValueError) as exc:
                 return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR, warnings=warnings)
             except OSError as exc:
@@ -3347,8 +3440,39 @@ class PackageManager:
                     errors=update_result.errors,
                     exit_code=EXIT_MUTATION_ERROR,
                 )
-            self.reporter.info("Configuration updated successfully.")
-            self.reporter.info("")
+            log_info("Configuration updated successfully.")
+            try:
+                raw_config_data, reload_warnings = metadata.load_config(use_defaults=self.use_defaults)
+            except (ConfigValidationError, RuntimeError, ValueError) as exc:
+                return self._failure(
+                    f"Failed to reload configuration after update: {exc}",
+                    exit_code=EXIT_USER_ERROR,
+                    warnings=warnings,
+                )
+            except OSError as exc:
+                return self._failure(
+                    f"Failed to reload configuration after update: {exc}",
+                    exit_code=EXIT_MUTATION_ERROR,
+                    warnings=warnings,
+                )
+            warnings.extend(reload_warnings)
+            for warning in reload_warnings:
+                log_warning(warning)
+            log_info("")
+
+        effective_only_portable = metadata.identity.only_portable_by_name or metadata.only_portable
+        log_info(f"Package: {metadata.name}")
+        log_info(f"Version: {metadata.version_string}")
+        log_info(f"Path: {metadata.version_path}")
+        log_info(f"only_portable: {effective_only_portable}")
+        log_info("")
+
+        if effective_only_portable and self.scope == Scope.MACHINE:
+            return self._failure(
+                "only_portable packages cannot be installed system-wide. Please use User scope.",
+                exit_code=EXIT_USER_ERROR,
+                warnings=warnings,
+            )
 
         if self.scope == Scope.MACHINE and not is_current_user_admin():
             return self._failure(
@@ -3359,9 +3483,9 @@ class PackageManager:
 
         junction_changed = False
         if installing_from_current:
-            self.reporter.info("Installing from resolved 'current' target (skipping junction management)")
+            log_info("Installing from resolved 'current' target (skipping junction management)")
         else:
-            self.reporter.info("Managing 'current' junction...")
+            log_info("Managing 'current' junction...")
             try:
                 junction_changed = JunctionManager.update_current_junction_if_needed(metadata, force=self.force)
             except ValueError as exc:
@@ -3370,7 +3494,7 @@ class PackageManager:
                 return self._failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
 
             if not junction_changed and not metadata.is_current:
-                self.reporter.info("Skipping component installation (newer version already installed)")
+                log_info("Skipping component installation (newer version already installed)")
                 return ActionResult(
                     ok=True,
                     changed=config_sync_changed,
@@ -3378,15 +3502,15 @@ class PackageManager:
                     exit_code=EXIT_SUCCESS,
                 )
 
-        self.reporter.info("")
-        self.reporter.info("Installing components...")
+        log_info("")
+        log_info("Installing components...")
         component_result = self._install_components(metadata)
         warnings.extend(component_result.warnings)
 
         if not component_result.ok:
-            self.reporter.error("One or more install steps failed:")
+            log_error("One or more install steps failed:")
             for error in component_result.errors:
-                self.reporter.error(f"  - {error}")
+                log_error(f"  - {error}")
             return ActionResult(
                 ok=False,
                 changed=junction_changed or config_sync_changed or component_result.changed,
@@ -3430,7 +3554,7 @@ class PackageManager:
 
         results: List[StepResult] = []
         for step in INSTALL_STEPS:
-            step_result = step(metadata, self.reporter)
+            step_result = step(metadata)
             results.append(step_result)
 
         if not results:
@@ -3458,7 +3582,7 @@ class PackageManager:
 
         try:
             metadata = PackageMetadata(resolved_path)
-            step_result = metadata.update_config(reporter=self.reporter)
+            step_result = metadata.update_config()
         except (ConfigValidationError, RuntimeError, ValueError) as exc:
             return self._failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR)
         except OSError as exc:
@@ -3502,7 +3626,9 @@ class _ExtendedHelpAction(argparse.Action):
         _ = values
         _ = option_string
         parser.print_help()
-        print("\n" + EXTENDED_HELP.strip() + "\n")
+        log_info("")
+        log_info(EXTENDED_HELP.strip())
+        log_info("")
         parser.exit()
 
 
@@ -3544,6 +3670,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Show program's version number and exit",
     )
 
+    # ``pkg.cmd`` forwards ``--python`` to ``pkg.py`` as part of the bootstrap
+    # interpreter-selection contract. Keep accepting it here even though normal
+    # ``pkg --help`` output hides it; later cleanup should not treat it as dead
+    # compatibility debris.
     parser.add_argument(
         "--python",
         default=None,
@@ -3599,7 +3729,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    reporter = Reporter()
     scope = Scope(args.scope)
     action = Action(args.action)
     result: ActionResult
@@ -3620,27 +3749,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = manager.update_config(package_path)
         else:
             message = f"Unknown action: {action}"
-            reporter.error(message)
+            log_error(message)
             result = ActionResult(ok=False, errors=[message], exit_code=EXIT_USER_ERROR)
     except Exception as exc:
         message = f"Unexpected internal error: {exc}"
-        reporter.error(message)
+        log_error(message)
         result = ActionResult(ok=False, errors=[message], exit_code=EXIT_INTERNAL_ERROR)
 
     if args.pause:
-        print()
-        print("Press any key to continue...")
+        log_info("")
+        log_info("Press any key to continue...")
         wait_for_keypress()
 
-    print()
-    print("-" * 60)
+    log_info("")
+    log_info("-" * 60)
     if result.ok and result.changed:
-        print(f"{action.value} completed successfully.")
+        log_info(f"{action.value} completed successfully.")
     elif result.ok:
-        print(f"{action.value} completed successfully (no changes needed).")
+        log_info(f"{action.value} completed successfully (no changes needed).")
     else:
-        print(f"{action.value} failed.")
-    print("-" * 60)
+        log_info(f"{action.value} failed.")
+    log_info("-" * 60)
     return result.exit_code
 
 

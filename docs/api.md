@@ -14,7 +14,6 @@ Notable public types and helpers defined in the shared section:
 - `Scope`, `Action`
 - `PackageIdentity`, `ShortcutSpec`, `EnvVarSpec`, `BinSpec`, `PackageConfig`, `ScopePaths`
 - `StepResult`, `ActionResult`, `ExpansionResult`
-- `Reporter`
 - `compare_package_versions()`
 - `expand_text()`
 - `read_toml_file()`

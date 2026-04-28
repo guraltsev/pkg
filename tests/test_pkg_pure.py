@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -117,19 +118,19 @@ name = "Broken"
             try:
                 module.JunctionManager.update_current_junction_if_needed = staticmethod(lambda metadata, force=False: True)
                 module.ShortcutInstaller.install_shortcuts = staticmethod(
-                    lambda metadata, reporter=None: module.StepResult(ok=False, errors=["Failed to create shortcut: Good App"])
+                    lambda metadata: module.StepResult(ok=False, errors=["Failed to create shortcut: Good App"])
                 )
                 module.EnvironmentVariableManager.install_environment_variables = staticmethod(
-                    lambda metadata, reporter=None: module.StepResult(ok=True, changed=False)
+                    lambda metadata: module.StepResult(ok=True, changed=False)
                 )
                 module.PATHManager.ensure_bin_in_path = staticmethod(
-                    lambda metadata, reporter=None: module.StepResult(ok=True, changed=False)
+                    lambda metadata: module.StepResult(ok=True, changed=False)
                 )
                 module.PATHManager.add_to_path = staticmethod(
-                    lambda new_entries, metadata, reporter=None: module.StepResult(ok=True, changed=False)
+                    lambda new_entries, metadata: module.StepResult(ok=True, changed=False)
                 )
                 module.BinFileCreator.install_wrappers = staticmethod(
-                    lambda metadata, reporter=None: module.StepResult(ok=True, changed=False)
+                    lambda metadata: module.StepResult(ok=True, changed=False)
                 )
                 with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                     with contextlib.redirect_stdout(io.StringIO()):
@@ -468,6 +469,119 @@ x_note = "preserve me"
             self.assertIn('x_note = "preserve me"', updated)
             self.assertNotIn('targetPath', updated)
 
+    def test_update_config_preserves_hash_inside_quoted_metadata_string(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "C#Tool" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.toml").write_text(
+                """# Keep this comment
+name = "C#Tool-OLD"
+version = "0.9.0"
+localVersion = 9
+only_portable = false
+description = "preserve me"
+""",
+                encoding="utf-8",
+            )
+
+            manager = module.PackageManager()
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = manager.update_config(version_dir)
+
+            self.assertTrue(result.ok)
+            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            parsed = tomllib.loads(updated)
+            self.assertEqual(parsed["name"], "C#Tool")
+            self.assertIn('name = "C#Tool"', updated)
+            self.assertNotIn('"C#Tool"#Tool-OLD"', updated)
+
+    def test_install_with_fix_config_repairs_portable_flag_before_machine_scope_gate(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "MachineRepairApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.toml").write_text(
+                """name = "MachineRepairApp"
+version = "1.0.0"
+localVersion = 1
+only_portable = true
+""",
+                encoding="utf-8",
+            )
+
+            manager = module.PackageManager(scope=module.Scope.MACHINE, fix_config=True)
+            stdout = io.StringIO()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PROGRAMDATA": str(Path(tmpdir) / "ProgramData"),
+                    "SYSTEMDRIVE": str(Path(tmpdir) / "Drive"),
+                },
+                clear=False,
+            ):
+                with mock.patch.object(module, "is_current_user_admin", return_value=True):
+                    with mock.patch.object(
+                        module.JunctionManager,
+                        "update_current_junction_if_needed",
+                        return_value=True,
+                    ):
+                        with mock.patch.object(
+                            module.PackageManager,
+                            "_install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            with contextlib.redirect_stdout(stdout):
+                                result = manager.install(version_dir)
+
+            self.assertTrue(result.ok)
+            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertIn("only_portable = false", updated)
+            output = stdout.getvalue()
+            self.assertIn("Configuration updated successfully.", output)
+            self.assertNotIn("only_portable packages cannot be installed system-wide", output)
+
+    def test_bin_wrapper_name_outside_default_root_is_allowed_but_warned(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "WarnBinApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            metadata = module.PackageMetadata(version_dir)
+            metadata.runtime_config = module.PackageConfig(
+                bin=[module.BinSpec(name="../outside.cmd", content="@echo off\r\n")]
+            )
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                metadata.set_scope(module.Scope.USER)
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    result = module.BinFileCreator.install_wrappers(metadata)
+
+            self.assertTrue(result.ok)
+            self.assertTrue((Path(tmpdir) / "outside.cmd").exists())
+            self.assertIn("WARNING: bin output resolves outside the default bin root", stdout.getvalue())
+
+    def test_shortcut_name_outside_default_root_is_allowed_but_warned(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "WarnShortcutApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            metadata = module.PackageMetadata(version_dir)
+            with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
+                metadata.set_scope(module.Scope.USER)
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    prepared = module.ShortcutInstaller._prepare_shortcut(
+                        module.ShortcutSpec(name="../outside", target_path=r"C:\Tools\tool.exe"),
+                        metadata,
+                    )
+
+            self.assertFalse(
+                prepared.shortcut_path.resolve(strict=False).is_relative_to(
+                    metadata.scope_paths.shortcut_root.resolve(strict=False)
+                )
+            )
+            self.assertIn("WARNING: shortcut output resolves outside the default shortcut root", stdout.getvalue())
+
     def test_script_expansion_preserves_powershell_variables_and_expands_braced_env(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -495,7 +609,7 @@ x_note = "preserve me"
             version_dir = dst / "v1.0.0.l1"
             metadata = module.PackageMetadata(version_dir)
             with contextlib.redirect_stdout(io.StringIO()):
-                result = module.PATHManager.add_to_path([r"${MISSING_VAR}"], metadata, reporter=module.Reporter())
+                result = module.PATHManager.add_to_path([r"${MISSING_VAR}"], metadata)
             self.assertFalse(result.ok)
             self.assertFalse(result.changed)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
@@ -512,7 +626,7 @@ x_note = "preserve me"
             with mock.patch.dict(os.environ, {"APPDATA": tmpdir, "USERPROFILE": tmpdir}, clear=False):
                 metadata.set_scope(module.Scope.USER)
                 with contextlib.redirect_stdout(io.StringIO()):
-                    result = module.ShortcutInstaller.install_shortcuts(metadata, reporter=module.Reporter())
+                    result = module.ShortcutInstaller.install_shortcuts(metadata)
             self.assertFalse(result.ok)
             self.assertTrue(any("unresolved variable" in err for err in result.errors))
 
@@ -551,7 +665,7 @@ x_note = "preserve me"
             self.assertIn("O''Brien Tool.lnk", ps_command)
             self.assertIn("O''Brien", ps_command)
 
-    def test_help_hides_removed_compatibility_flags(self) -> None:
+    def test_help_hides_bootstrap_only_python_flag(self) -> None:
         module = load_pkg_module()
         stdout = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
@@ -560,8 +674,41 @@ x_note = "preserve me"
         self.assertEqual(cm.exception.code, 0)
         help_text = stdout.getvalue()
         self.assertNotIn("--python", help_text)
+
+    def test_help_hides_removed_compatibility_flags(self) -> None:
+        module = load_pkg_module()
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stdout(stdout):
+                module.main(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        help_text = stdout.getvalue()
         self.assertNotIn("--no-autoupdate-config", help_text)
         self.assertNotIn("Compress", help_text)
+
+    def test_help_extended_mentions_bootstrap_interpreter_selection(self) -> None:
+        module = load_pkg_module()
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stdout(stdout):
+                module.main(["--help-extended"])
+        self.assertEqual(cm.exception.code, 0)
+        help_text = stdout.getvalue()
+        self.assertIn("Bootstrap interpreter selection", help_text)
+        self.assertIn("--python <exe-or-command>", help_text)
+        self.assertIn("PKG_PYTHON", help_text)
+
+    def test_main_accepts_hidden_python_bootstrap_arg(self) -> None:
+        module = load_pkg_module()
+        with mock.patch.object(
+            module.PackageManager,
+            "install",
+            return_value=module.ActionResult(ok=True, changed=False, exit_code=module.EXIT_SUCCESS),
+        ) as install_mock:
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = module.main(["--python", sys.executable, "."])
+        self.assertEqual(exit_code, module.EXIT_SUCCESS)
+        install_mock.assert_called_once()
 
     def test_write_bytes_atomic_updates_wrapper_atomically(self) -> None:
         module = load_pkg_module()

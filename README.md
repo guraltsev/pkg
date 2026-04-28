@@ -2,7 +2,7 @@
 
 `pkg` is a Windows package tool for locally cached applications.
 
-The implementation now lives entirely in `pkg.py`. The file is intentionally
+It is implemented entirely in one python `pkg.py`. The file is intentionally
 organized into clearly labeled sections so the architecture stays easy to audit
 without reintroducing separate implementation modules:
 
@@ -72,8 +72,9 @@ When `pkg.toml` is missing, `UpdateConfig` creates a self-documenting file that
 includes the synchronized metadata plus commented examples for shortcuts,
 environment variables, PATH entries, and wrapper scripts.
 
-For an existing `pkg.toml`, `UpdateConfig` preserves comments, unknown keys, and
-existing layout while syncing only these owned metadata keys:
+For an existing canonical `pkg.toml`, `UpdateConfig` preserves comments,
+unrelated runtime content, and existing layout while syncing only these owned
+metadata keys:
 
 - `name`
 - `version`
@@ -92,6 +93,25 @@ Variable rules are intentionally simple:
 In regular config fields, unresolved `${VAR}` values are errors. Inside
 `[[bin]]` content, plain non-package `$NAME` text is left literal so shell or
 PowerShell variables keep their native meaning.
+
+`[[shortcut]].name` and `[[bin]].name` are intentionally flexible. After
+variable expansion they may be simple output names, nested relative paths under
+the default shortcut/bin root, or path-like destinations outside those roots.
+Absolute paths and escaping `..` traversal are allowed, but install warns when
+the final output lands outside the default root because that placement is more
+surprising than the common in-root case.
+
+## Bootstrap interpreter selection
+
+`pkg.cmd` chooses Python in this order:
+
+1. `--python <exe-or-command>`
+2. `PKG_PYTHON`
+3. `pkg.python` next to `pkg.cmd`
+4. `python` from `PATH`
+
+`pkg.py` intentionally accepts the hidden `--python` argument so the launcher
+can forward that bootstrap choice unchanged.
 
 ## Minimal config example
 
