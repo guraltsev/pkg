@@ -91,21 +91,21 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertIn("targetPath = \"$App\\\\good.exe\"", rendered)
 
             loaded = module.read_toml_file(pkg_toml)
-            identity = module.PackageIdentity.from_resolved_input(module.resolve_input_path(version_dir))
+            identity, _ = module.resolve_input_path(version_dir)
             config = module.normalize_runtime_config(loaded, identity)
             module.validate_runtime_config(config)
 
-            self.assertEqual(config.description, "Good test package")
-            self.assertEqual(config.homepage, "https://example.invalid/goodapp")
-            self.assertEqual(config.download_url, "https://example.invalid/goodapp.zip")
-            self.assertEqual(config.path, ["$App", "$App\\Tools"])
-            self.assertEqual(config.environment[0].name, "GOODAPP_HOME")
-            self.assertEqual(config.environment[0].value, "$App")
-            self.assertEqual(config.shortcut[0].name, "Good App")
-            self.assertEqual(config.shortcut[0].target_path, "$App\\good.exe")
-            self.assertEqual(config.shortcut[0].working_directory, "$App")
-            self.assertEqual(config.bin[0].name, "good.cmd")
-            self.assertIn("$App\\good.exe", config.bin[0].content)
+            self.assertEqual(config["description"], "Good test package")
+            self.assertEqual(config["homepage"], "https://example.invalid/goodapp")
+            self.assertEqual(config["downloadURL"], "https://example.invalid/goodapp.zip")
+            self.assertEqual(config["path"], ["$App", "$App\\Tools"])
+            self.assertEqual(config["environment"][0]["Name"], "GOODAPP_HOME")
+            self.assertEqual(config["environment"][0]["Value"], "$App")
+            self.assertEqual(config["shortcut"][0]["name"], "Good App")
+            self.assertEqual(config["shortcut"][0]["targetPath"], "$App\\good.exe")
+            self.assertEqual(config["shortcut"][0]["workingDirectory"], "$App")
+            self.assertEqual(config["bin"][0]["name"], "good.cmd")
+            self.assertIn("$App\\good.exe", config["bin"][0]["content"])
 
     def test_converter_can_infer_metadata_from_directory_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

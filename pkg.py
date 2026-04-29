@@ -119,31 +119,6 @@ class ActionResult:
 
 
 @dataclass(frozen=True)
-class ResolvedInput:
-    """Normalized interpretation of a user-supplied package path.
-
-    Attributes:
-        raw_path: Path as supplied by the caller after ``expanduser()``.
-        package_root: Directory that owns the ``current`` junction and version
-            directories.
-        version_path: Concrete version directory that should be operated on.
-        input_kind: Classification of the input path, such as ``version``,
-            ``current``, or ``package_root``.
-        installing_from_current: ``True`` when the user pointed at ``current``
-            or the package root and the current junction was already resolved.
-        version_is_current: ``True`` when :attr:`version_path` is already the
-            active ``current`` target for the package.
-    """
-
-    raw_path: Path
-    package_root: Path
-    version_path: Path
-    input_kind: str
-    installing_from_current: bool
-    version_is_current: bool = False
-
-
-@dataclass(frozen=True)
 class PackageIdentity:
     """Directory-derived identity for a package version.
 
@@ -170,29 +145,36 @@ class PackageIdentity:
     only_portable_by_name: bool
 
     @classmethod
-    def from_resolved_input(cls, resolved: ResolvedInput) -> "PackageIdentity":
-        """Construct an identity object from a resolved package path.
+    def from_version_path(
+        cls,
+        package_root: Path,
+        version_path: Path,
+        *,
+        is_current: bool,
+    ) -> "PackageIdentity":
+        """Construct an identity object from one package root and version path.
 
         Args:
-            resolved: Classified path information produced by the platform path
-                resolver.
+            package_root: Directory that owns ``current`` and all version
+                directories.
+            version_path: Concrete version directory represented by the
+                identity.
+            is_current: Whether ``current`` already resolves to *version_path*.
 
         Returns:
-            A :class:`PackageIdentity` derived from the version directory name
-            and package-root location.
+            A :class:`PackageIdentity` derived directly from the filesystem
+            layout.
 
         Raises:
-            ValueError: If :attr:`ResolvedInput.version_path` does not follow
-                the ``v<upstream>.l<local>`` naming convention.
+            ValueError: If *version_path* does not follow the
+                ``v<upstream>.l<local>`` naming convention.
         """
 
-        match = VERSION_DIR_NAME_RE.match(resolved.version_path.name)
+        match = VERSION_DIR_NAME_RE.match(version_path.name)
         if not match:
             raise ValueError(
-                f"Invalid version directory name: {resolved.version_path.name}. Expected format: v<upstream>.l<local>"
+                f"Invalid version directory name: {version_path.name}. Expected format: v<upstream>.l<local>"
             )
-        package_root = resolved.package_root
-        version_path = resolved.version_path
         return cls(
             name=package_root.name,
             version=match.group(1),
@@ -200,100 +182,9 @@ class PackageIdentity:
             version_string=version_path.name,
             package_root=package_root,
             version_path=version_path,
-            is_current=resolved.version_is_current,
+            is_current=is_current,
             only_portable_by_name=package_root.name.lower().endswith("-portable"),
         )
-
-
-@dataclass(frozen=True)
-class ScopePaths:
-    """Resolved filesystem and registry locations for one installation scope.
-
-    Attributes:
-        scope: Installation scope the paths belong to.
-        shortcut_root: Directory under which Start Menu shortcuts are created.
-        bin_dir: Directory where wrapper files should be written.
-        env_root: Registry hive object/constant for environment updates.
-        env_subkey: Registry subkey path for environment updates.
-    """
-
-    scope: Scope
-    shortcut_root: Path
-    bin_dir: Path
-    env_root: Any
-    env_subkey: str
-
-
-@dataclass
-class ShortcutSpec:
-    """Runtime model for one shortcut declaration.
-
-    Attributes:
-        name: Display name or file name for the shortcut.
-        target_path: Executable path the shortcut should launch.
-        arguments: Optional command-line arguments.
-        working_directory: Optional working directory.
-        icon_location: Optional ``path,index`` icon reference.
-        description: Optional description shown by Windows.
-    """
-
-    name: str
-    target_path: str
-    arguments: str = ""
-    working_directory: str = ""
-    icon_location: str = ""
-    description: str = ""
-
-
-@dataclass
-class EnvVarSpec:
-    """Runtime model for one environment-variable declaration.
-
-    Attributes:
-        name: Environment variable name.
-        value: Value to write to the registry.
-    """
-
-    name: str
-    value: str
-
-
-@dataclass
-class BinSpec:
-    """Runtime model for one wrapper-file declaration.
-
-    Attributes:
-        name: File name that should be created in the scope bin directory.
-        content: Wrapper script or batch content to write.
-    """
-
-    name: str
-    content: str
-
-
-@dataclass
-class PackageConfig:
-    """Normalized runtime configuration for a package version.
-
-    Attributes:
-        description: Optional package description.
-        homepage: Optional homepage URL.
-        download_url: Optional download URL.
-        only_portable: Package-level portability restriction.
-        environment: Environment variables to write.
-        shortcut: Shortcuts to create.
-        path: Extra PATH entries to add.
-        bin: Wrapper files to create.
-    """
-
-    description: Optional[str] = None
-    homepage: Optional[str] = None
-    download_url: Optional[str] = None
-    only_portable: bool = False
-    environment: List[EnvVarSpec] = field(default_factory=list)
-    shortcut: List[ShortcutSpec] = field(default_factory=list)
-    path: List[str] = field(default_factory=list)
-    bin: List[BinSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -322,30 +213,6 @@ class ExpansionMode(Enum):
 
     GENERAL = "general"
     SCRIPT = "script"
-
-
-@dataclass(frozen=True)
-class PreparedShortcut:
-    """Fully expanded shortcut data ready for backend-specific creation.
-
-    Attributes:
-        name: Final shortcut name without any unresolved variables.
-        shortcut_path: Full ``.lnk`` path to create.
-        target_path: Executable path to launch.
-        arguments: Final argument string.
-        working_directory: Final working directory.
-        icon_location: Final icon reference.
-        description: Final description string.
-    """
-
-    name: str
-    shortcut_path: Path
-    target_path: str
-    arguments: str = ""
-    working_directory: str = ""
-    icon_location: str = ""
-    description: str = ""
-
 
 class _DynamicStdoutHandler(logging.Handler):
     """Logging handler that writes to the current stdout stream.
@@ -865,11 +732,24 @@ def _escape_powershell_single_quoted(value: str) -> str:
     return value.replace("'", "''")
 
 
-def create_shortcut(prepared: PreparedShortcut) -> None:
+def create_shortcut(
+    shortcut_path: Path,
+    target_path: str,
+    *,
+    arguments: str = "",
+    working_directory: str = "",
+    icon_location: str = "",
+    description: str = "",
+) -> None:
     """Create one ``.lnk`` file through PowerShell automation.
 
     Args:
-        prepared: Fully expanded shortcut data to write.
+        shortcut_path: Full ``.lnk`` path to create.
+        target_path: Executable path the shortcut should launch.
+        arguments: Optional command-line arguments.
+        working_directory: Optional working directory.
+        icon_location: Optional ``path,index`` icon reference.
+        description: Optional description shown by Windows.
 
     Raises:
         RuntimeError: If PowerShell reports a shortcut-creation failure.
@@ -877,12 +757,12 @@ def create_shortcut(prepared: PreparedShortcut) -> None:
 
     ps_command = f"""
 $WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut('{_escape_powershell_single_quoted(str(prepared.shortcut_path))}')
-$Shortcut.TargetPath = '{_escape_powershell_single_quoted(prepared.target_path)}'
-$Shortcut.Arguments = '{_escape_powershell_single_quoted(prepared.arguments)}'
-$Shortcut.WorkingDirectory = '{_escape_powershell_single_quoted(prepared.working_directory)}'
-$Shortcut.IconLocation = '{_escape_powershell_single_quoted(prepared.icon_location)}'
-$Shortcut.Description = '{_escape_powershell_single_quoted(prepared.description)}'
+$Shortcut = $WshShell.CreateShortcut('{_escape_powershell_single_quoted(str(shortcut_path))}')
+$Shortcut.TargetPath = '{_escape_powershell_single_quoted(target_path)}'
+$Shortcut.Arguments = '{_escape_powershell_single_quoted(arguments)}'
+$Shortcut.WorkingDirectory = '{_escape_powershell_single_quoted(working_directory)}'
+$Shortcut.IconLocation = '{_escape_powershell_single_quoted(icon_location)}'
+$Shortcut.Description = '{_escape_powershell_single_quoted(description)}'
 $Shortcut.Save()
 """
     result = _run_hidden([
@@ -1198,27 +1078,27 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-InstallStep = Callable[["PackageMetadata"], StepResult]
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def compute_scope_paths(scope: Scope) -> ScopePaths:
-    """Resolve the filesystem and registry locations for one install scope.
+def compute_scope_paths(scope: Scope) -> Dict[str, Path]:
+    """Resolve the filesystem locations needed by one install scope.
 
     Args:
         scope: Installation scope for which paths should be calculated.
 
     Returns:
-        A :class:`ScopePaths` object describing the relevant directories and
-        registry location.
+        A small mapping containing only the path values the install flow
+        actually uses:
+
+        - ``shortcut_root``: Start Menu root for generated shortcuts.
+        - ``bin_dir``: Directory for generated wrapper files.
 
     Raises:
         ValueError: If required environment variables such as ``APPDATA`` or
             ``PROGRAMDATA`` are missing.
     """
 
-    env_root, env_subkey = environment_registry_location(scope)
     if scope == Scope.USER:
         appdata = os.environ.get("APPDATA")
         if not appdata:
@@ -1226,13 +1106,10 @@ def compute_scope_paths(scope: Scope) -> ScopePaths:
         userprofile = os.environ.get("USERPROFILE")
         if not userprofile:
             raise ValueError("USERPROFILE is not set; cannot compute User-scope bin directory.")
-        return ScopePaths(
-            scope=scope,
-            shortcut_root=Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
-            bin_dir=Path(userprofile) / "bin",
-            env_root=env_root,
-            env_subkey=env_subkey,
-        )
+        return {
+            "shortcut_root": Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+            "bin_dir": Path(userprofile) / "bin",
+        }
 
     programdata = os.environ.get("PROGRAMDATA")
     if not programdata:
@@ -1240,13 +1117,10 @@ def compute_scope_paths(scope: Scope) -> ScopePaths:
     systemdrive = os.environ.get("SYSTEMDRIVE")
     if not systemdrive:
         raise ValueError("SYSTEMDRIVE is not set; cannot compute Machine-scope bin directory.")
-    return ScopePaths(
-        scope=scope,
-        shortcut_root=Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
-        bin_dir=Path(systemdrive) / "bin",
-        env_root=env_root,
-        env_subkey=env_subkey,
-    )
+    return {
+        "shortcut_root": Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
+        "bin_dir": Path(systemdrive) / "bin",
+    }
 
 
 def _expanded_text_or_error(
@@ -1319,94 +1193,6 @@ def _warn_if_output_path_is_unusual(kind: str, default_root: Path, expanded_name
         )
 
 
-def prepare_shortcut_spec(
-    spec: ShortcutSpec,
-    identity: PackageIdentity,
-    scope_paths: ScopePaths,
-) -> PreparedShortcut:
-    """Expand, validate, and materialize one shortcut definition.
-
-    Args:
-        spec: Normalized shortcut declaration.
-        identity: Package identity used for variable expansion.
-        scope_paths: Scope-specific paths used to determine the Start Menu
-            destination.
-
-    Returns:
-        A :class:`PreparedShortcut` ready to be passed to a backend-specific
-        shortcut writer.
-
-    Raises:
-        ValueError: If required fields are empty after expansion or variables
-            remain unresolved.
-    """
-
-    raw_display_name = spec.name or "<unnamed>"
-    expanded_name = _expanded_text_or_error(
-        spec.name,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut name for '{raw_display_name}'",
-    ).strip()
-    expanded_target = _expanded_text_or_error(
-        spec.target_path,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut targetPath for '{raw_display_name}'",
-    ).strip()
-    expanded_arguments = _expanded_text_or_error(
-        spec.arguments,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut arguments for '{raw_display_name}'",
-    )
-    expanded_working_directory = _expanded_text_or_error(
-        spec.working_directory,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut workingDirectory for '{raw_display_name}'",
-    )
-    expanded_icon_location = _expanded_text_or_error(
-        spec.icon_location,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut iconLocation for '{raw_display_name}'",
-    )
-    expanded_description = _expanded_text_or_error(
-        spec.description,
-        identity,
-        ExpansionMode.GENERAL,
-        field_label=f"shortcut description for '{raw_display_name}'",
-    )
-
-    missing: List[str] = []
-    if not expanded_name:
-        missing.append("name")
-    if not expanded_target:
-        missing.append("targetPath")
-    if missing:
-        raise ValueError(
-            f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
-        )
-
-    scope_paths.shortcut_root.mkdir(parents=True, exist_ok=True)
-    shortcut_path = scope_paths.shortcut_root / expanded_name
-    if shortcut_path.suffix.lower() != ".lnk":
-        shortcut_path = shortcut_path.with_suffix(".lnk")
-    _warn_if_output_path_is_unusual("shortcut", scope_paths.shortcut_root, expanded_name, shortcut_path)
-    shortcut_path.parent.mkdir(parents=True, exist_ok=True)
-
-    return PreparedShortcut(
-        name=expanded_name,
-        shortcut_path=shortcut_path,
-        target_path=expanded_target,
-        arguments=expanded_arguments,
-        working_directory=expanded_working_directory,
-        icon_location=expanded_icon_location,
-        description=expanded_description,
-    )
-
-
 def _current_version_matches(package_root: Path, version_path: Path) -> bool:
     """Return whether ``package_root/current`` points at ``version_path``.
 
@@ -1446,16 +1232,18 @@ def _normalize_input_path(raw_path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(raw_path.expanduser())))
 
 
-def resolve_input_path(raw_path: Path) -> ResolvedInput:
-    """Classify a user-supplied path using ``pkg`` package-layout rules.
+def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
+    """Resolve a user-supplied path to one concrete package version.
 
     Args:
         raw_path: User-supplied path that may point at a version directory, a
             ``current`` junction, or the package root.
 
     Returns:
-        A :class:`ResolvedInput` describing the package root, concrete version
-        directory, and whether the path was resolved via ``current``.
+        Tuple ``(identity, installing_from_current)`` where *identity*
+        describes the concrete version directory to operate on and
+        *installing_from_current* reports whether the caller pointed at
+        ``current`` or the package root instead of a version directory.
 
     Raises:
         ValueError: If the path does not match a supported package layout.
@@ -1467,13 +1255,13 @@ def resolve_input_path(raw_path: Path) -> ResolvedInput:
         if not candidate.exists() or not candidate.is_dir():
             raise ValueError(f"Version directory does not exist: {candidate}")
         package_root = candidate.parent
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=package_root,
-            version_path=candidate,
-            input_kind="version",
-            installing_from_current=False,
-            version_is_current=_current_version_matches(package_root, candidate),
+        return (
+            PackageIdentity.from_version_path(
+                package_root,
+                candidate,
+                is_current=_current_version_matches(package_root, candidate),
+            ),
+            False,
         )
 
     if candidate.name.lower() == "current":
@@ -1492,13 +1280,9 @@ def resolve_input_path(raw_path: Path) -> ResolvedInput:
             raise ValueError(
                 f'"current" junction target is not a directory: {resolved_target}; source={candidate}, raw_target={target}'
             )
-        return ResolvedInput(
-            raw_path=candidate,
-            package_root=candidate.parent,
-            version_path=resolved_target,
-            input_kind="current",
-            installing_from_current=True,
-            version_is_current=True,
+        return (
+            PackageIdentity.from_version_path(candidate.parent, resolved_target, is_current=True),
+            True,
         )
 
     if not candidate.exists() or not candidate.is_dir():
@@ -1522,19 +1306,12 @@ def resolve_input_path(raw_path: Path) -> ResolvedInput:
         raise ValueError(
             f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
         )
-    return ResolvedInput(
-        raw_path=candidate,
-        package_root=candidate,
-        version_path=resolved_target,
-        input_kind="package_root",
-        installing_from_current=True,
-        version_is_current=True,
-    )
+    return PackageIdentity.from_version_path(candidate, resolved_target, is_current=True), True
 
 
 
 
-def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: bool = False) -> bool:
+def update_current_junction_if_needed(identity: PackageIdentity, *, force: bool = False) -> bool:
     r"""Update ``<package>\current`` unless a newer version should win.
 
     When this function runs for the version that is already active, it may
@@ -1543,7 +1320,7 @@ def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: boo
     so same-version targets are not treated as a junction no-op here.
 
     Args:
-        metadata: Package metadata describing the version being installed.
+        identity: Package version that should become or remain ``current``.
         force: Whether to allow replacing ``current`` when it already
             points to a newer version. Same-version targets may still
             refresh ``current`` without ``force``.
@@ -1558,8 +1335,8 @@ def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: boo
         RuntimeError: If the junction replacement fails.
     """
 
-    current_path = metadata.identity.package_root / "current"
-    desired_target = metadata.identity.version_path
+    current_path = identity.package_root / "current"
+    desired_target = identity.version_path
 
     if not desired_target.exists() or not desired_target.is_dir():
         raise RuntimeError(f"Junction target does not exist or is not a directory: {desired_target}")
@@ -1576,23 +1353,23 @@ def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: boo
         if not current_target.is_dir():
             log_info(f"JUNCTION: stale current target detected: {current_target}")
         else:
-            if current_target.parent != metadata.identity.package_root:
+            if current_target.parent != identity.package_root:
                 raise ValueError(
                     f"{current_path} is a junction but its target {current_target} "
-                    f"is not under {metadata.identity.package_root}. Aborting."
+                    f"is not under {identity.package_root}. Aborting."
                 )
 
             current_version = current_target.name
             log_info(f"'current' junction version: {current_version}")
-            comparison = compare_package_versions(metadata.identity.version_string, current_version)
+            comparison = compare_package_versions(identity.version_string, current_version)
             # Same-version reinstalls are a supported refresh path. Only
             # keep the existing junction untouched when it points to a
             # newer version and --force was not requested.
             if not force and comparison < 0:
-                log_info(f"JUNCTION: keeping current ({current_version} > {metadata.identity.version_string})")
+                log_info(f"JUNCTION: keeping current ({current_version} > {identity.version_string})")
                 return False
             if force:
-                log_info(f"JUNCTION: --force: updating current to {metadata.identity.version_string}")
+                log_info(f"JUNCTION: --force: updating current to {identity.version_string}")
 
     # Refreshing the currently active version may still recreate
     # ``current`` so install can reassert the active package view.
@@ -1644,61 +1421,125 @@ def update_current_junction_if_needed(metadata: "PackageMetadata", *, force: boo
     return True
 
 
-def prepare_shortcut(shortcut_spec: ShortcutSpec, metadata: "PackageMetadata") -> PreparedShortcut:
-    """Normalize and expand shortcut data before shortcut creation.
-
-    Args:
-        shortcut_spec: Canonical shortcut specification from the runtime config.
-        metadata: Package metadata for the package being installed.
-
-    Returns:
-        A fully expanded :class:`PreparedShortcut` object.
-    """
-
-    return prepare_shortcut_spec(shortcut_spec, metadata.identity, metadata.require_scope_paths())
-
-
-def create_shortcut_from_spec(
-    shortcut_spec: ShortcutSpec,
-    metadata: "PackageMetadata",
+def create_shortcut_from_entry(
+    shortcut_entry: Dict[str, str],
+    identity: PackageIdentity,
+    shortcut_root: Path,
 ) -> Tuple[bool, Optional[str]]:
-    """Create a single ``.lnk`` shortcut.
+    """Expand and create one ``.lnk`` shortcut from normalized config data.
+
+    The shortcut transformation intentionally stays in this one helper so a
+    maintainer can see the full path from canonical ``pkg.toml`` row to final
+    PowerShell inputs without jumping through an extra prepared-object layer.
 
     Args:
-        shortcut_spec: Canonical shortcut specification from the runtime config.
-        metadata: Package metadata for the package being installed.
+        shortcut_entry: One normalized ``[[shortcut]]`` mapping.
+        identity: Package identity used for ``$App``-style expansion.
+        shortcut_root: Start Menu root for the selected install scope.
 
     Returns:
         ``(True, None)`` on success; otherwise ``(False, error_message)``.
     """
 
+    raw_name = shortcut_entry.get("name", "")
+    raw_display_name = raw_name or "<unnamed>"
+
     try:
-        prepared = prepare_shortcut(shortcut_spec, metadata)
-        create_shortcut(prepared)
-        log_info(f"SHORTCUT: created: {prepared.shortcut_path.name}")
+        expanded_name = _expanded_text_or_error(
+            raw_name,
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut name for '{raw_display_name}'",
+        ).strip()
+        expanded_target = _expanded_text_or_error(
+            shortcut_entry.get("targetPath", ""),
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut targetPath for '{raw_display_name}'",
+        ).strip()
+        expanded_arguments = _expanded_text_or_error(
+            shortcut_entry.get("arguments", ""),
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut arguments for '{raw_display_name}'",
+        )
+        expanded_working_directory = _expanded_text_or_error(
+            shortcut_entry.get("workingDirectory", ""),
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut workingDirectory for '{raw_display_name}'",
+        )
+        expanded_icon_location = _expanded_text_or_error(
+            shortcut_entry.get("iconLocation", ""),
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut iconLocation for '{raw_display_name}'",
+        )
+        expanded_description = _expanded_text_or_error(
+            shortcut_entry.get("description", ""),
+            identity,
+            ExpansionMode.GENERAL,
+            field_label=f"shortcut description for '{raw_display_name}'",
+        )
+
+        missing: List[str] = []
+        if not expanded_name:
+            missing.append("name")
+        if not expanded_target:
+            missing.append("targetPath")
+        if missing:
+            raise ValueError(
+                f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
+            )
+
+        shortcut_root.mkdir(parents=True, exist_ok=True)
+        shortcut_path = shortcut_root / expanded_name
+        if shortcut_path.suffix.lower() != ".lnk":
+            shortcut_path = shortcut_path.with_suffix(".lnk")
+        _warn_if_output_path_is_unusual("shortcut", shortcut_root, expanded_name, shortcut_path)
+        shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+
+        create_shortcut(
+            shortcut_path,
+            expanded_target,
+            arguments=expanded_arguments,
+            working_directory=expanded_working_directory,
+            icon_location=expanded_icon_location,
+            description=expanded_description,
+        )
+        log_info(f"SHORTCUT: created: {shortcut_path.name}")
         return True, None
     except Exception as exc:
-        name = shortcut_spec.name or "unknown"
+        name = raw_name or "unknown"
         log_error(f"SHORTCUT error creating {name}: {exc}")
         return False, f"Failed to create shortcut '{name}': {exc}"
 
 
-def install_shortcuts(metadata: "PackageMetadata") -> StepResult:
+def install_shortcuts(
+    shortcuts: List[Dict[str, str]],
+    identity: PackageIdentity,
+    scope_paths: Dict[str, Path],
+) -> StepResult:
     """Install every shortcut declared by a package.
+
+    Args:
+        shortcuts: Normalized ``[[shortcut]]`` rows from the runtime config.
+        identity: Package identity used for variable expansion.
+        scope_paths: Scope-specific filesystem locations computed for install.
 
     Returns:
         A :class:`StepResult` summarizing the shortcut step.
     """
 
     result = StepResult(ok=True, changed=False)
-    shortcuts = metadata.require_runtime_config().shortcut
-    for shortcut_spec in shortcuts:
-        ok, error = create_shortcut_from_spec(shortcut_spec, metadata)
+    shortcut_root = scope_paths["shortcut_root"]
+    for shortcut_entry in shortcuts:
+        ok, error = create_shortcut_from_entry(shortcut_entry, identity, shortcut_root)
         if ok:
             result.changed = True
             continue
         result.ok = False
-        message = error or f"Failed to create shortcut: {shortcut_spec.name or 'unknown'}"
+        message = error or f"Failed to create shortcut: {shortcut_entry.get('name') or 'unknown'}"
         log_error(message)
         result.errors.append(message)
 
@@ -1737,24 +1578,33 @@ def set_environment_variable(name: str, value: str, scope: Scope, expand: bool =
         return False
 
 
-def install_environment_variables(metadata: "PackageMetadata") -> StepResult:
+def install_environment_variables(
+    environment_entries: List[Dict[str, str]],
+    identity: PackageIdentity,
+    scope: Scope,
+) -> StepResult:
     """Install every environment variable declared by a package.
+
+    Args:
+        environment_entries: Normalized ``[[environment]]`` rows.
+        identity: Package identity used for variable expansion.
+        scope: Target install scope for registry writes.
 
     Returns:
         A :class:`StepResult` summarizing the environment-variable step.
     """
 
     result = StepResult(ok=True, changed=False)
-    for env_var in metadata.require_runtime_config().environment:
-        name = env_var.name.strip()
-        value = env_var.value
+    for env_var in environment_entries:
+        name = env_var.get("Name", "").strip()
+        value = env_var.get("Value", "")
         if not name:
             message = f"Environment variable entry is missing Name: {env_var}"
             log_error(message)
             result.ok = False
             result.errors.append(message)
             continue
-        expansion = expand_text(str(value), metadata.identity, ExpansionMode.GENERAL)
+        expansion = expand_text(str(value), identity, ExpansionMode.GENERAL)
         if expansion.unresolved:
             unresolved = ", ".join(expansion.unresolved)
             message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
@@ -1762,7 +1612,7 @@ def install_environment_variables(metadata: "PackageMetadata") -> StepResult:
             result.ok = False
             result.errors.append(message)
             continue
-        ok = set_environment_variable(name, expansion.value, metadata.scope, expand=True)
+        ok = set_environment_variable(name, expansion.value, scope, expand=True)
         if ok:
             result.changed = True
             continue
@@ -1840,8 +1690,14 @@ def set_path(path_entries: List[str], scope: Scope) -> bool:
         return False
 
 
-def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResult:
+def add_to_path(new_entries: List[str], identity: PackageIdentity, scope: Scope) -> StepResult:
     """Append directories to PATH while avoiding duplicates.
+
+    Args:
+        new_entries: PATH entries that may still contain ``$App``-style
+            variables.
+        identity: Package identity used for expansion.
+        scope: Installation scope whose PATH should be updated.
 
     Returns:
         A :class:`StepResult` summarizing the PATH update.
@@ -1851,7 +1707,7 @@ def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResu
     valid_entries: List[str] = []
 
     for entry in new_entries:
-        expansion = expand_text(str(entry), metadata.identity, ExpansionMode.GENERAL)
+        expansion = expand_text(str(entry), identity, ExpansionMode.GENERAL)
         if expansion.unresolved:
             unresolved = ", ".join(expansion.unresolved)
             message = f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
@@ -1881,7 +1737,7 @@ def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResu
     if not valid_entries:
         return result if result.errors else StepResult(ok=True, changed=False)
 
-    current_path = get_current_path(metadata.scope)
+    current_path = get_current_path(scope)
     updated_path = current_path.copy()
     existing_keys = {_path_key(item) for item in current_path if item}
     added_entries: List[str] = []
@@ -1892,30 +1748,35 @@ def add_to_path(new_entries: List[str], metadata: "PackageMetadata") -> StepResu
             updated_path.append(entry)
             existing_keys.add(key)
             added_entries.append(entry)
-            log_info(f"PATH: adding to {metadata.scope.value} scope: {entry}")
+            log_info(f"PATH: adding to {scope.value} scope: {entry}")
 
     if not added_entries:
         return result
 
-    if set_path(updated_path, metadata.scope):
+    if set_path(updated_path, scope):
         result.changed = True
         return result
 
-    message = f"Failed to update {metadata.scope.value} PATH."
+    message = f"Failed to update {scope.value} PATH."
     log_error(message)
     result.ok = False
     result.errors.append(message)
     return result
 
 
-def ensure_bin_in_path(metadata: "PackageMetadata") -> StepResult:
+def ensure_bin_in_path(scope_paths: Dict[str, Path], identity: PackageIdentity, scope: Scope) -> StepResult:
     """Ensure the per-scope ``bin`` directory exists and is on PATH.
+
+    Args:
+        scope_paths: Scope-specific filesystem locations computed for install.
+        identity: Package identity passed through to PATH expansion helpers.
+        scope: Installation scope whose PATH should include ``bin``.
 
     Returns:
         A :class:`StepResult` summarizing the bin-directory and PATH work.
     """
 
-    bin_dir = metadata.require_scope_paths().bin_dir
+    bin_dir = scope_paths["bin_dir"]
 
     changed = False
     try:
@@ -1925,24 +1786,29 @@ def ensure_bin_in_path(metadata: "PackageMetadata") -> StepResult:
     except OSError as exc:
         return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"])
 
-    current_path = get_current_path(metadata.scope)
+    current_path = get_current_path(scope)
     bin_dir_str = str(bin_dir)
     bin_key = _path_key(bin_dir_str)
     current_keys = {_path_key(item) for item in current_path if item}
     if bin_key not in current_keys:
-        path_result = add_to_path([bin_dir_str], metadata)
+        path_result = add_to_path([bin_dir_str], identity, scope)
         path_result.changed = path_result.changed or changed
         return path_result
 
     return StepResult(ok=True, changed=changed)
 
 
-def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[bool, Optional[str]]:
+def create_wrapper(
+    wrapper_entry: Dict[str, str],
+    identity: PackageIdentity,
+    bin_dir: Path,
+) -> Tuple[bool, Optional[str]]:
     """Create one wrapper file.
 
     Args:
-        wrapper_spec: Canonical wrapper specification from the runtime config.
-        metadata: Package metadata for the package being installed.
+        wrapper_entry: One normalized ``[[bin]]`` mapping.
+        identity: Package identity used for variable expansion.
+        bin_dir: Directory where wrapper files should be written.
 
     Returns:
         ``(True, None)`` when the wrapper changed, ``(True, "unchanged")``
@@ -1951,18 +1817,18 @@ def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[
     """
 
     try:
-        raw_name = wrapper_spec.name
-        raw_content = wrapper_spec.content
+        raw_name = wrapper_entry.get("name", "")
+        raw_content = wrapper_entry.get("content", "")
         if not raw_name:
             raise ValueError("wrapper entry is missing name")
 
         expanded_name = _expanded_text_or_error(
             raw_name,
-            metadata.identity,
+            identity,
             ExpansionMode.GENERAL,
             field_label=f"wrapper name for '{raw_name}'",
         ).strip()
-        expanded_content_result = expand_text(raw_content, metadata.identity, ExpansionMode.SCRIPT)
+        expanded_content_result = expand_text(raw_content, identity, ExpansionMode.SCRIPT)
         if expanded_content_result.unresolved:
             unresolved = ", ".join(expanded_content_result.unresolved)
             raise ValueError(
@@ -1970,7 +1836,6 @@ def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[
             )
         expanded_content = expanded_content_result.value
 
-        bin_dir = metadata.require_scope_paths().bin_dir
         bin_dir.mkdir(parents=True, exist_ok=True)
 
         wrapper_path = bin_dir / expanded_name
@@ -2003,107 +1868,40 @@ def create_wrapper(wrapper_spec: BinSpec, metadata: "PackageMetadata") -> Tuple[
         log_info(f"BIN: {action}: {wrapper_path}")
         return True, None
     except Exception as exc:
-        name = wrapper_spec.name or "unknown"
+        name = raw_name or "unknown"
         log_error(f"BIN error creating {name}: {exc}")
         return False, f"Failed to create wrapper '{name}': {exc}"
 
 
-def install_wrappers(metadata: "PackageMetadata") -> StepResult:
+def install_wrappers(
+    wrapper_entries: List[Dict[str, str]],
+    identity: PackageIdentity,
+    scope_paths: Dict[str, Path],
+) -> StepResult:
     """Install every wrapper declared by a package.
+
+    Args:
+        wrapper_entries: Normalized ``[[bin]]`` rows from the runtime config.
+        identity: Package identity used for variable expansion.
+        scope_paths: Scope-specific filesystem locations computed for install.
 
     Returns:
         A :class:`StepResult` summarizing the wrapper-install step.
     """
 
     result = StepResult(ok=True, changed=False)
-    for wrapper_spec in metadata.require_runtime_config().bin:
-        ok, error = create_wrapper(wrapper_spec, metadata)
+    bin_dir = scope_paths["bin_dir"]
+    for wrapper_entry in wrapper_entries:
+        ok, error = create_wrapper(wrapper_entry, identity, bin_dir)
         if ok:
             if error != "unchanged":
                 result.changed = True
             continue
-        message = error or f"Failed to create wrapper: {wrapper_spec.name or 'unknown'}"
+        message = error or f"Failed to create wrapper: {wrapper_entry.get('name') or 'unknown'}"
         log_error(message)
         result.ok = False
         result.errors.append(message)
     return result
-
-
-def install_shortcuts_step(metadata: "PackageMetadata") -> StepResult:
-    """Run the shortcut-install step for one package.
-
-    Returns:
-        A :class:`StepResult` describing the shortcut step outcome.
-    """
-
-    if not metadata.require_runtime_config().shortcut:
-        return StepResult(ok=True, changed=False)
-    log_info("")
-    log_info("Creating shortcuts...")
-    return install_shortcuts(metadata)
-
-
-def install_environment_variables_step(metadata: "PackageMetadata") -> StepResult:
-    """Run the environment-variable step for one package.
-
-    Returns:
-        A :class:`StepResult` describing the environment-variable step outcome.
-    """
-
-    if not metadata.require_runtime_config().environment:
-        return StepResult(ok=True, changed=False)
-    log_info("")
-    log_info("Setting environment variables...")
-    return install_environment_variables(metadata)
-
-
-def ensure_bin_in_path_step(metadata: "PackageMetadata") -> StepResult:
-    """Run the scope ``bin`` directory/PATH bootstrap step.
-
-    Returns:
-        A :class:`StepResult` describing the bin-directory/PATH step outcome.
-    """
-
-    log_info("")
-    log_info("Managing PATH...")
-    return ensure_bin_in_path(metadata)
-
-
-def install_extra_path_entries_step(metadata: "PackageMetadata") -> StepResult:
-    """Run the package-specific extra PATH entry step.
-
-    Returns:
-        A :class:`StepResult` describing the extra PATH entry step outcome.
-    """
-
-    extra_entries = metadata.require_runtime_config().path
-    if not extra_entries:
-        return StepResult(ok=True, changed=False)
-    return add_to_path(extra_entries, metadata)
-
-
-def install_wrappers_step(metadata: "PackageMetadata") -> StepResult:
-    """Run the wrapper-install step for one package.
-
-    Returns:
-        A :class:`StepResult` describing the wrapper step outcome.
-    """
-
-    if not metadata.require_runtime_config().bin:
-        return StepResult(ok=True, changed=False)
-    log_info("")
-    log_info("Creating executable wrappers...")
-    return install_wrappers(metadata)
-
-INSTALL_STEPS: Tuple[InstallStep, ...] = (
-    install_shortcuts_step,
-    install_environment_variables_step,
-    ensure_bin_in_path_step,
-    install_extra_path_entries_step,
-    install_wrappers_step,
-)
-
-
 
 
 EXTENDED_HELP = r"""
@@ -2401,14 +2199,14 @@ def _normalize_bin_content(value: Any) -> str:
     return text.replace("\\r\\n", "\n").replace("\\n", "\n")
 
 
-def _normalize_environment_entries(raw: Any) -> List[EnvVarSpec]:
+def _normalize_environment_entries(raw: Any) -> List[Dict[str, str]]:
     """Normalize ``[[environment]]`` entries.
 
     Args:
         raw: Parsed TOML value for the ``environment`` key.
 
     Returns:
-        A list of :class:`EnvVarSpec` objects.
+        A list of normalized ``{"Name": ..., "Value": ...}`` mappings.
 
     Raises:
         ConfigValidationError: If *raw* is not a canonical environment table list.
@@ -2418,7 +2216,7 @@ def _normalize_environment_entries(raw: Any) -> List[EnvVarSpec]:
         return []
     if not isinstance(raw, list):
         raise ConfigValidationError(f"'environment' must be a list, got: {type(raw).__name__}")
-    result: List[EnvVarSpec] = []
+    result: List[Dict[str, str]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"'environment[{index}]' must be a table, got: {type(item).__name__}")
@@ -2429,23 +2227,21 @@ def _normalize_environment_entries(raw: Any) -> List[EnvVarSpec]:
             ordered_allowed=["Name", "Value"],
             legacy_hints=_ENVIRONMENT_LEGACY_KEY_HINTS,
         )
-        result.append(
-            EnvVarSpec(
-                name=_normalize_required_string(item.get("Name"), field_name=f"environment[{index}].Name"),
-                value=_normalize_required_string(item.get("Value"), field_name=f"environment[{index}].Value"),
-            )
-        )
+        result.append({
+            "Name": _normalize_required_string(item.get("Name"), field_name=f"environment[{index}].Name"),
+            "Value": _normalize_required_string(item.get("Value"), field_name=f"environment[{index}].Value"),
+        })
     return result
 
 
-def _normalize_shortcut_entries(raw: Any) -> List[ShortcutSpec]:
+def _normalize_shortcut_entries(raw: Any) -> List[Dict[str, str]]:
     """Normalize ``[[shortcut]]`` entries.
 
     Args:
         raw: Parsed TOML value for the ``shortcut`` key.
 
     Returns:
-        A list of :class:`ShortcutSpec` objects.
+        A list of normalized shortcut mappings that stay close to ``pkg.toml``.
 
     Raises:
         ConfigValidationError: If *raw* is not a canonical shortcut table list.
@@ -2455,7 +2251,7 @@ def _normalize_shortcut_entries(raw: Any) -> List[ShortcutSpec]:
         return []
     if not isinstance(raw, list):
         raise ConfigValidationError(f"'shortcut' must be a list, got: {type(raw).__name__}")
-    result: List[ShortcutSpec] = []
+    result: List[Dict[str, str]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"'shortcut[{index}]' must be a table, got: {type(item).__name__}")
@@ -2466,30 +2262,28 @@ def _normalize_shortcut_entries(raw: Any) -> List[ShortcutSpec]:
             ordered_allowed=["name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"],
             legacy_hints=_SHORTCUT_LEGACY_KEY_HINTS,
         )
-        result.append(
-            ShortcutSpec(
-                name=_normalize_required_string(item.get("name"), field_name=f"shortcut[{index}].name"),
-                target_path=_normalize_required_string(item.get("targetPath"), field_name=f"shortcut[{index}].targetPath"),
-                arguments=_normalize_required_string(item.get("arguments"), field_name=f"shortcut[{index}].arguments"),
-                working_directory=_normalize_required_string(
-                    item.get("workingDirectory"),
-                    field_name=f"shortcut[{index}].workingDirectory",
-                ),
-                icon_location=_normalize_required_string(item.get("iconLocation"), field_name=f"shortcut[{index}].iconLocation"),
-                description=_normalize_required_string(item.get("description"), field_name=f"shortcut[{index}].description"),
-            )
-        )
+        result.append({
+            "name": _normalize_required_string(item.get("name"), field_name=f"shortcut[{index}].name"),
+            "targetPath": _normalize_required_string(item.get("targetPath"), field_name=f"shortcut[{index}].targetPath"),
+            "arguments": _normalize_required_string(item.get("arguments"), field_name=f"shortcut[{index}].arguments"),
+            "workingDirectory": _normalize_required_string(
+                item.get("workingDirectory"),
+                field_name=f"shortcut[{index}].workingDirectory",
+            ),
+            "iconLocation": _normalize_required_string(item.get("iconLocation"), field_name=f"shortcut[{index}].iconLocation"),
+            "description": _normalize_required_string(item.get("description"), field_name=f"shortcut[{index}].description"),
+        })
     return result
 
 
-def _normalize_bin_entries(raw: Any) -> List[BinSpec]:
+def _normalize_bin_entries(raw: Any) -> List[Dict[str, str]]:
     """Normalize ``[[bin]]`` entries.
 
     Args:
         raw: Parsed TOML value for the ``bin`` key.
 
     Returns:
-        A list of :class:`BinSpec` objects.
+        A list of normalized ``{"name": ..., "content": ...}`` mappings.
 
     Raises:
         ConfigValidationError: If *raw* is not a canonical bin table list.
@@ -2499,7 +2293,7 @@ def _normalize_bin_entries(raw: Any) -> List[BinSpec]:
         return []
     if not isinstance(raw, list):
         raise ConfigValidationError(f"'bin' must be a list, got: {type(raw).__name__}")
-    result: List[BinSpec] = []
+    result: List[Dict[str, str]] = []
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"'bin[{index}]' must be a table, got: {type(item).__name__}")
@@ -2509,12 +2303,10 @@ def _normalize_bin_entries(raw: Any) -> List[BinSpec]:
             context=f"bin[{index}]",
             ordered_allowed=["name", "content"],
         )
-        result.append(
-            BinSpec(
-                name=_normalize_required_string(item.get("name"), field_name=f"bin[{index}].name"),
-                content=_normalize_bin_content(item.get("content")),
-            )
-        )
+        result.append({
+            "name": _normalize_required_string(item.get("name"), field_name=f"bin[{index}].name"),
+            "content": _normalize_bin_content(item.get("content")),
+        })
     return result
 
 
@@ -2555,15 +2347,17 @@ def _normalize_path_entries(raw: Any) -> List[str]:
     return result
 
 
-def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConfig:
-    """Normalize raw config data into the runtime model.
+def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
+    """Normalize raw config data into one canonical runtime mapping.
 
     Args:
         raw: Parsed TOML data or ``None``.
         identity: Directory-derived package identity used to supply defaults.
 
     Returns:
-        A fully normalized :class:`PackageConfig` object.
+        A normalized dictionary that stays close to the canonical ``pkg.toml``
+        shape. The install path uses this one representation directly instead
+        of translating into another layer of short-lived row objects.
 
     Raises:
         ConfigValidationError: If *raw* is not a canonical configuration table.
@@ -2594,13 +2388,11 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConf
         legacy_hints=LEGACY_TOP_LEVEL_KEY_HINTS,
     )
 
-    name = _normalize_optional_string(raw.get("name"), field_name="name")
-    version = _normalize_optional_string(raw.get("version"), field_name="version")
+    _normalize_optional_string(raw.get("name"), field_name="name")
+    _normalize_optional_string(raw.get("version"), field_name="version")
     local_version = raw.get("localVersion")
-    if local_version is None:
-        normalized_local_version = identity.local_version
-    else:
-        normalized_local_version = _normalize_local_version_value(local_version, field_name="localVersion")
+    if local_version is not None:
+        _normalize_local_version_value(local_version, field_name="localVersion")
     only_portable_value = raw.get("only_portable")
     normalized_only_portable = (
         identity.only_portable_by_name
@@ -2608,19 +2400,19 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> PackageConf
         else _normalize_only_portable_value(only_portable_value, field_name="only_portable")
     )
 
-    return PackageConfig(
-        description=_normalize_optional_string(raw.get("description"), field_name="description"),
-        homepage=_normalize_optional_string(raw.get("homepage"), field_name="homepage"),
-        download_url=_normalize_optional_string(raw.get("downloadURL"), field_name="downloadURL"),
-        only_portable=normalized_only_portable,
-        environment=_normalize_environment_entries(raw.get("environment")),
-        shortcut=_normalize_shortcut_entries(raw.get("shortcut")),
-        path=_normalize_path_entries(raw.get("path")),
-        bin=_normalize_bin_entries(raw.get("bin")),
-    )
+    return {
+        "description": _normalize_optional_string(raw.get("description"), field_name="description"),
+        "homepage": _normalize_optional_string(raw.get("homepage"), field_name="homepage"),
+        "downloadURL": _normalize_optional_string(raw.get("downloadURL"), field_name="downloadURL"),
+        "only_portable": normalized_only_portable,
+        "environment": _normalize_environment_entries(raw.get("environment")),
+        "shortcut": _normalize_shortcut_entries(raw.get("shortcut")),
+        "path": _normalize_path_entries(raw.get("path")),
+        "bin": _normalize_bin_entries(raw.get("bin")),
+    }
 
 
-def validate_runtime_config(config: PackageConfig) -> None:
+def validate_runtime_config(config: Dict[str, Any]) -> None:
     """Validate required fields in a normalized runtime config.
 
     Args:
@@ -2631,27 +2423,27 @@ def validate_runtime_config(config: PackageConfig) -> None:
     """
 
     errors: List[str] = []
-    for index, shortcut in enumerate(config.shortcut):
+    for index, shortcut in enumerate(config["shortcut"]):
         missing = []
-        if not shortcut.name.strip():
+        if not shortcut.get("name", "").strip():
             missing.append("name")
-        if not shortcut.target_path.strip():
+        if not shortcut.get("targetPath", "").strip():
             missing.append("targetPath")
         if missing:
             errors.append(f"shortcut[{index}] missing required key(s): {', '.join(missing)}")
-    for index, env in enumerate(config.environment):
+    for index, env in enumerate(config["environment"]):
         missing = []
-        if not env.name.strip():
+        if not env.get("Name", "").strip():
             missing.append("Name")
-        if env.value == "":
+        if env.get("Value", "") == "":
             missing.append("Value")
         if missing:
             errors.append(f"environment[{index}] missing required key(s): {', '.join(missing)}")
-    for index, wrapper in enumerate(config.bin):
+    for index, wrapper in enumerate(config["bin"]):
         missing = []
-        if not wrapper.name.strip():
+        if not wrapper.get("name", "").strip():
             missing.append("name")
-        if wrapper.content == "":
+        if wrapper.get("content", "") == "":
             missing.append("content")
         if missing:
             errors.append(f"bin[{index}] missing required key(s): {', '.join(missing)}")
@@ -2703,7 +2495,7 @@ def check_metadata_consistency(identity: PackageIdentity, raw_config: Dict[str, 
     return inconsistencies
 
 
-def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[PackageConfig, Dict[str, Any], List[str]]:
+def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
     """Read and validate ``pkg.toml`` for one package version.
 
     Args:
@@ -2743,118 +2535,40 @@ def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -
     warnings.append(f"No pkg.toml found at {toml_path}; using defaults without creating a file.")
     return config, {}, warnings
 
+def update_config_file(identity: PackageIdentity) -> StepResult:
+    """Synchronize directory-owned metadata back to ``pkg.toml``.
 
+    ``UpdateConfig`` and ``Install --fix-config`` both use this function. It
+    intentionally works from explicit inputs only: one package identity and the
+    current file contents on disk. Missing configs become documented starter
+    templates; existing configs are rewritten only when they already use the
+    canonical top-level metadata keys that ``pkg`` owns.
 
-class PackageMetadata:
-    """Package identity, resolved input, scope, and runtime config for one version."""
+    Args:
+        identity: Package identity whose directory-derived metadata should be
+            written back to ``pkg.toml``.
 
-    def __init__(self, resolved_input: ResolvedInput):
-        """Create package metadata for a resolved package input.
+    Returns:
+        A :class:`StepResult` describing the update.
+    """
 
-        Args:
-            resolved_input: Classified package path information produced by
-                :func:`resolve_input_path`.
-        """
+    toml_path = identity.version_path / "pkg.toml"
 
-        self.resolved_input = resolved_input
-        self.identity = PackageIdentity.from_resolved_input(resolved_input)
-        self.scope: Scope = Scope.USER
-        self.scope_paths: Optional[ScopePaths] = None
-        self.runtime_config: Optional[PackageConfig] = None
-
-    @classmethod
-    def from_path(cls, package_path: Path) -> "PackageMetadata":
-        """Resolve *package_path* and construct metadata from the result.
-
-        Args:
-            package_path: Path pointing at a version directory, the package
-                root, or the ``current`` junction.
-
-        Returns:
-            A :class:`PackageMetadata` instance backed by one
-            :class:`ResolvedInput`.
-        """
-
-        return cls(resolve_input_path(Path(package_path)))
-
-    def require_scope_paths(self) -> ScopePaths:
-        """Return the selected scope paths or raise a clear error.
-
-        Returns:
-            The cached scope-specific paths.
-
-        Raises:
-            RuntimeError: If :meth:`set_scope` has not run yet.
-        """
-
-        if self.scope_paths is None:
-            raise RuntimeError("Install scope has not been set yet.")
-        return self.scope_paths
-
-    def require_runtime_config(self) -> PackageConfig:
-        """Return the loaded runtime config or raise a clear error.
-
-        Returns:
-            The normalized runtime config.
-
-        Raises:
-            RuntimeError: If :meth:`load_config` has not run yet.
-        """
-
-        if self.runtime_config is None:
-            raise RuntimeError("Runtime config has not been loaded yet.")
-        return self.runtime_config
-
-    def load_config(self, *, use_defaults: bool = False) -> Tuple[Dict[str, Any], List[str]]:
-        """Load and normalize the package runtime configuration.
-
-        Args:
-            use_defaults: Whether defaults may be used when TOML loading fails.
-
-        Returns:
-            A tuple ``(raw_config_dict, warnings)``.
-        """
-
-        config, raw_data, warnings = read_runtime_config(self.identity, use_defaults=use_defaults)
-        self.runtime_config = config
-        return raw_data, warnings
-
-    def update_config(self) -> StepResult:
-        """Synchronize owned metadata fields back to ``pkg.toml``.
-
-        Returns:
-            A :class:`StepResult` describing the update. Missing configs are
-            created as documented starter templates. Existing configs are
-            updated only when they already use canonical top-level metadata keys.
-        """
-
-        toml_path = self.identity.version_path / "pkg.toml"
-
-        if not toml_path.exists():
-            rendered = create_starter_config(self.identity)
-            write_text_atomic(toml_path, rendered, backup=False)
-            log_info(f"Created: {toml_path}")
-            return StepResult(ok=True, changed=True)
-
-        original_text = toml_path.read_text(encoding="utf-8")
-        rendered, changed = sync_config_metadata_text(original_text, self.identity)
-        if not changed or rendered == original_text:
-            log_info(f"Configuration already up to date: {toml_path}")
-            return StepResult(ok=True, changed=False)
-
-        write_text_atomic(toml_path, rendered, backup=True)
-        log_info(f"Updated: {toml_path}")
+    if not toml_path.exists():
+        rendered = create_starter_config(identity)
+        write_text_atomic(toml_path, rendered, backup=False)
+        log_info(f"Created: {toml_path}")
         return StepResult(ok=True, changed=True)
 
-    def set_scope(self, scope: Scope) -> None:
-        """Store the install scope and precompute scope-specific paths.
+    original_text = toml_path.read_text(encoding="utf-8")
+    rendered, changed = sync_config_metadata_text(original_text, identity)
+    if not changed or rendered == original_text:
+        log_info(f"Configuration already up to date: {toml_path}")
+        return StepResult(ok=True, changed=False)
 
-        Args:
-            scope: Selected installation scope.
-        """
-
-        self.scope = scope
-        self.scope_paths = compute_scope_paths(scope)
+    write_text_atomic(toml_path, rendered, backup=True)
+    log_info(f"Updated: {toml_path}")
+    return StepResult(ok=True, changed=True)
 
 
 def _to_toml_scalar(value: Any) -> str:
@@ -3212,21 +2926,68 @@ def action_failure(message: str, *, exit_code: int, warnings: Optional[List[str]
     )
 
 
-def install_components(metadata: PackageMetadata) -> StepResult:
-    """Run the ordered component-install pipeline for one package.
+def install_components(
+    identity: PackageIdentity,
+    scope: Scope,
+    scope_paths: Dict[str, Path],
+    runtime_config: Dict[str, Any],
+) -> StepResult:
+    """Run the fixed install sequence for one package version.
+
+    The order here is deliberate and intentionally explicit. ``pkg`` does not
+    have a pluggable install pipeline, so keeping the sequence inline makes the
+    state transitions easier to audit:
+
+    1. create shortcuts
+    2. write environment variables
+    3. ensure the scope ``bin`` directory exists and is on ``PATH``
+    4. add package-specific extra ``PATH`` entries
+    5. create wrapper/bin files
 
     Args:
-        metadata: Package metadata describing the package being installed.
+        identity: Package version being installed.
+        scope: Selected installation scope.
+        scope_paths: Scope-specific filesystem locations computed for install.
+        runtime_config: Canonical normalized runtime config derived from
+            ``pkg.toml``.
 
     Returns:
         Aggregated :class:`StepResult` for all component steps.
     """
 
-    metadata.require_scope_paths()
-    results = [step(metadata) for step in INSTALL_STEPS]
-    if not results:
-        return StepResult(ok=True, changed=False)
-    return combine_step_results(*results)
+    shortcut_result = StepResult(ok=True, changed=False)
+    if runtime_config["shortcut"]:
+        log_info("")
+        log_info("Creating shortcuts...")
+        shortcut_result = install_shortcuts(runtime_config["shortcut"], identity, scope_paths)
+
+    environment_result = StepResult(ok=True, changed=False)
+    if runtime_config["environment"]:
+        log_info("")
+        log_info("Setting environment variables...")
+        environment_result = install_environment_variables(runtime_config["environment"], identity, scope)
+
+    log_info("")
+    log_info("Managing PATH...")
+    bin_path_result = ensure_bin_in_path(scope_paths, identity, scope)
+
+    extra_path_result = StepResult(ok=True, changed=False)
+    if runtime_config["path"]:
+        extra_path_result = add_to_path(runtime_config["path"], identity, scope)
+
+    wrapper_result = StepResult(ok=True, changed=False)
+    if runtime_config["bin"]:
+        log_info("")
+        log_info("Creating executable wrappers...")
+        wrapper_result = install_wrappers(runtime_config["bin"], identity, scope_paths)
+
+    return combine_step_results(
+        shortcut_result,
+        environment_result,
+        bin_path_result,
+        extra_path_result,
+        wrapper_result,
+    )
 
 
 def install_package(
@@ -3264,14 +3025,13 @@ def install_package(
     print_action_banner(Action.INSTALL, scope)
 
     try:
-        resolved = resolve_input_path(Path(package_path))
+        identity, installing_from_current = resolve_input_path(Path(package_path))
     except ValueError as exc:
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
 
     try:
-        metadata = PackageMetadata(resolved)
-        metadata.set_scope(scope)
-        raw_config_data, load_warnings = metadata.load_config(use_defaults=use_defaults)
+        scope_paths = compute_scope_paths(scope)
+        runtime_config, raw_config_data, load_warnings = read_runtime_config(identity, use_defaults=use_defaults)
     except (ConfigValidationError, RuntimeError, ValueError) as exc:
         return action_failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_USER_ERROR)
     except OSError as exc:
@@ -3282,7 +3042,7 @@ def install_package(
         log_warning(warning)
 
     config_sync_changed = False
-    inconsistencies = check_metadata_consistency(metadata.identity, raw_config_data)
+    inconsistencies = check_metadata_consistency(identity, raw_config_data)
     if inconsistencies:
         if not fix_config:
             log_error("Configuration inconsistencies detected:")
@@ -3290,7 +3050,7 @@ def install_package(
                 log_error(f"  - {message}")
             log_info("Aborting installation to avoid mutating configs as a side effect.")
             log_info("To fix the config, run one of:")
-            log_info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {metadata.identity.version_path}")
+            log_info(f"  - pkg --action {Action.UPDATE_CONFIG.value} {identity.version_path}")
             log_info("  - re-run this install with --fix-config")
             return ActionResult(
                 ok=False,
@@ -3305,7 +3065,7 @@ def install_package(
             log_warning(f"  - {message}")
         log_info("--fix-config enabled: syncing configuration metadata to match directory structure...")
         try:
-            update_result = metadata.update_config()
+            update_result = update_config_file(identity)
         except (ConfigValidationError, RuntimeError, ValueError) as exc:
             return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR, warnings=warnings)
         except OSError as exc:
@@ -3322,7 +3082,7 @@ def install_package(
             )
         log_info("Configuration updated successfully.")
         try:
-            raw_config_data, reload_warnings = metadata.load_config(use_defaults=use_defaults)
+            runtime_config, raw_config_data, reload_warnings = read_runtime_config(identity, use_defaults=use_defaults)
         except (ConfigValidationError, RuntimeError, ValueError) as exc:
             return action_failure(
                 f"Failed to reload configuration after update: {exc}",
@@ -3340,14 +3100,13 @@ def install_package(
             log_warning(warning)
         log_info("")
 
-    runtime_config = metadata.require_runtime_config()
-    log_info(f"Package: {metadata.identity.name}")
-    log_info(f"Version: {metadata.identity.version_string}")
-    log_info(f"Path: {metadata.identity.version_path}")
-    log_info(f"only_portable: {runtime_config.only_portable}")
+    log_info(f"Package: {identity.name}")
+    log_info(f"Version: {identity.version_string}")
+    log_info(f"Path: {identity.version_path}")
+    log_info(f"only_portable: {runtime_config['only_portable']}")
     log_info("")
 
-    if runtime_config.only_portable and scope == Scope.MACHINE:
+    if runtime_config["only_portable"] and scope == Scope.MACHINE:
         return action_failure(
             "only_portable packages cannot be installed system-wide. Please use User scope.",
             exit_code=EXIT_USER_ERROR,
@@ -3362,18 +3121,18 @@ def install_package(
         )
 
     junction_changed = False
-    if metadata.resolved_input.installing_from_current:
+    if installing_from_current:
         log_info("Installing from resolved 'current' target (skipping junction management)")
     else:
         log_info("Managing 'current' junction...")
         try:
-            junction_changed = update_current_junction_if_needed(metadata, force=force)
+            junction_changed = update_current_junction_if_needed(identity, force=force)
         except ValueError as exc:
             return action_failure(str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings)
         except Exception as exc:
             return action_failure(str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings)
 
-        if not junction_changed and not metadata.identity.is_current:
+        if not junction_changed and not identity.is_current:
             log_info("Skipping component installation (newer version already installed)")
             return ActionResult(
                 ok=True,
@@ -3384,7 +3143,7 @@ def install_package(
 
     log_info("")
     log_info("Installing components...")
-    component_result = install_components(metadata)
+    component_result = install_components(identity, scope, scope_paths, runtime_config)
     warnings.extend(component_result.warnings)
 
     if not component_result.ok:
@@ -3422,13 +3181,12 @@ def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> A
     print_action_banner(Action.UPDATE_CONFIG, scope)
 
     try:
-        resolved = resolve_input_path(Path(package_path))
+        identity, _ = resolve_input_path(Path(package_path))
     except ValueError as exc:
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
 
     try:
-        metadata = PackageMetadata(resolved)
-        step_result = metadata.update_config()
+        step_result = update_config_file(identity)
     except (ConfigValidationError, RuntimeError, ValueError) as exc:
         return action_failure(f"Failed to update configuration: {exc}", exit_code=EXIT_USER_ERROR)
     except OSError as exc:
