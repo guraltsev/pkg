@@ -556,13 +556,13 @@ only_portable = true
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     with mock.patch.object(module, "create_shortcut") as create_shortcut_mock:
-                        ok, error = module.create_shortcut_from_entry(
-                            {"name": "../outside", "targetPath": r"C:\Tools\tool.exe"},
+                        result = module.install_shortcuts(
+                            [{"name": "../outside", "targetPath": r"C:\Tools\tool.exe"}],
                             identity,
-                            scope_paths["shortcut_root"],
+                            scope_paths,
                         )
 
-            self.assertTrue(ok, msg=error)
+            self.assertTrue(result.ok, msg=result.errors)
             shortcut_path = create_shortcut_mock.call_args.args[0]
             self.assertFalse(
                 shortcut_path.resolve(strict=False).is_relative_to(
@@ -643,12 +643,12 @@ only_portable = true
 
                 with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        ok, error = module.create_shortcut_from_entry(
-                            {"name": "O'Brien Tool", "targetPath": r"C:\Tools\app.exe"},
+                        result = module.install_shortcuts(
+                            [{"name": "O'Brien Tool", "targetPath": r"C:\Tools\app.exe"}],
                             identity,
-                            scope_paths["shortcut_root"],
+                            scope_paths,
                         )
-            self.assertTrue(ok, msg=error)
+            self.assertTrue(result.ok, msg=result.errors)
             self.assertIn("-NoProfile", captured["cmd"])
             self.assertIn("-NonInteractive", captured["cmd"])
             ps_command = captured["cmd"][-1]

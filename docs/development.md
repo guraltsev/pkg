@@ -35,6 +35,26 @@ Avoid short-lived schema wrappers or broad context objects that mostly forward
 state from one helper to another. 
 If a function only needs a few values, pass those values directly.
 
+## Inline flow and local constants
+
+Keep simple operations readable in one pass. When validation and action are used
+by a single caller, keep them together instead of extracting a private helper
+that makes the reader jump around.
+
+Prefer:
+
+- direct iteration over the values being processed
+- immediate `ValueError` or `ConfigValidationError` messages at the invalid value
+- small key lists or hint maps defined next to the loop or operation that uses them
+- explicit local result aggregation when a sequence is fixed
+
+Avoid:
+
+- one-off row normalizers or per-entry action helpers
+- module-level constants whose only consumer is one local loop
+- conversion layers that only rename data before the next function unpacks it
+- generic registries or step lists for fixed install behavior
+
 ## Package state flow
 
 The install/update path should stay easy to read from top to bottom.

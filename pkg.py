@@ -47,7 +47,6 @@ EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
 VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
-PACKAGE_VARIABLE_NAMES = ("App", "Icons", "Shortcuts")
 
 
 class ConfigValidationError(ValueError):
@@ -522,72 +521,6 @@ def write_bytes_atomic(path: Path, content: bytes) -> None:
             os.unlink(tmp_path)
 
 
-def combine_step_results(*results: StepResult) -> StepResult:
-    """Merge several step outcomes into a single aggregate outcome.
-
-    Args:
-        *results: Step results to combine.
-
-    Returns:
-        A :class:`StepResult` whose flags and message lists reflect all supplied
-        results.
-    """
-
-    combined = StepResult(ok=True, changed=False)
-    for result in results:
-        combined.ok = combined.ok and result.ok
-        combined.changed = combined.changed or result.changed
-        combined.warnings.extend(result.warnings)
-        combined.errors.extend(result.errors)
-    if combined.errors:
-        combined.ok = False
-    return combined
-
-
-def _deduplicate_preserving_order(values: List[str]) -> List[str]:
-    """Remove duplicates from a list while preserving the first occurrence.
-
-    Args:
-        values: Sequence of strings that may contain duplicates.
-
-    Returns:
-        A new list containing only the first occurrence of each value.
-    """
-
-    seen = set()
-    out: List[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out
-
-
-def _package_variable_map(identity: PackageIdentity) -> Dict[str, str]:
-    """Build the package-variable expansion map for one package identity.
-
-    Package variables intentionally resolve through ``<package>/current``
-    rather than directly through :attr:`PackageIdentity.version_path`.
-    Re-running install for the same version is a supported repair path, so
-    shortcuts, environment variables, PATH entries, and wrapper files keep
-    targeting the active package view.
-
-    Args:
-        identity: Package identity whose ``current`` tree should be referenced.
-
-    Returns:
-        Mapping from package variable name to filesystem path.
-    """
-
-    pkg_base = identity.package_root / "current"
-    return {
-        "App": str(pkg_base / "App"),
-        "Icons": str(pkg_base / "Icons"),
-        "Shortcuts": str(pkg_base / "Shortcuts"),
-    }
-
-
 def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> ExpansionResult:
     """Expand package and environment variables in text.
 
@@ -619,7 +552,14 @@ def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> Ex
     if source == "":
         return ExpansionResult("")
 
-    pkg_map = _package_variable_map(identity)
+    # Package variables intentionally resolve through ``<package>/current`` so
+    # repair installs keep targeting the active package view.
+    pkg_base = identity.package_root / "current"
+    pkg_map = {
+        "App": str(pkg_base / "App"),
+        "Icons": str(pkg_base / "Icons"),
+        "Shortcuts": str(pkg_base / "Shortcuts"),
+    }
     out: List[str] = []
     unresolved: List[str] = []
     i = 0
@@ -669,7 +609,15 @@ def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> Ex
         out.append("$")
         i += 1
 
-    return ExpansionResult("".join(out), _deduplicate_preserving_order(unresolved))
+    deduplicated_unresolved: List[str] = []
+    seen_unresolved = set()
+    for token in unresolved:
+        if token in seen_unresolved:
+            continue
+        seen_unresolved.add(token)
+        deduplicated_unresolved.append(token)
+
+    return ExpansionResult("".join(out), deduplicated_unresolved)
 
 
 #------------------------------------------
@@ -1057,19 +1005,6 @@ def wait_for_keypress() -> None:
         input("Press Enter to continue...")
 
 
-def system_drive_root() -> str:
-    """Return the system drive root with a trailing backslash.
-
-    Returns:
-        A drive-root string such as ``C:\\``.
-    """
-
-    system_drive = os.environ.get("SYSTEMDRIVE", "C:")
-    if not system_drive.endswith("\\"):
-        system_drive += "\\"
-    return system_drive
-
-
 #------------------------------------------
 # Section: Package-management logic and CLI
 #------------------------------------------
@@ -1121,35 +1056,6 @@ def compute_scope_paths(scope: Scope) -> Dict[str, Path]:
         "shortcut_root": Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
         "bin_dir": Path(systemdrive) / "bin",
     }
-
-
-def _expanded_text_or_error(
-    text: str,
-    identity: PackageIdentity,
-    mode: ExpansionMode,
-    *,
-    field_label: str,
-) -> str:
-    """Expand text or raise a clear unresolved-variable error.
-
-    Args:
-        text: Source text to expand.
-        identity: Package identity that supplies package-variable paths.
-        mode: Expansion ruleset to use.
-        field_label: Human-readable label used in error messages.
-
-    Returns:
-        Fully expanded text.
-
-    Raises:
-        ValueError: If the expansion leaves unresolved variable tokens.
-    """
-
-    expansion = expand_text(text, identity, mode)
-    if expansion.unresolved:
-        unresolved = ", ".join(expansion.unresolved)
-        raise ValueError(f"{field_label} contains unresolved variable(s): {unresolved}")
-    return expansion.value
 
 
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -1217,21 +1123,6 @@ def _current_version_matches(package_root: Path, version_path: Path) -> bool:
         return False
 
 
-def _normalize_input_path(raw_path: Path) -> Path:
-    """Normalize a user-supplied path without dereferencing junctions.
-
-    Args:
-        raw_path: User-supplied path that may be relative, including ``.`` or
-            ``..`` segments.
-
-    Returns:
-        An absolute, lexically normalized path that preserves a trailing
-        ``current`` path component instead of resolving through it.
-    """
-
-    return Path(os.path.abspath(os.fspath(raw_path.expanduser())))
-
-
 def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
     """Resolve a user-supplied path to one concrete package version.
 
@@ -1249,7 +1140,9 @@ def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
         ValueError: If the path does not match a supported package layout.
     """
 
-    candidate = _normalize_input_path(raw_path)
+    # Normalize lexically so a trailing ``current`` path component is preserved
+    # instead of being dereferenced before package layout classification.
+    candidate = Path(os.path.abspath(os.fspath(raw_path.expanduser())))
 
     if is_version_directory_name(candidate.name):
         if not candidate.exists() or not candidate.is_dir():
@@ -1421,100 +1314,6 @@ def update_current_junction_if_needed(identity: PackageIdentity, *, force: bool 
     return True
 
 
-def create_shortcut_from_entry(
-    shortcut_entry: Dict[str, str],
-    identity: PackageIdentity,
-    shortcut_root: Path,
-) -> Tuple[bool, Optional[str]]:
-    """Expand and create one ``.lnk`` shortcut from normalized config data.
-
-    The shortcut transformation intentionally stays in this one helper so a
-    maintainer can see the full path from canonical ``pkg.toml`` row to final
-    PowerShell inputs without jumping through an extra prepared-object layer.
-
-    Args:
-        shortcut_entry: One normalized ``[[shortcut]]`` mapping.
-        identity: Package identity used for ``$App``-style expansion.
-        shortcut_root: Start Menu root for the selected install scope.
-
-    Returns:
-        ``(True, None)`` on success; otherwise ``(False, error_message)``.
-    """
-
-    raw_name = shortcut_entry.get("name", "")
-    raw_display_name = raw_name or "<unnamed>"
-
-    try:
-        expanded_name = _expanded_text_or_error(
-            raw_name,
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut name for '{raw_display_name}'",
-        ).strip()
-        expanded_target = _expanded_text_or_error(
-            shortcut_entry.get("targetPath", ""),
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut targetPath for '{raw_display_name}'",
-        ).strip()
-        expanded_arguments = _expanded_text_or_error(
-            shortcut_entry.get("arguments", ""),
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut arguments for '{raw_display_name}'",
-        )
-        expanded_working_directory = _expanded_text_or_error(
-            shortcut_entry.get("workingDirectory", ""),
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut workingDirectory for '{raw_display_name}'",
-        )
-        expanded_icon_location = _expanded_text_or_error(
-            shortcut_entry.get("iconLocation", ""),
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut iconLocation for '{raw_display_name}'",
-        )
-        expanded_description = _expanded_text_or_error(
-            shortcut_entry.get("description", ""),
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"shortcut description for '{raw_display_name}'",
-        )
-
-        missing: List[str] = []
-        if not expanded_name:
-            missing.append("name")
-        if not expanded_target:
-            missing.append("targetPath")
-        if missing:
-            raise ValueError(
-                f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
-            )
-
-        shortcut_root.mkdir(parents=True, exist_ok=True)
-        shortcut_path = shortcut_root / expanded_name
-        if shortcut_path.suffix.lower() != ".lnk":
-            shortcut_path = shortcut_path.with_suffix(".lnk")
-        _warn_if_output_path_is_unusual("shortcut", shortcut_root, expanded_name, shortcut_path)
-        shortcut_path.parent.mkdir(parents=True, exist_ok=True)
-
-        create_shortcut(
-            shortcut_path,
-            expanded_target,
-            arguments=expanded_arguments,
-            working_directory=expanded_working_directory,
-            icon_location=expanded_icon_location,
-            description=expanded_description,
-        )
-        log_info(f"SHORTCUT: created: {shortcut_path.name}")
-        return True, None
-    except Exception as exc:
-        name = raw_name or "unknown"
-        log_error(f"SHORTCUT error creating {name}: {exc}")
-        return False, f"Failed to create shortcut '{name}': {exc}"
-
-
 def install_shortcuts(
     shortcuts: List[Dict[str, str]],
     identity: PackageIdentity,
@@ -1534,12 +1333,87 @@ def install_shortcuts(
     result = StepResult(ok=True, changed=False)
     shortcut_root = scope_paths["shortcut_root"]
     for shortcut_entry in shortcuts:
-        ok, error = create_shortcut_from_entry(shortcut_entry, identity, shortcut_root)
-        if ok:
+        raw_name = shortcut_entry.get("name", "")
+        raw_display_name = raw_name or "<unnamed>"
+
+        try:
+            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL)
+            if name_expansion.unresolved:
+                unresolved = ", ".join(name_expansion.unresolved)
+                raise ValueError(f"shortcut name for '{raw_display_name}' contains unresolved variable(s): {unresolved}")
+            expanded_name = name_expansion.value.strip()
+
+            target_expansion = expand_text(shortcut_entry.get("targetPath", ""), identity, ExpansionMode.GENERAL)
+            if target_expansion.unresolved:
+                unresolved = ", ".join(target_expansion.unresolved)
+                raise ValueError(f"shortcut targetPath for '{raw_display_name}' contains unresolved variable(s): {unresolved}")
+            expanded_target = target_expansion.value.strip()
+
+            arguments_expansion = expand_text(shortcut_entry.get("arguments", ""), identity, ExpansionMode.GENERAL)
+            if arguments_expansion.unresolved:
+                unresolved = ", ".join(arguments_expansion.unresolved)
+                raise ValueError(f"shortcut arguments for '{raw_display_name}' contains unresolved variable(s): {unresolved}")
+            expanded_arguments = arguments_expansion.value
+
+            working_directory_expansion = expand_text(
+                shortcut_entry.get("workingDirectory", ""),
+                identity,
+                ExpansionMode.GENERAL,
+            )
+            if working_directory_expansion.unresolved:
+                unresolved = ", ".join(working_directory_expansion.unresolved)
+                raise ValueError(
+                    f"shortcut workingDirectory for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
+                )
+            expanded_working_directory = working_directory_expansion.value
+
+            icon_location_expansion = expand_text(shortcut_entry.get("iconLocation", ""), identity, ExpansionMode.GENERAL)
+            if icon_location_expansion.unresolved:
+                unresolved = ", ".join(icon_location_expansion.unresolved)
+                raise ValueError(f"shortcut iconLocation for '{raw_display_name}' contains unresolved variable(s): {unresolved}")
+            expanded_icon_location = icon_location_expansion.value
+
+            description_expansion = expand_text(shortcut_entry.get("description", ""), identity, ExpansionMode.GENERAL)
+            if description_expansion.unresolved:
+                unresolved = ", ".join(description_expansion.unresolved)
+                raise ValueError(f"shortcut description for '{raw_display_name}' contains unresolved variable(s): {unresolved}")
+            expanded_description = description_expansion.value
+
+            missing: List[str] = []
+            if not expanded_name:
+                missing.append("name")
+            if not expanded_target:
+                missing.append("targetPath")
+            if missing:
+                raise ValueError(
+                    f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
+                )
+
+            shortcut_root.mkdir(parents=True, exist_ok=True)
+            shortcut_path = shortcut_root / expanded_name
+            if shortcut_path.suffix.lower() != ".lnk":
+                shortcut_path = shortcut_path.with_suffix(".lnk")
+            _warn_if_output_path_is_unusual("shortcut", shortcut_root, expanded_name, shortcut_path)
+            shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+
+            create_shortcut(
+                shortcut_path,
+                expanded_target,
+                arguments=expanded_arguments,
+                working_directory=expanded_working_directory,
+                icon_location=expanded_icon_location,
+                description=expanded_description,
+            )
+            log_info(f"SHORTCUT: created: {shortcut_path.name}")
             result.changed = True
             continue
+
+        except Exception as exc:
+            name = raw_name or "unknown"
+            log_error(f"SHORTCUT error creating {name}: {exc}")
+            message = f"Failed to create shortcut '{name}': {exc}"
+
         result.ok = False
-        message = error or f"Failed to create shortcut: {shortcut_entry.get('name') or 'unknown'}"
         log_error(message)
         result.errors.append(message)
 
@@ -1798,81 +1672,6 @@ def ensure_bin_in_path(scope_paths: Dict[str, Path], identity: PackageIdentity, 
     return StepResult(ok=True, changed=changed)
 
 
-def create_wrapper(
-    wrapper_entry: Dict[str, str],
-    identity: PackageIdentity,
-    bin_dir: Path,
-) -> Tuple[bool, Optional[str]]:
-    """Create one wrapper file.
-
-    Args:
-        wrapper_entry: One normalized ``[[bin]]`` mapping.
-        identity: Package identity used for variable expansion.
-        bin_dir: Directory where wrapper files should be written.
-
-    Returns:
-        ``(True, None)`` when the wrapper changed, ``(True, "unchanged")``
-        when it was already up to date, or ``(False, error_message)`` on
-        failure.
-    """
-
-    try:
-        raw_name = wrapper_entry.get("name", "")
-        raw_content = wrapper_entry.get("content", "")
-        if not raw_name:
-            raise ValueError("wrapper entry is missing name")
-
-        expanded_name = _expanded_text_or_error(
-            raw_name,
-            identity,
-            ExpansionMode.GENERAL,
-            field_label=f"wrapper name for '{raw_name}'",
-        ).strip()
-        expanded_content_result = expand_text(raw_content, identity, ExpansionMode.SCRIPT)
-        if expanded_content_result.unresolved:
-            unresolved = ", ".join(expanded_content_result.unresolved)
-            raise ValueError(
-                f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
-            )
-        expanded_content = expanded_content_result.value
-
-        bin_dir.mkdir(parents=True, exist_ok=True)
-
-        wrapper_path = bin_dir / expanded_name
-        _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
-        wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-
-        extension = wrapper_path.suffix.lower()
-        if extension in (".cmd", ".bat"):
-            try:
-                desired_bytes = expanded_content.encode("ascii")
-            except UnicodeEncodeError:
-                log_warning(
-                    f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
-                )
-                desired_bytes = expanded_content.encode("utf-8-sig")
-        else:
-            desired_bytes = expanded_content.encode("utf-8")
-
-        existed_before = wrapper_path.exists()
-        if existed_before:
-            try:
-                if wrapper_path.read_bytes() == desired_bytes:
-                    log_info(f"BIN: up-to-date: {wrapper_path}")
-                    return True, "unchanged"
-            except OSError:
-                pass
-
-        write_bytes_atomic(wrapper_path, desired_bytes)
-        action = "updated" if existed_before else "created"
-        log_info(f"BIN: {action}: {wrapper_path}")
-        return True, None
-    except Exception as exc:
-        name = raw_name or "unknown"
-        log_error(f"BIN error creating {name}: {exc}")
-        return False, f"Failed to create wrapper '{name}': {exc}"
-
-
 def install_wrappers(
     wrapper_entries: List[Dict[str, str]],
     identity: PackageIdentity,
@@ -1892,12 +1691,64 @@ def install_wrappers(
     result = StepResult(ok=True, changed=False)
     bin_dir = scope_paths["bin_dir"]
     for wrapper_entry in wrapper_entries:
-        ok, error = create_wrapper(wrapper_entry, identity, bin_dir)
-        if ok:
-            if error != "unchanged":
-                result.changed = True
+        raw_name = wrapper_entry.get("name", "")
+        try:
+            raw_content = wrapper_entry.get("content", "")
+            if not raw_name:
+                raise ValueError("wrapper entry is missing name")
+
+            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL)
+            if name_expansion.unresolved:
+                unresolved = ", ".join(name_expansion.unresolved)
+                raise ValueError(f"wrapper name for '{raw_name}' contains unresolved variable(s): {unresolved}")
+            expanded_name = name_expansion.value.strip()
+
+            content_expansion = expand_text(raw_content, identity, ExpansionMode.SCRIPT)
+            if content_expansion.unresolved:
+                unresolved = ", ".join(content_expansion.unresolved)
+                raise ValueError(
+                    f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
+                )
+            expanded_content = content_expansion.value
+
+            bin_dir.mkdir(parents=True, exist_ok=True)
+
+            wrapper_path = bin_dir / expanded_name
+            _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
+            wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+
+            extension = wrapper_path.suffix.lower()
+            if extension in (".cmd", ".bat"):
+                try:
+                    desired_bytes = expanded_content.encode("ascii")
+                except UnicodeEncodeError:
+                    log_warning(
+                        f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+                    )
+                    desired_bytes = expanded_content.encode("utf-8-sig")
+            else:
+                desired_bytes = expanded_content.encode("utf-8")
+
+            existed_before = wrapper_path.exists()
+            if existed_before:
+                try:
+                    if wrapper_path.read_bytes() == desired_bytes:
+                        log_info(f"BIN: up-to-date: {wrapper_path}")
+                        continue
+                except OSError:
+                    pass
+
+            write_bytes_atomic(wrapper_path, desired_bytes)
+            action = "updated" if existed_before else "created"
+            log_info(f"BIN: {action}: {wrapper_path}")
+            result.changed = True
             continue
-        message = error or f"Failed to create wrapper: {wrapper_entry.get('name') or 'unknown'}"
+
+        except Exception as exc:
+            name = raw_name or "unknown"
+            log_error(f"BIN error creating {name}: {exc}")
+            message = f"Failed to create wrapper '{name}': {exc}"
+
         log_error(message)
         result.ok = False
         result.errors.append(message)
@@ -2003,59 +1854,6 @@ Variable expansion
   fields and remain literal inside wrapper content.
 """
 
-CANONICAL_TOP_LEVEL_KEYS = {
-    "name",
-    "version",
-    "localVersion",
-    "description",
-    "homepage",
-    "downloadURL",
-    "only_portable",
-    "environment",
-    "shortcut",
-    "path",
-    "bin",
-}
-LEGACY_TOP_LEVEL_KEY_HINTS: Dict[str, Optional[str]] = {
-    "env": "environment",
-    "shortcuts": "shortcut",
-    "portable": "only_portable",
-    "onlyportable": "only_portable",
-    "local_version": "localVersion",
-    "download_url": "downloadURL",
-    "main": None,
-}
-OWNED_METADATA_FIELDS = ("name", "version", "localVersion", "only_portable")
-_CANONICAL_SHORTCUT_KEYS = {"name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"}
-_SHORTCUT_LEGACY_KEY_HINTS = {
-    "path": "targetPath",
-    "target_path": "targetPath",
-    "args": "arguments",
-    "workdir": "workingDirectory",
-    "working_directory": "workingDirectory",
-    "icon_location": "iconLocation",
-    "desc": "description",
-}
-_CANONICAL_ENVIRONMENT_KEYS = {"Name", "Value"}
-_ENVIRONMENT_LEGACY_KEY_HINTS = {"name": "Name", "value": "Value"}
-_CANONICAL_BIN_KEYS = {"name", "content"}
-_CANONICAL_PATH_KEYS = {"value"}
-_PATH_LEGACY_KEY_HINTS = {"path": "value"}
-
-
-def _render_allowed_keys(keys: List[str]) -> str:
-    """Render a stable comma-separated list of allowed key names.
-
-    Args:
-        keys: Ordered key names to include.
-
-    Returns:
-        A human-readable comma-separated string.
-    """
-
-    return ", ".join(keys)
-
-
 def _validate_exact_keys(
     data: Dict[str, Any],
     *,
@@ -2094,7 +1892,7 @@ def _validate_exact_keys(
                     f"Unsupported legacy key '{key}' in {context}. Use '{hint}' instead."
                 )
         raise ConfigValidationError(
-            f"Unknown key '{key}' in {context}. Allowed keys: {_render_allowed_keys(ordered_allowed)}"
+            f"Unknown key '{key}' in {context}. Allowed keys: {', '.join(ordered_allowed)}"
         )
 
 
@@ -2182,171 +1980,6 @@ def _normalize_only_portable_value(value: Any, *, field_name: str) -> bool:
     return value
 
 
-def _normalize_bin_content(value: Any) -> str:
-    """Normalize wrapper content so escaped newlines become real newlines.
-
-    Args:
-        value: Raw wrapper content value from the config.
-
-    Returns:
-        Wrapper content with ``\n`` and ``\r\n`` escapes expanded when the
-        source contains no actual newline characters.
-    """
-
-    text = _normalize_required_string(value, field_name="bin.content")
-    if "\n" in text:
-        return text
-    return text.replace("\\r\\n", "\n").replace("\\n", "\n")
-
-
-def _normalize_environment_entries(raw: Any) -> List[Dict[str, str]]:
-    """Normalize ``[[environment]]`` entries.
-
-    Args:
-        raw: Parsed TOML value for the ``environment`` key.
-
-    Returns:
-        A list of normalized ``{"Name": ..., "Value": ...}`` mappings.
-
-    Raises:
-        ConfigValidationError: If *raw* is not a canonical environment table list.
-    """
-
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigValidationError(f"'environment' must be a list, got: {type(raw).__name__}")
-    result: List[Dict[str, str]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise ConfigValidationError(f"'environment[{index}]' must be a table, got: {type(item).__name__}")
-        _validate_exact_keys(
-            item,
-            allowed=_CANONICAL_ENVIRONMENT_KEYS,
-            context=f"environment[{index}]",
-            ordered_allowed=["Name", "Value"],
-            legacy_hints=_ENVIRONMENT_LEGACY_KEY_HINTS,
-        )
-        result.append({
-            "Name": _normalize_required_string(item.get("Name"), field_name=f"environment[{index}].Name"),
-            "Value": _normalize_required_string(item.get("Value"), field_name=f"environment[{index}].Value"),
-        })
-    return result
-
-
-def _normalize_shortcut_entries(raw: Any) -> List[Dict[str, str]]:
-    """Normalize ``[[shortcut]]`` entries.
-
-    Args:
-        raw: Parsed TOML value for the ``shortcut`` key.
-
-    Returns:
-        A list of normalized shortcut mappings that stay close to ``pkg.toml``.
-
-    Raises:
-        ConfigValidationError: If *raw* is not a canonical shortcut table list.
-    """
-
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigValidationError(f"'shortcut' must be a list, got: {type(raw).__name__}")
-    result: List[Dict[str, str]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise ConfigValidationError(f"'shortcut[{index}]' must be a table, got: {type(item).__name__}")
-        _validate_exact_keys(
-            item,
-            allowed=_CANONICAL_SHORTCUT_KEYS,
-            context=f"shortcut[{index}]",
-            ordered_allowed=["name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"],
-            legacy_hints=_SHORTCUT_LEGACY_KEY_HINTS,
-        )
-        result.append({
-            "name": _normalize_required_string(item.get("name"), field_name=f"shortcut[{index}].name"),
-            "targetPath": _normalize_required_string(item.get("targetPath"), field_name=f"shortcut[{index}].targetPath"),
-            "arguments": _normalize_required_string(item.get("arguments"), field_name=f"shortcut[{index}].arguments"),
-            "workingDirectory": _normalize_required_string(
-                item.get("workingDirectory"),
-                field_name=f"shortcut[{index}].workingDirectory",
-            ),
-            "iconLocation": _normalize_required_string(item.get("iconLocation"), field_name=f"shortcut[{index}].iconLocation"),
-            "description": _normalize_required_string(item.get("description"), field_name=f"shortcut[{index}].description"),
-        })
-    return result
-
-
-def _normalize_bin_entries(raw: Any) -> List[Dict[str, str]]:
-    """Normalize ``[[bin]]`` entries.
-
-    Args:
-        raw: Parsed TOML value for the ``bin`` key.
-
-    Returns:
-        A list of normalized ``{"name": ..., "content": ...}`` mappings.
-
-    Raises:
-        ConfigValidationError: If *raw* is not a canonical bin table list.
-    """
-
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigValidationError(f"'bin' must be a list, got: {type(raw).__name__}")
-    result: List[Dict[str, str]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise ConfigValidationError(f"'bin[{index}]' must be a table, got: {type(item).__name__}")
-        _validate_exact_keys(
-            item,
-            allowed=_CANONICAL_BIN_KEYS,
-            context=f"bin[{index}]",
-            ordered_allowed=["name", "content"],
-        )
-        result.append({
-            "name": _normalize_required_string(item.get("name"), field_name=f"bin[{index}].name"),
-            "content": _normalize_bin_content(item.get("content")),
-        })
-    return result
-
-
-def _normalize_path_entries(raw: Any) -> List[str]:
-    """Normalize ``[[path]]`` entries.
-
-    Args:
-        raw: Parsed TOML value for the ``path`` key.
-
-    Returns:
-        A list of PATH strings.
-
-    Raises:
-        ConfigValidationError: If *raw* is not a canonical path table list.
-    """
-
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigValidationError(f"'path' must be a list of [[path]] tables, got: {type(raw).__name__}")
-    result: List[str] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise ConfigValidationError(f"'path[{index}]' must be a table, got: {type(item).__name__}")
-        _validate_exact_keys(
-            item,
-            allowed=_CANONICAL_PATH_KEYS,
-            context=f"path[{index}]",
-            ordered_allowed=["value"],
-            legacy_hints=_PATH_LEGACY_KEY_HINTS,
-        )
-        if "value" not in item:
-            raise ConfigValidationError(f"'path[{index}]' is missing required key: value")
-        value = item.get("value")
-        if not isinstance(value, str):
-            raise ConfigValidationError(f"'path[{index}].value' must be a string, got: {type(value).__name__}")
-        result.append(value)
-    return result
-
-
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
@@ -2368,24 +2001,34 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
     if not isinstance(raw, dict):
         raise ConfigValidationError(f"Configuration must be a TOML table, got: {type(raw).__name__}")
 
+    top_level_keys = [
+        "name",
+        "version",
+        "localVersion",
+        "description",
+        "homepage",
+        "downloadURL",
+        "only_portable",
+        "environment",
+        "shortcut",
+        "path",
+        "bin",
+    ]
+    legacy_top_level_key_hints: Dict[str, Optional[str]] = {
+        "env": "environment",
+        "shortcuts": "shortcut",
+        "portable": "only_portable",
+        "onlyportable": "only_portable",
+        "local_version": "localVersion",
+        "download_url": "downloadURL",
+        "main": None,
+    }
     _validate_exact_keys(
         raw,
-        allowed=CANONICAL_TOP_LEVEL_KEYS,
+        allowed=set(top_level_keys),
         context="config",
-        ordered_allowed=[
-            "name",
-            "version",
-            "localVersion",
-            "description",
-            "homepage",
-            "downloadURL",
-            "only_portable",
-            "environment",
-            "shortcut",
-            "path",
-            "bin",
-        ],
-        legacy_hints=LEGACY_TOP_LEVEL_KEY_HINTS,
+        ordered_allowed=top_level_keys,
+        legacy_hints=legacy_top_level_key_hints,
     )
 
     _normalize_optional_string(raw.get("name"), field_name="name")
@@ -2400,15 +2043,124 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         else _normalize_only_portable_value(only_portable_value, field_name="only_portable")
     )
 
+    environment_entries: List[Dict[str, str]] = []
+    raw_environment = raw.get("environment")
+    if raw_environment is not None:
+        if not isinstance(raw_environment, list):
+            raise ConfigValidationError(f"'environment' must be a list, got: {type(raw_environment).__name__}")
+        environment_keys = {"Name", "Value"}
+        environment_legacy_key_hints = {"name": "Name", "value": "Value"}
+        for index, item in enumerate(raw_environment):
+            if not isinstance(item, dict):
+                raise ConfigValidationError(f"'environment[{index}]' must be a table, got: {type(item).__name__}")
+            _validate_exact_keys(
+                item,
+                allowed=environment_keys,
+                context=f"environment[{index}]",
+                ordered_allowed=["Name", "Value"],
+                legacy_hints=environment_legacy_key_hints,
+            )
+            environment_entries.append({
+                "Name": _normalize_required_string(item.get("Name"), field_name=f"environment[{index}].Name"),
+                "Value": _normalize_required_string(item.get("Value"), field_name=f"environment[{index}].Value"),
+            })
+
+    shortcut_entries: List[Dict[str, str]] = []
+    raw_shortcut = raw.get("shortcut")
+    if raw_shortcut is not None:
+        if not isinstance(raw_shortcut, list):
+            raise ConfigValidationError(f"'shortcut' must be a list, got: {type(raw_shortcut).__name__}")
+        shortcut_keys = {"name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"}
+        shortcut_legacy_key_hints = {
+            "path": "targetPath",
+            "target_path": "targetPath",
+            "args": "arguments",
+            "workdir": "workingDirectory",
+            "working_directory": "workingDirectory",
+            "icon_location": "iconLocation",
+            "desc": "description",
+        }
+        for index, item in enumerate(raw_shortcut):
+            if not isinstance(item, dict):
+                raise ConfigValidationError(f"'shortcut[{index}]' must be a table, got: {type(item).__name__}")
+            _validate_exact_keys(
+                item,
+                allowed=shortcut_keys,
+                context=f"shortcut[{index}]",
+                ordered_allowed=["name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"],
+                legacy_hints=shortcut_legacy_key_hints,
+            )
+            shortcut_entries.append({
+                "name": _normalize_required_string(item.get("name"), field_name=f"shortcut[{index}].name"),
+                "targetPath": _normalize_required_string(item.get("targetPath"), field_name=f"shortcut[{index}].targetPath"),
+                "arguments": _normalize_required_string(item.get("arguments"), field_name=f"shortcut[{index}].arguments"),
+                "workingDirectory": _normalize_required_string(
+                    item.get("workingDirectory"),
+                    field_name=f"shortcut[{index}].workingDirectory",
+                ),
+                "iconLocation": _normalize_required_string(
+                    item.get("iconLocation"),
+                    field_name=f"shortcut[{index}].iconLocation",
+                ),
+                "description": _normalize_required_string(item.get("description"), field_name=f"shortcut[{index}].description"),
+            })
+
+    path_entries: List[str] = []
+    raw_path_entries = raw.get("path")
+    if raw_path_entries is not None:
+        if not isinstance(raw_path_entries, list):
+            raise ConfigValidationError(f"'path' must be a list of [[path]] tables, got: {type(raw_path_entries).__name__}")
+        path_keys = {"value"}
+        path_legacy_key_hints = {"path": "value"}
+        for index, item in enumerate(raw_path_entries):
+            if not isinstance(item, dict):
+                raise ConfigValidationError(f"'path[{index}]' must be a table, got: {type(item).__name__}")
+            _validate_exact_keys(
+                item,
+                allowed=path_keys,
+                context=f"path[{index}]",
+                ordered_allowed=["value"],
+                legacy_hints=path_legacy_key_hints,
+            )
+            if "value" not in item:
+                raise ConfigValidationError(f"'path[{index}]' is missing required key: value")
+            value = item.get("value")
+            if not isinstance(value, str):
+                raise ConfigValidationError(f"'path[{index}].value' must be a string, got: {type(value).__name__}")
+            path_entries.append(value)
+
+    bin_entries: List[Dict[str, str]] = []
+    raw_bin = raw.get("bin")
+    if raw_bin is not None:
+        if not isinstance(raw_bin, list):
+            raise ConfigValidationError(f"'bin' must be a list, got: {type(raw_bin).__name__}")
+        bin_keys = {"name", "content"}
+        for index, item in enumerate(raw_bin):
+            if not isinstance(item, dict):
+                raise ConfigValidationError(f"'bin[{index}]' must be a table, got: {type(item).__name__}")
+            _validate_exact_keys(
+                item,
+                allowed=bin_keys,
+                context=f"bin[{index}]",
+                ordered_allowed=["name", "content"],
+            )
+            content = _normalize_required_string(item.get("content"), field_name="bin.content")
+            if "\n" not in content:
+                content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
+            bin_entries.append({
+                "name": _normalize_required_string(item.get("name"), field_name=f"bin[{index}].name"),
+                "content": content,
+            })
+
     return {
         "description": _normalize_optional_string(raw.get("description"), field_name="description"),
         "homepage": _normalize_optional_string(raw.get("homepage"), field_name="homepage"),
         "downloadURL": _normalize_optional_string(raw.get("downloadURL"), field_name="downloadURL"),
         "only_portable": normalized_only_portable,
-        "environment": _normalize_environment_entries(raw.get("environment")),
-        "shortcut": _normalize_shortcut_entries(raw.get("shortcut")),
-        "path": _normalize_path_entries(raw.get("path")),
-        "bin": _normalize_bin_entries(raw.get("bin")),
+        "environment": environment_entries,
+        "shortcut": shortcut_entries,
+        "path": path_entries,
+        "bin": bin_entries,
     }
 
 
@@ -2716,12 +2468,34 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
     if not isinstance(parsed, dict):
         raise ConfigValidationError("pkg.toml must contain a top-level TOML table.")
 
+    top_level_keys = [
+        "name",
+        "version",
+        "localVersion",
+        "description",
+        "homepage",
+        "downloadURL",
+        "only_portable",
+        "environment",
+        "shortcut",
+        "path",
+        "bin",
+    ]
+    legacy_top_level_key_hints: Dict[str, Optional[str]] = {
+        "env": "environment",
+        "shortcuts": "shortcut",
+        "portable": "only_portable",
+        "onlyportable": "only_portable",
+        "local_version": "localVersion",
+        "download_url": "downloadURL",
+        "main": None,
+    }
     _validate_exact_keys(
         parsed,
-        allowed=CANONICAL_TOP_LEVEL_KEYS,
+        allowed=set(top_level_keys),
         context="config",
-        ordered_allowed=list(CANONICAL_TOP_LEVEL_KEYS),
-        legacy_hints=LEGACY_TOP_LEVEL_KEY_HINTS,
+        ordered_allowed=top_level_keys,
+        legacy_hints=legacy_top_level_key_hints,
     )
 
     metadata = metadata_sync_payload(identity)
@@ -2760,8 +2534,8 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
             insert_after = max(insert_after, index)
             continue
         lower = key.lower()
-        if lower in LEGACY_TOP_LEVEL_KEY_HINTS:
-            hint = LEGACY_TOP_LEVEL_KEY_HINTS[lower]
+        if lower in legacy_top_level_key_hints:
+            hint = legacy_top_level_key_hints[lower]
             if hint is None:
                 raise ConfigValidationError(
                     f"Unsupported legacy key '{key}' in config. Use canonical top-level metadata keys instead of [[main]]."
@@ -2981,13 +2755,15 @@ def install_components(
         log_info("Creating executable wrappers...")
         wrapper_result = install_wrappers(runtime_config["bin"], identity, scope_paths)
 
-    return combine_step_results(
-        shortcut_result,
-        environment_result,
-        bin_path_result,
-        extra_path_result,
-        wrapper_result,
-    )
+    combined = StepResult(ok=True, changed=False)
+    for step_result in (shortcut_result, environment_result, bin_path_result, extra_path_result, wrapper_result):
+        combined.ok = combined.ok and step_result.ok
+        combined.changed = combined.changed or step_result.changed
+        combined.warnings.extend(step_result.warnings)
+        combined.errors.extend(step_result.errors)
+    if combined.errors:
+        combined.ok = False
+    return combined
 
 
 def install_package(
