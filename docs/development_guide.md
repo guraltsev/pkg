@@ -88,7 +88,7 @@ When changing install behavior:
 4. test behavior by patching the concrete top-level helper that performs the
    step
 
-Repetition is acceptable when it avoids indirection and does not contain behavioral decisions that could may diverge. 
+Repetition is acceptable when it avoids indirection and does not contain behavioral decisions that could diverge. 
 
 ## Config rules
 
@@ -109,7 +109,9 @@ If a migration helper needs to understand an older format, keep that logic in
 Keep the docs focused on current truth:
 
 - `README.md` is user-facing
-- `docs/development.md` is contributor-facing
+- `docs/development_guide.md` is contributor-facing
+- `docs/docstring_schema.md` explains how to write useful docstrings and comments
+- `docs/tests.md` explains test policy
 
 Document coordinating functions and behavior boundaries more heavily than small
 passive helpers. The docs should make it easier to preserve the direct style,
@@ -121,24 +123,31 @@ Prefer behavior tests over structure tests.
 
 Good tests:
 
-- config normalization and validation
-- install/update behavior
-- wrapper behavior
-- helper-script output that the runtime accepts
+- CLI-visible install, update, help, and config behavior
+- file artifacts users can inspect, such as created or updated `pkg.toml` files and wrapper scripts
+- wrapper behavior that is observable by invoking the wrapper
+- documented helper-script workflows whose output is accepted by the runtime
 
 Avoid tests that only enforce:
 
 - exact class names
 - section-marker strings
 - file-count or module-layout snapshots
+- private helper boundaries or temporary refactor scaffolding
+- source-text details when the same contract can be checked by running the tool
 
 When possible, patch top-level functions at the mutation boundary so tests stay
 about outcomes rather than internal scaffolding.
 
+Temporary tests for a refactor belong in `tests/devel`, must be clearly marked
+as temporary, and are excluded from the default pytest run.
+
 ## Docstrings and comments
 
 Use docstrings for public helpers and for non-trivial internal helpers. Keep
-comments for local clarification.
+comments for local clarification. Prefer concise Google-style sections when
+parameters, return values, or raised exceptions need explanation, but do not
+force boilerplate sections onto obvious helpers.
 
 Never narrate refactor history.
 

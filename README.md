@@ -85,6 +85,15 @@ The convenience wrappers call the same entry point:
 
 Run `python pkg.py --help` for the full CLI reference.
 
+## Bootstrap interpreter selection
+
+`pkg.cmd` chooses Python in this order:
+
+1. `--python <exe-or-command>`
+2. `PKG_PYTHON`
+3. `pkg.python` next to `pkg.cmd`
+4. `python` from `PATH`
+
 ## `pkg.toml`
 
 `pkg` accepts one canonical schema.
@@ -143,6 +152,15 @@ Environment-variable syntax:
 In normal config fields, unresolved `${VAR}` values are errors. Inside
 `[[bin]]` content, plain non-package `$NAME` text is left alone so batch,
 PowerShell, and shell variables keep their native meaning.
+
+## Output placement
+
+`shortcut.name` and `bin.name` are expanded before placement. Each may be a
+simple name, a nested relative path under the default shortcut/bin root, or a
+path-like destination outside that root.
+
+Absolute paths and parent traversal are allowed. When the final destination is
+outside the default root, install prints a warning but still creates the output.
 
 ## `UpdateConfig` behavior
 

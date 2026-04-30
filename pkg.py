@@ -2784,7 +2784,7 @@ def install_package(
     """Install or reinstall a package and return a truthful action result.
 
     Same-version installs are intentionally not treated as a no-op. Once the
-    selected version is allowed to proceed, the component pipeline reruns so
+    selected version is allowed to proceed, the fixed component sequence reruns so
     broken shortcuts, environment variables, PATH entries, and wrapper files
     can be restored. Depending on *package_path*, reinstall may also refresh
     the ``current`` junction.
@@ -3057,10 +3057,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Show program's version number and exit",
     )
 
-    # ``pkg.cmd`` forwards ``--python`` to ``pkg.py`` as part of the bootstrap
-    # interpreter-selection contract. Keep accepting it here even though normal
-    # ``pkg --help`` output hides it; later cleanup should not treat it as dead
-    # compatibility debris.
+
+
+    #``pkg.cmd`` forwards ``--python`` to ``pkg.py`` as part of the bootstrap
+    # interpreter-selection contract. The argument stays hidden from ordinary
+    # help because users normally select Python through the launcher.
+
+    #TODO: this is not correct. pkg.cmd parses its --python argument to decide
+    # which python to use to run the pkg.py (if not the default) but we want to 
+    # avoid implementing argument parsing and removal logic in windows shell language
+    # so we just forward all agrguments to pkg.py later. It is therefore important that pkg.py not 
+    # break when receiving a seemingly useless --python argument.
+
     parser.add_argument(
         "--python",
         default=None,

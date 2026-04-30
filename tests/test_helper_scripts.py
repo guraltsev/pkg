@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import tomllib
 from pathlib import Path
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +40,18 @@ class LegacyConverterTests(unittest.TestCase):
             text=True,
             check=False,
         )
+
+    def run_main(self, module, args: list[str]) -> tuple[int, str]:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            try:
+                code = module.main(args)
+            except SystemExit as exc:
+                code = exc.code
+        if code is None:
+            code = 0
+        self.assertIsInstance(code, int)
+        return code, stdout.getvalue()
 
     def test_converter_writes_canonical_toml_that_pkg_accepts(self) -> None:
         module = load_pkg_module()
@@ -83,29 +99,40 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertTrue(pkg_toml.exists())
 
             rendered = pkg_toml.read_text(encoding="utf-8")
+            parsed = tomllib.loads(rendered)
             self.assertNotIn("[[main]]", rendered)
-            self.assertIn("localVersion = 1", rendered)
-            self.assertIn("only_portable = false", rendered)
+            self.assertEqual(parsed["localVersion"], 1)
+            self.assertFalse(parsed["only_portable"])
             self.assertIn("[[environment]]", rendered)
             self.assertIn("Name = \"GOODAPP_HOME\"", rendered)
             self.assertIn("targetPath = \"$App\\\\good.exe\"", rendered)
+            self.assertEqual(parsed["description"], "Good test package")
+            self.assertEqual(parsed["homepage"], "https://example.invalid/goodapp")
+            self.assertEqual(parsed["downloadURL"], "https://example.invalid/goodapp.zip")
+            self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
+            self.assertEqual(parsed["environment"][0]["Name"], "GOODAPP_HOME")
+            self.assertEqual(parsed["environment"][0]["Value"], "$App")
+            self.assertEqual(parsed["shortcut"][0]["name"], "Good App")
+            self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\good.exe")
+            self.assertEqual(parsed["shortcut"][0]["workingDirectory"], "$App")
+            self.assertEqual(parsed["bin"][0]["name"], "good.cmd")
+            self.assertIn("$App\\good.exe", parsed["bin"][0]["content"])
 
-            loaded = module.read_toml_file(pkg_toml)
-            identity, _ = module.resolve_input_path(version_dir)
-            config = module.normalize_runtime_config(loaded, identity)
-            module.validate_runtime_config(config)
+            env = {
+                "APPDATA": str(Path(tmpdir) / "AppData"),
+                "USERPROFILE": str(Path(tmpdir) / "UserProfile"),
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(
+                        module,
+                        "install_components",
+                        return_value=module.StepResult(ok=True, changed=False),
+                    ) as install_components_mock:
+                        code, output = self.run_main(module, [str(version_dir)])
 
-            self.assertEqual(config["description"], "Good test package")
-            self.assertEqual(config["homepage"], "https://example.invalid/goodapp")
-            self.assertEqual(config["downloadURL"], "https://example.invalid/goodapp.zip")
-            self.assertEqual(config["path"], ["$App", "$App\\Tools"])
-            self.assertEqual(config["environment"][0]["Name"], "GOODAPP_HOME")
-            self.assertEqual(config["environment"][0]["Value"], "$App")
-            self.assertEqual(config["shortcut"][0]["name"], "Good App")
-            self.assertEqual(config["shortcut"][0]["targetPath"], "$App\\good.exe")
-            self.assertEqual(config["shortcut"][0]["workingDirectory"], "$App")
-            self.assertEqual(config["bin"][0]["name"], "good.cmd")
-            self.assertIn("$App\\good.exe", config["bin"][0]["content"])
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            install_components_mock.assert_called_once()
 
     def test_converter_can_infer_metadata_from_directory_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
