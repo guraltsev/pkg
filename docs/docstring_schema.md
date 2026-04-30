@@ -1,8 +1,12 @@
-# Docstring Schema
+# Public Docstring Schema
+
+This schema applies to public objects: modules, classes, functions,
+methods, attributes, and other names that are part of the user-facing API.
+Every public object must have a docstring that conforms to this schema.
 
 ## 1. Overview
 
-Docstrings must follow:
+Public docstrings must follow:
 
 * NumPy-style section headers
 * fixed section order
@@ -411,3 +415,51 @@ class SymbolFamily:
     """
 ```
 
+# Private Docstring Schema
+
+This schema applies to private and internal objects: names beginning with `_`,
+implementation-only classes, internal modules, and helpers that are not part of
+the public API.
+
+Private helpers are allowed only when they earn their existence.
+
+Private helpers should be avoided when simple inline code is clearer.
+- keep one-off validation local, 
+- avoid helper indirection that makes the reader jump around to understand simple behavior.
+
+If a private object exists, it must have a docstring. The docstring may be brief,
+but it must state the helper's internal role.
+
+## Sections
+
+* **Summary line** *(required)*  
+  One sentence describing why this private object exists.
+
+* **Extended summary** *(include if non-trivial)*  
+  Explain the internal mental model, workflow role, or boundary this helper owns.
+
+* **Parameters** *(optional)*  
+  Include to describe parameter semantics and meaning. Omit only when meaning is clearly immediate from the signature.
+
+* **Returns** *(optional)*  
+  Include to describe when return value has non-obvious meaning, sentinel values,
+  normalization behavior, or protocol-like structure. Omit when meaning is clearly immediate from the signature.
+
+* **Raises** *(include for intentional exceptions)*  
+  Include exceptions that are part of the helper's internal contract.
+
+* **Notes** *(include for important internal constraints)*  
+  Use for invariants, assumptions, side effects, ordering requirements,
+  compatibility quirks, or reasons the code should not be simplified.
+
+* **Examples** *(rare)*  
+  Include only for private parsers, renderers, mini-protocols, or tricky edge cases.
+
+* **See Also** *(rare)*  
+  Use only when another helper, test, public API, or design document is essential context.
+
+## Minimal examples:
+``` python
+def _declared_doc(obj: Any) -> dict[str, str | None] | None:
+    """Return documentation metadata declared directly on an object or its type."""
+```

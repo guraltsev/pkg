@@ -8,7 +8,8 @@ It does four main things:
 - keeps the package-level `current` junction pointed at the active version
 - creates shortcuts from `pkg.toml`
 - writes environment variables and PATH entries for the selected scope
-- creates wrapper files in the selected scope bin directory
+- creates wrapper files in the selected scope bin directory when `[[bin]]`
+  entries are configured
 
 `pkg` is repair-oriented. Re-running install for the same version is expected:
 it will reapply shortcuts, environment variables, PATH entries, and wrapper

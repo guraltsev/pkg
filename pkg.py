@@ -1052,6 +1052,8 @@ def compute_scope_paths(scope: Scope) -> Dict[str, Path]:
     systemdrive = os.environ.get("SYSTEMDRIVE")
     if not systemdrive:
         raise ValueError("SYSTEMDRIVE is not set; cannot compute Machine-scope bin directory.")
+    if len(systemdrive) == 2 and systemdrive[0].isalpha() and systemdrive[1] == ":":
+        systemdrive = systemdrive + "\\"
     return {
         "shortcut_root": Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "opt",
         "bin_dir": Path(systemdrive) / "bin",
@@ -2714,7 +2716,8 @@ def install_components(
 
     1. create shortcuts
     2. write environment variables
-    3. ensure the scope ``bin`` directory exists and is on ``PATH``
+    3. when wrappers are declared, ensure the scope ``bin`` directory exists
+       and is on ``PATH``
     4. add package-specific extra ``PATH`` entries
     5. create wrapper/bin files
 
@@ -2741,11 +2744,15 @@ def install_components(
         log_info("Setting environment variables...")
         environment_result = install_environment_variables(runtime_config["environment"], identity, scope)
 
-    log_info("")
-    log_info("Managing PATH...")
-    bin_path_result = ensure_bin_in_path(scope_paths, identity, scope)
-
+    bin_path_result = StepResult(ok=True, changed=False)
     extra_path_result = StepResult(ok=True, changed=False)
+    if runtime_config["bin"] or runtime_config["path"]:
+        log_info("")
+        log_info("Managing PATH...")
+
+    if runtime_config["bin"]:
+        bin_path_result = ensure_bin_in_path(scope_paths, identity, scope)
+
     if runtime_config["path"]:
         extra_path_result = add_to_path(runtime_config["path"], identity, scope)
 

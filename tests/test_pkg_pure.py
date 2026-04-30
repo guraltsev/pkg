@@ -83,6 +83,17 @@ class PkgPureImportTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
 
+    @unittest.skipUnless(os.name == "nt", "Windows drive-root semantics")
+    def test_machine_scope_bin_dir_uses_rooted_system_drive(self) -> None:
+        module = load_pkg_module()
+        with mock.patch.dict(
+            os.environ,
+            {"PROGRAMDATA": r"C:\ProgramData", "SYSTEMDRIVE": "C:"},
+            clear=False,
+        ):
+            scope_paths = module.compute_scope_paths(module.Scope.MACHINE)
+        self.assertEqual(scope_paths["bin_dir"], Path(r"C:\bin"))
+
     def test_invalid_install_path_returns_nonzero(self) -> None:
         module = load_pkg_module()
         with contextlib.redirect_stdout(io.StringIO()):
@@ -170,6 +181,32 @@ name = "Broken"
             self.assertEqual(runtime["path"], [])
             self.assertEqual(runtime["bin"], [])
             self.assertFalse((version_dir / "pkg.toml").exists())
+
+    def test_install_without_bin_wrappers_does_not_create_scope_bin_dir(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "NoWrapperApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            identity, _ = resolve_identity(module, version_dir)
+            bin_dir = Path(tmpdir) / "scope-bin"
+            runtime_config = {
+                "shortcut": [],
+                "environment": [],
+                "path": [],
+                "bin": [],
+            }
+
+            with mock.patch.object(module, "get_current_path", return_value=[str(bin_dir)]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = module.install_components(
+                        identity,
+                        module.Scope.USER,
+                        {"shortcut_root": Path(tmpdir) / "shortcuts", "bin_dir": bin_dir},
+                        runtime_config,
+                    )
+
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertFalse(bin_dir.exists())
 
     def test_metadata_consistency_detects_raw_file_mismatches(self) -> None:
         module = load_pkg_module()
