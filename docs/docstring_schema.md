@@ -1,465 +1,321 @@
-# Public Docstring Schema
+# Docstring Style
 
-This schema applies to public objects: modules, classes, functions,
-methods, attributes, and other names that are part of the user-facing API.
-Every public object must have a docstring that conforms to this schema.
+This file controls docstrings. Use `docs/python_rules.md` as a guide for code
+organization and inline comments.
 
-## 1. Overview
+Docstrings document the public contract, intended use, and important behavior
+of modules, classes, functions, and methods. They should not be source-code
+tours.
 
-Public docstrings must follow:
+## Core rules
 
-* NumPy-style section headers
-* fixed section order
-* required `Parameters` and `Returns`
-* structured `Examples` with named subsections
-* typed `See Also` entries
+- Use NumPy-style section headers.
+- Start every docstring with exactly one declarative summary sentence.
+- Describe observable behavior, inputs, outputs, side effects, guarantees, and
+  limitations.
+- Mention important public entrypoints when that helps users know how to call
+  the module or object.
+- Do not describe the order of definitions in the file.
+- Do not use docstrings to compensate for missing block comments inside code.
 
----
 
-# 2. Sections (compact specification)
+## Module docstrings
 
-* **Summary line** *(required)*
-  One sentence describing the object.
+Module docstrings describe the module's public responsibility and intended use.
+They may name public entrypoints, but only to explain how users interact with
+the module.
 
-* **Extended summary** *(include if non-trivial)*
-  Include if behavior, abstraction, or scope is not obvious. Maybe up to 1-3 paragraphs.
+Use this order:
 
-* **Parameters** *(required)*
-  Must always be present with brief description for each entry. Use `None` if no parameters exist.
+1. Summary: one sentence describing the module's capability.
+2. Extended summary: optional short paragraph describing important behavior,
+   inputs and outputs, side effects, generated files, safety checks, or
+   limitations.
+3. See Also: optional, only when another public module or function is essential
+   context.
 
-* **Returns** *(required for functions; forbidden for classes and modules)*
-  Must always be present for functions with brief description. Use `None` if nothing is returned.
+Do not include `Parameters`, `Returns`, or `Raises` sections in ordinary module
+docstrings.
 
-* **Attributes** *(required for classes; forbidden for non-classes;)*
-  Must include all user-facing attributes with brief description for each entry. Use `None` if there are no public attributes 
+Bad:
 
-* **Raises** *(include if user-relevant exceptions exist)*
-  Include only for intentional exceptions.
+```python
+"""Copy files into the build directory.
 
-* **Notes** *(include if non-obvious semantics exist)*
-  Include for invariants, constraints, or important behavior.
+Start with ``run`` for the library workflow and ``main`` for the CLI wrapper.
+The support helpers below them expand inputs and resolve output paths.
+"""
+```
 
-* **Examples** *(required for public classes and functions except trivial wrappers)*
-  Must contain named subsections with executable examples.
+Good:
 
-* **See Also** *(include if at least one meaningful related target exists)*
-  Use `Target : <type> description`.
+```python
+"""Copy declared pipeline inputs into a managed build directory.
 
----
+Call ``run(...)`` from Python code to copy explicit paths or glob-matched
+inputs into the selected build directory. The command-line interface delegates
+to ``main(...)`` for use in pipeline scripts. Unsafe output paths are rejected
+before files are written.
+"""
+```
 
-# 3. Details
+Avoid source-navigation language, especially:
 
-## 3.1 Summary line
+- "Start with ..."
+- "read ... first"
+- "helpers below"
+- "below them"
+- "remaining sections"
+- "implementation stays ..."
+- "the workflow comes first"
+- "support helpers below"
+- "low-level details below"
 
-Exactly one sentence describing the object.
+Usage-oriented entrypoint mentions are fine:
 
-* declarative
-* no filler or tutorial phrasing
-* no multiple sentences
+- "Call ``run(...)`` to copy inputs into the build directory."
+- "The command-line interface delegates to ``main(...)``."
+- "Most callers should use ``freeze_numbers(...)`` rather than lower-level
+  manifest helpers."
 
----
+## Public functions and methods
 
-## 3.2 Extended summary
+Use this section order:
 
-Include when:
-* abstraction is non-obvious
-* behavior needs clarification
-* interaction model is important
+1. Summary, required.
+2. Extended summary, optional.
+3. Parameters, required when the callable accepts public parameters.
+4. Returns, required when the callable returns a public value or when `None` is
+   part of the contract.
+5. Raises, required for intentional exceptions raised by the callable.
+6. Notes, optional.
+7. Examples, required for substantive public APIs and optional for trivial
+   wrappers.
+8. See Also, optional.
 
-Content: 
-1–3 short paragraphs explaining
-* mental model
-* scope
-* relationship to adjacent APIs
+Function and method docstrings should describe the public contract of the
+callable. Put algorithm narration in code comments, not in the docstring.
 
-Do not include
-* examples
-* parameter descriptions
-* step-by-step instructions
+## Public classes
 
----
+Use this section order:
 
-## 3.3 Parameters
+1. Summary, required.
+2. Extended summary, optional.
+3. Parameters, required when construction accepts public parameters.
+4. Methods, required when the class exposes meaningful public methods.
+5. Attributes, required when the class exposes public attributes or properties.
+6. Raises, required for intentional construction-time exceptions.
+7. Notes, optional.
+8. Examples, required for substantive public classes and optional for trivial
+   wrappers.
+9. See Also, optional.
 
-* all public parameters must be listed
-* include type for each parameter
-* describe semantics (not just name)
-* if none exist, use exactly `None`
+A class docstring should document the class as an object a user can construct
+and use. It should not duplicate every method docstring.
 
-### Format (with parameters)
+## Section reference
+
+### Summary
+
+Exactly one declarative sentence describing the object.
+
+Do not use filler, tutorial phrasing, or multiple sentences.
+
+### Extended summary
+
+Use only when the abstraction, behavior, scope, or interaction model is not
+obvious from the summary.
+
+Keep it to one to three short paragraphs. Cover the mental model, scope,
+relationship to adjacent APIs, important guarantees, or limitations. Do not
+include parameter lists or examples.
+
+### Parameters
+
+List every public parameter.
+
+Format:
 
 ```text
 Parameters
 ----------
 name : type
-    description
+    Description of the parameter's meaning and accepted values.
 ```
 
-### Format (no parameters)
+Describe semantics, not just the parameter name.
 
-```text
-Parameters
-----------
-None
-```
----
+### Returns
 
-## 3.4 Returns
+Document the meaning of the return value, not just its type.
 
-* must always be present in functions
-* describe meaning, not just type
-* if no return value, use exactly `None`
-
-### Format (with return value)
+Format:
 
 ```text
 Returns
 -------
 type
-    description
+    Description of the returned value.
 ```
 
-### Format (no return value)
+Use `None` only when the no-value return is part of the public contract or the
+schema requires an explicit return section.
+
+### Methods
+
+List public methods that are important to the class interface. Omit inherited,
+private, or incidental methods.
+
+Format:
 
 ```text
-Returns
+Methods
 -------
-None
+method_name
+    Description of the method's role in the class interface.
 ```
 
----
+### Attributes
 
-## 3.5 Attributes
+List public attributes and properties. Exclude internal state.
 
-* only public attributes
-* exclude internal state
-
-Add comment if class has slots and therefore forbids user-defined attributes.
-
-### Format
+Format:
 
 ```text
 Attributes
 ----------
 name : type
-    description
+    Description of the attribute's meaning.
 ```
----
 
-## 3.6 Raises
+If a class intentionally exposes no public attributes, omit this section.
 
-Include when object intentionally raises exceptions users should handle
-* include only contract-level exceptions
-* omit incidental internal errors
+### Raises
 
-### Format
+Include intentional exceptions that are part of the public or internal
+contract. Do not list exceptions that merely originate from unrelated lower
+layers unless the object deliberately exposes them.
+
+Format:
 
 ```text
 Raises
 ------
 ExceptionType
-    description
+    Condition that causes the exception.
 ```
 
----
+### Notes
 
-## 3.7 Notes
+Use `Notes` for important semantics that do not belong elsewhere:
 
-Include when important semantics are not obvious from examples
-Cover:
-* invariants
-* guarantees
-* limitations
-* interoperability notes
+- invariants,
+- guarantees,
+- limitations,
+- constraints,
+- side effects,
+- ordering requirements,
+- interoperability notes,
+- reasons behavior should not be simplified.
 
-Do not include
-* filler commentary
-* tutorials
-* irrelevant implementation detail
+Do not use `Notes` for filler, tutorials, or irrelevant implementation detail.
 
----
+### Examples
 
-## 3.8 Examples
+Examples should be executable doctest-style snippets with shown output.
 
-Required for all public classes and functions except trivial wrappers.
+Rules:
 
-Must contain named subsections. 
-* each subsection must contain executable doctest-style code
-* examples must show output
-* no assertions
-* no long narrative
+- Use named subsections such as `Basic usage`, `Composition`, `Variations`,
+  `Edge cases`, `Interoperability`, or `Advanced usage`.
+- Show output.
+- Do not use assertions as the only visible result.
+- Keep narrative short.
 
-Allowed subsection headings:
+Base format:
 
-* Basic usage
-* Composition
-* Variations
-* Edge cases
-* Interoperability
-* Advanced usage
-
-
-### Format
 ```text
 Examples
 --------
 Basic usage:
 
->>> ...
+>>> obj = make_object()
+>>> obj.value
+42
 
 Composition:
 
->>> ...
+>>> result = compose(obj)
+>>> result.name
+'example'
 ```
----
 
-The composition section describes use of this object together with other objects to produce a larger result.
-Examples in `Composition` must involve at least one additional component. Multiple `Composition` examples may be present, grouped under Composition section, separated by plain text
+### See Also
+
+Include when at least one meaningful related target exists.
+
+Rules:
+
+- Use a bare target on the left-hand side.
+- Put the target type first in the description.
+- Explain the relationship.
+- Use two to six entries when the section is present.
+
+Allowed target types:
+
+- `<class>`
+- `<function>`
+- `<module>`
+- `<package>`
+- `<notebook>`
+- `<external-class>`
+- `<external-function>`
+- `<external-module>`
+- `<doc>`
+
+Format:
 
 ```text
-Composition:
-
-	with A
-
->>> ...
-
-	with B
-
->>> ...
-
-```
----
-
-## 3.9 See Also
-
-Include when at least one concrete related object exists
-
-* left-hand side must be a bare target
-* `<type>` must be first element in description
-* description must explain relationship
-* 2–6 entries typical
-
-### Allowed `<type>`
-
-* <class>
-* <function>
-* <module>
-* <package>
-* <notebook>
-* <external-class>
-* <external-function>
-* <external-module>
-* <doc> - used also for external urls. In that case Target is the name of the resource and optional continuoation is mandatory and must contain start with url.
-
-
-Do not include
-* `help(...)`
-* markdown formatting
-* vague references
-* type metadata on left-hand side
-
-### Format
-
-```text
-Target : <type> description.
-    optional continuation
-```
----
-
-# 4. Section order
-
-## 4.1 Functions
-
-```text
-Summary
-Extended summary
-Parameters
-Returns
-Raises
-Notes
-Examples
-See Also
+Target : <type> Description of the relationship.
+    Optional continuation line.
 ```
 
----
+For external URLs, use `<doc>` and start the continuation line with the URL.
+Do not include `help(...)`, Markdown formatting, vague references, or type
+metadata on the left-hand side.
 
-## 4.2 Classes
+## Private and internal docstrings
 
-```text
-Summary
-Extended summary
-Parameters
-Attributes
-Raises
-Notes
-Examples
-See Also
-```
+Private and internal objects include names beginning with `_`,
+implementation-only classes, internal modules, and helpers outside the public
+API.
 
----
+Private helpers are allowed only when they earn their existence. Prefer inline
+code when it is clearer, keep one-off validation local, and avoid helper
+indirection that forces the reader to jump around to understand simple
+behavior.
 
-## 4.3 Modules
+If a private object exists, its docstring may be brief, but it must state the
+helper's internal role.
 
-```text
-Summary
-Extended summary
-Notes
-Examples
-See Also
-```
+Use this lightweight order when sections are needed:
 
----
+1. Summary, required.
+2. Extended summary, optional for nontrivial helpers.
+3. Parameters, optional when parameter meaning is not immediate.
+4. Returns, optional when the return value has non-obvious meaning.
+5. Raises, required for intentional internal exceptions.
+6. Notes, optional for internal constraints, assumptions, side effects, or
+   compatibility quirks.
+7. Examples, rare; use only for private parsers, renderers, mini-protocols, or
+   tricky edge cases.
+8. See Also, rare; use only when another helper, test, public API, or design
+   document is essential context.
 
-# 5. Minimal valid forms
-
-## Function
+Minimal example:
 
 ```python
-"""
-One-sentence summary.
-
-Parameters
-----------
-None
-
-Returns
--------
-None
-
-Examples
---------
-Basic usage:
-
->>> ...
-"""
-```
-
----
-
-## Class
-
-```python
-"""
-One-sentence summary.
-
-Parameters
-----------
-None
-
-Examples
---------
-Basic usage:
-
->>> ...
-"""
-```
-
----
-
-## Module
-
-```python
-"""
-One-sentence summary.
-"""
-```
-
----
-
-# 6. Full example
-
-```python
-class SymbolFamily:
-    """
-    Create a family of indexed symbolic variables.
-
-    A SymbolFamily provides indexed access for constructing related
-    symbolic variables while remaining compatible with larger workflows.
-
-    Parameters
-    ----------
-    name : str
-        Base name used when constructing indexed symbols.
-
-    Notes
-    -----
-    Each indexed access produces a symbolic variable derived from the
-    family name and the provided index.
-
-    Examples
-    --------
-    Basic usage:
-
-    >>> x = SymbolFamily("x")
-    >>> x[1]
-    x_1
-
-    Variations:
-
-    >>> x["i"]
-    x_i
-
-    Composition:
-
-    >>> x = SymbolFamily("x")
-    >>> f = FunctionFamily("f")
-    >>> f[1](x[1])
-    f_1(x_1)
-
-    See Also
-    --------
-    FunctionFamily : <class> Indexed symbolic functions.
-        Use when indexed objects should be callable.
-
-    symbols : <function> Direct symbol construction without family wrappers.
-    """
-```
-
-# Private Docstring Schema
-
-This schema applies to private and internal objects: names beginning with `_`,
-implementation-only classes, internal modules, and helpers that are not part of
-the public API.
-
-Private helpers are allowed only when they earn their existence.
-
-Private helpers should be avoided when simple inline code is clearer.
-- keep one-off validation local, 
-- avoid helper indirection that makes the reader jump around to understand simple behavior.
-
-If a private object exists, it must have a docstring. The docstring may be brief,
-but it must state the helper's internal role.
-
-## Sections
-
-* **Summary line** *(required)*  
-  One sentence describing why this private object exists.
-
-* **Extended summary** *(include if non-trivial)*  
-  Explain the internal mental model, workflow role, or boundary this helper owns.
-
-* **Parameters** *(optional)*  
-  Include to describe parameter semantics and meaning. Omit only when meaning is clearly immediate from the signature.
-
-* **Returns** *(optional)*  
-  Include to describe when return value has non-obvious meaning, sentinel values,
-  normalization behavior, or protocol-like structure. Omit when meaning is clearly immediate from the signature.
-
-* **Raises** *(include for intentional exceptions)*  
-  Include exceptions that are part of the helper's internal contract.
-
-* **Notes** *(include for important internal constraints)*  
-  Use for invariants, assumptions, side effects, ordering requirements,
-  compatibility quirks, or reasons the code should not be simplified.
-
-* **Examples** *(rare)*  
-  Include only for private parsers, renderers, mini-protocols, or tricky edge cases.
-
-* **See Also** *(rare)*  
-  Use only when another helper, test, public API, or design document is essential context.
-
-## Minimal examples:
-``` python
 def _declared_doc(obj: Any) -> dict[str, str | None] | None:
     """Return documentation metadata declared directly on an object or its type."""
 ```

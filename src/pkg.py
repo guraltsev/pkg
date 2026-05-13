@@ -4,8 +4,6 @@
 The package manager lives entirely in ``pkg.py`` and stays organized through
 clearly labeled sections instead of a heavier internal layering scheme.
 
-User-facing usage notes live in ``README.md``. Contributor notes live in
-``docs/development.md``.
 
 Section guide
 -------------
@@ -38,7 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 __version__ = "0.12.0"
-__copyright__ = "Copyright (C) 2025 Gennady Uraltseev. All rights reserved."
+__copyright__ = "Copyright (C) 2025 Gennady Uraltsev. All rights reserved."
 __license__ = "MIT"
 
 EXIT_SUCCESS = 0
