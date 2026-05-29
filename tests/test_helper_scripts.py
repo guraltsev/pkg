@@ -15,8 +15,9 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG_PY = ROOT / "pkg.py"
-LEGACY_CONVERTER = ROOT / "helper_scripts" / "legacy_to_pkg_toml.py"
+SRC_ROOT = ROOT / "src"
+PKG_PY = SRC_ROOT / "pkg.py"
+LEGACY_CONVERTER = SRC_ROOT / "helper_scripts" / "legacy_to_pkg_toml.py"
 
 
 def load_pkg_module():

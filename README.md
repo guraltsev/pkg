@@ -170,6 +170,8 @@ outside the default root, install prints a warning but still creates the output.
   metadata and commented examples
 - if `pkg.toml` already exists and uses the canonical schema, it synchronizes
   only the owned top-level metadata keys
+- if you point it at a package root that does not yet have `current`, it uses
+  the only version directory under that root when there is exactly one
 - it preserves unrelated runtime content and comments when possible
 
 `Install` does not create `pkg.toml` when it is missing. It uses defaults and

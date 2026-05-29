@@ -1123,6 +1123,41 @@ def _current_version_matches(package_root: Path, version_path: Path) -> bool:
         return False
 
 
+def _resolve_unique_version_directory(package_root: Path) -> Path:
+    """Return the only version directory under a package root without ``current``.
+
+    Args:
+        package_root: Package root that is missing a ``current`` junction.
+
+    Returns:
+        The single version directory found directly under *package_root*.
+
+    Raises:
+        ValueError: If there are no version directories or if more than one
+            version directory exists and the caller must disambiguate.
+    """
+
+    version_directories = [
+        child
+        for child in package_root.iterdir()
+        if child.is_dir() and is_version_directory_name(child.name)
+    ]
+
+    if len(version_directories) == 1:
+        return version_directories[0]
+
+    if not version_directories:
+        raise ValueError(
+            f'Package root has no "current" junction and no version directory to use: {package_root}'
+        )
+
+    version_list = ", ".join(sorted(child.name for child in version_directories))
+    raise ValueError(
+        f'Package root has no "current" junction and contains multiple version directories: {package_root}; '
+        f"found: {version_list}. Pass an explicit version directory instead."
+    )
+
+
 def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
     """Resolve a user-supplied path to one concrete package version.
 
@@ -1135,6 +1170,8 @@ def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
         describes the concrete version directory to operate on and
         *installing_from_current* reports whether the caller pointed at
         ``current`` or the package root instead of a version directory.
+        A package root with no ``current`` junction is accepted when it
+        contains exactly one version directory.
 
     Raises:
         ValueError: If the path does not match a supported package layout.
@@ -1181,25 +1218,27 @@ def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
     if not candidate.exists() or not candidate.is_dir():
         raise ValueError(f"Package root does not exist: {candidate}")
     current_path = candidate / "current"
-    if not current_path.exists():
-        raise ValueError(
-            f'No "current" directory exists in package root: {candidate}; '
-            f"looked for {current_path}; root_exists={candidate.exists()}, root_is_dir={candidate.is_dir()}"
-        )
-    if not is_junction(current_path):
-        raise ValueError(
-            f'"current" path exists but is not a valid junction: {current_path}; '
-            f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
-        )
-    target = get_junction_target(current_path)
-    if target is None:
-        raise ValueError(f'Could not resolve "current" junction target: {current_path}')
-    resolved_target = normalize_path(target)
-    if not resolved_target.is_dir():
-        raise ValueError(
-            f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
-        )
-    return PackageIdentity.from_version_path(candidate, resolved_target, is_current=True), True
+    if os.path.lexists(str(current_path)):
+        if not is_junction(current_path):
+            raise ValueError(
+                f'"current" path exists but is not a valid junction: {current_path}; '
+                f"exists={current_path.exists()}, is_dir={current_path.is_dir()}, parent={current_path.parent}"
+            )
+        target = get_junction_target(current_path)
+        if target is None:
+            raise ValueError(f'Could not resolve "current" junction target: {current_path}')
+        resolved_target = normalize_path(target)
+        if not resolved_target.is_dir():
+            raise ValueError(
+                f'"current" junction target is not a directory: {resolved_target}; source={current_path}, raw_target={target}'
+            )
+        return PackageIdentity.from_version_path(candidate, resolved_target, is_current=True), True
+
+    # An uninstalled package root can still be useful if it contains exactly
+    # one version directory. In that case we operate on the version directory
+    # directly and let Install create ``current`` later.
+    version_path = _resolve_unique_version_directory(candidate)
+    return PackageIdentity.from_version_path(candidate, version_path, is_current=False), False
 
 
 
@@ -1781,6 +1820,9 @@ You may also pass the *package root* (the directory that contains ``current``);
 in that case the tool installs from the ``current`` junction:
 
   pkg C:\opt\pkgs\Ripgrep
+
+If ``current`` is missing, a package root with exactly one version directory
+is still accepted and the tool uses that version directory directly.
 
 Scopes
 ~~~~~~

@@ -8,10 +8,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
 WRAPPER_SCRIPTS = [
-    (ROOT / "install.cmd", ["--pause"]),
-    (ROOT / "install-machine.cmd", ["--scope", "Machine", "--pause"]),
-    (ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
+    (SRC_ROOT / "install.cmd", ["--pause"]),
+    (SRC_ROOT / "install-machine.cmd", ["--scope", "Machine", "--pause"]),
+    (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
 ]
 
 
@@ -50,7 +51,7 @@ exit /b 0
                     recorded_cwd = lines[0].removeprefix("cwd=")
                     recorded_args = lines[1].removeprefix("args=")
                     self.assertEqual(Path(recorded_cwd), version_dir)
-                    self.assertIn(str(ROOT / "pkg.py"), recorded_args)
+                    self.assertIn(str(SRC_ROOT / "pkg.py"), recorded_args)
                     for arg in forwarded_args:
                         self.assertIn(arg, recorded_args)
 

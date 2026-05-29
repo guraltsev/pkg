@@ -15,7 +15,8 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG_PY = ROOT / "pkg.py"
+SRC_ROOT = ROOT / "src"
+PKG_PY = SRC_ROOT / "pkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
@@ -178,6 +179,36 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertTrue((version_dir / "pkg.toml").exists())
 
+    def test_update_config_uses_the_only_version_directory_when_current_is_missing(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = self.copy_fixture(tmpdir, "NoConfigApp")
+            version_dir = package_root / "v0.9.0.l1"
+
+            code, output = self.run_main(module, ["--action", "UpdateConfig", str(package_root)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            pkg_toml = version_dir / "pkg.toml"
+            self.assertTrue(pkg_toml.exists())
+            self.assert_documented_starter_config(
+                pkg_toml.read_text(encoding="utf-8"),
+                name="NoConfigApp",
+                version="0.9.0",
+                local_version=1,
+            )
+
+    def test_update_config_rejects_an_ambiguous_package_root_without_current(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "AmbiguousApp"
+            (package_root / "v1.0.0.l1").mkdir(parents=True)
+            (package_root / "v2.0.0.l1").mkdir()
+
+            code, output = self.run_main(module, ["--action", "UpdateConfig", str(package_root)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
+            self.assertIn("contains multiple version directories", output)
+
     def test_update_config_syncs_metadata_and_preserves_existing_content(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,6 +300,27 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertIn("using defaults without creating a file", output)
             self.assertFalse((version_dir / "pkg.toml").exists())
             self.assertFalse((Path(env["USERPROFILE"]) / "bin").exists())
+
+    def test_install_uses_the_only_version_directory_when_current_is_missing(self) -> None:
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = self.copy_fixture(tmpdir, "NoConfigApp")
+            version_dir = package_root / "v0.9.0.l1"
+            env = self.user_env(tmpdir)
+
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True) as junction_mock:
+                    with mock.patch.object(
+                        module,
+                        "install_components",
+                        return_value=module.StepResult(ok=True, changed=False),
+                    ) as components_mock:
+                        code, output = self.run_main(module, [str(package_root)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            junction_mock.assert_called_once()
+            self.assertEqual(junction_mock.call_args.args[0].version_path, version_dir)
+            components_mock.assert_called_once()
 
     def test_install_rejects_legacy_config_aliases_with_actionable_error(self) -> None:
         module = load_pkg_module()
