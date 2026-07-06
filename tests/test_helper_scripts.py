@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 PKG_PY = SRC_ROOT / "pkg.py"
 LEGACY_CONVERTER = SRC_ROOT / "helper_scripts" / "legacy_to_pkg_toml.py"
+EXAMPLES_ROOT = SRC_ROOT / "helper_scripts" / "examples"
 
 
 def load_pkg_module():
@@ -164,6 +165,174 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertEqual(parsed["localVersion"], 7)
             self.assertTrue(parsed["only_portable"])
             self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\tool.exe")
+
+    def test_converter_rewrites_legacy_pkg_toml_aliases_to_canonical_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "AliasApp" / "v3.4.5.l2"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.toml").write_text(
+                r"""
+                [[main]]
+                name = "AliasApp"
+                version = "3.4.5"
+                local_version = 2
+                portable = true
+                description = "Legacy alias config"
+                homepage = "https://example.invalid/alias"
+                download_url = "https://example.invalid/alias.zip"
+
+                env = [{ name = "ALIASAPP_HOME", value = '$AppPath\App' }]
+                shortcuts = [
+                  { name = "Alias App.lnk", path = '$AppPath\App\alias.exe', args = "--legacy", workdir = '$AppPath\App', icon_location = '$AppPath\Icons\alias.ico', desc = "Legacy shortcut" }
+                ]
+                path = ['$AppPath\App', '$AppPath\Tools']
+                bin = [{ name = "alias.cmd", content = '''@echo off
+                "$AppPath\App\alias.exe" %*
+                ''' }]
+                """,
+                encoding="utf-8",
+            )
+
+            converted = version_dir / "converted.toml"
+            result = self.run_converter("--dir", str(version_dir), "--output", str(converted))
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            parsed = tomllib.loads(converted.read_text(encoding="utf-8"))
+            self.assertEqual(parsed["name"], "AliasApp")
+            self.assertEqual(parsed["version"], "3.4.5")
+            self.assertEqual(parsed["localVersion"], 2)
+            self.assertTrue(parsed["only_portable"])
+            self.assertEqual(parsed["description"], "Legacy alias config")
+            self.assertEqual(parsed["homepage"], "https://example.invalid/alias")
+            self.assertEqual(parsed["downloadURL"], "https://example.invalid/alias.zip")
+            self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
+            self.assertEqual(parsed["environment"][0]["Name"], "ALIASAPP_HOME")
+            self.assertEqual(parsed["environment"][0]["Value"], "$App")
+            self.assertEqual(parsed["shortcut"][0]["name"], "Alias App")
+            self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\alias.exe")
+            self.assertEqual(parsed["shortcut"][0]["arguments"], "--legacy")
+            self.assertEqual(parsed["shortcut"][0]["workingDirectory"], "$App")
+            self.assertEqual(parsed["shortcut"][0]["iconLocation"], "$Icons\\alias.ico")
+            self.assertEqual(parsed["shortcut"][0]["description"], "Legacy shortcut")
+            self.assertIn("$App\\alias.exe", parsed["bin"][0]["content"])
+
+    def test_converter_accepts_list_root_legacy_sidecar_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "ListRootApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "environment.json").write_text(
+                json.dumps(
+                    [
+                        {"name": "LISTROOT_HOME", "value": "$AppPath\\App"},
+                    ],
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (version_dir / "shortcuts.json").write_text(
+                json.dumps(
+                    {
+                        "shortcuts": [
+                            {"name": "ListRoot", "target_path": "$AppPath\\App\\listroot.exe"},
+                        ]
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_converter("--dir", str(version_dir), "--dry-run")
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            parsed = tomllib.loads(result.stdout)
+            self.assertEqual(parsed["environment"][0]["Name"], "LISTROOT_HOME")
+            self.assertEqual(parsed["environment"][0]["Value"], "$App")
+            self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\listroot.exe")
+
+    def test_converter_reads_all_checked_in_legacy_examples(self) -> None:
+        cases = [
+            (
+                "1",
+                {
+                    "name": "WUMgr",
+                    "version": "1.1b",
+                    "localVersion": 1,
+                    "shortcut_count": 1,
+                    "shortcut_name": "Tools\\WU Mgr",
+                    "shortcut_target": "$App\\WUMgr.exe",
+                },
+            ),
+            (
+                "2",
+                {
+                    "name": "emacs",
+                    "version": "30.2",
+                    "localVersion": 2,
+                    "only_portable": False,
+                    "shortcut_count": 3,
+                    "bin_count": 3,
+                    "first_shortcut": "Emacs",
+                },
+            ),
+            (
+                "3",
+                {
+                    "name": "PortableGit",
+                    "version": "2.46.2",
+                    "localVersion": 4,
+                    "shortcut_count": 1,
+                    "path_values": ["$App\\cmd"],
+                    "shortcut_target": "$App\\git-bash.exe",
+                },
+            ),
+            (
+                "4",
+                {
+                    "name": "Tixati",
+                    "version": "3.29-1",
+                    "localVersion": 6,
+                    "shortcut_count": 1,
+                    "shortcut_target": "$App\\tixati_Windows64bit.exe",
+                },
+            ),
+            (
+                "5",
+                {
+                    "name": "ISLANDERS - New Shores",
+                    "version": "0",
+                    "localVersion": 1,
+                    "only_portable": False,
+                    "shortcut_count": 1,
+                    "shortcut_name": "Games\\Islanders - New Shores",
+                    "shortcut_target": "$App\\Islanders New Shores.exe",
+                },
+            ),
+        ]
+
+        for example_name, expected in cases:
+            with self.subTest(example=example_name):
+                result = self.run_converter("--dir", str(EXAMPLES_ROOT / example_name), "--dry-run")
+                self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+                parsed = tomllib.loads(result.stdout)
+                self.assertEqual(parsed["name"], expected["name"])
+                self.assertEqual(parsed["version"], expected["version"])
+                self.assertEqual(parsed["localVersion"], expected["localVersion"])
+
+                if "only_portable" in expected:
+                    self.assertEqual(parsed["only_portable"], expected["only_portable"])
+                if "shortcut_count" in expected:
+                    self.assertEqual(len(parsed.get("shortcut", [])), expected["shortcut_count"])
+                if "bin_count" in expected:
+                    self.assertEqual(len(parsed.get("bin", [])), expected["bin_count"])
+                if "path_values" in expected:
+                    self.assertEqual([entry["value"] for entry in parsed.get("path", [])], expected["path_values"])
+                if "shortcut_name" in expected:
+                    self.assertEqual(parsed["shortcut"][0]["name"], expected["shortcut_name"])
+                if "first_shortcut" in expected:
+                    self.assertEqual(parsed["shortcut"][0]["name"], expected["first_shortcut"])
+                if "shortcut_target" in expected:
+                    self.assertEqual(parsed["shortcut"][0]["targetPath"], expected["shortcut_target"])
 
 
 if __name__ == "__main__":

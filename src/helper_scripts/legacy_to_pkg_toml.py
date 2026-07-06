@@ -13,11 +13,20 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
 
 VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
+
+# Legacy package metadata commonly lived in one of these filenames.
+LEGACY_METADATA_FILENAMES = [
+    "opt_pkg.json",
+    "package.json",
+    "pkg.json",
+    "pkg.toml",
+]
 def new_config() -> dict[str, Any]:
     """Create an empty canonical config dictionary."""
 
@@ -70,26 +79,32 @@ def toml_path_lines(path_entries: list[str]) -> list[str]:
     return lines
 
 
-def read_json(path: Path) -> dict[str, Any] | None:
-    """Read a JSON file as a dictionary.
+def read_legacy_data(path: Path) -> Any | None:
+    """Read a legacy JSON or TOML file.
 
     Args:
-        path: JSON file path to read.
+        path: Legacy config file path to read.
 
     Returns:
-        Parsed dictionary, or ``None`` when the file cannot be parsed into a
-        JSON object.
+        Parsed object, or ``None`` when the file cannot be parsed.
     """
 
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        if path.suffix.lower() == ".toml":
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        else:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         print(f"Warning: failed to read {path.name}: {exc}")
         return None
-    if not isinstance(parsed, dict):
-        print(f"Warning: {path.name} is not a JSON object; ignoring")
-        return None
     return parsed
+
+
+def get_matching_values(source: dict[str, Any], candidate_keys: list[str]) -> list[Any]:
+    """Return values for keys that match one of the aliases case-insensitively."""
+
+    wanted = {key.lower() for key in candidate_keys}
+    return [value for key, value in source.items() if str(key).lower() in wanted]
 
 
 def find_legacy_file(base_dir: Path, exact_name: str) -> Path | None:
@@ -100,21 +115,66 @@ def find_legacy_file(base_dir: Path, exact_name: str) -> Path | None:
         return exact
 
     target = exact_name.lower()
-    for candidate in sorted(base_dir.glob("*.json")):
+    for candidate in sorted(base_dir.iterdir()):
+        if not candidate.is_file():
+            continue
         if candidate.name.lower() == target:
             return candidate
     return None
 
 
 def pick_all_matching(base_dir: Path, prefix: str) -> list[Path]:
-    """Collect all legacy JSON files that share a prefix."""
+    """Collect all legacy files that share a prefix."""
 
     files: list[Path] = []
-    for candidate in sorted(base_dir.glob("*.json")):
+    for candidate in sorted(base_dir.iterdir()):
+        if not candidate.is_file():
+            continue
         lower = candidate.name.lower()
-        if lower == f"{prefix}.json" or (lower.startswith(prefix) and lower.endswith(".json")):
+        if lower == f"{prefix}.json" or lower == f"{prefix}.toml":
+            files.append(candidate)
+            continue
+        if lower.startswith(prefix) and (lower.endswith(".json") or lower.endswith(".toml")):
             files.append(candidate)
     return files
+
+
+def pick_legacy_metadata_files(base_dir: Path) -> list[Path]:
+    """Collect known legacy metadata filenames without duplicates."""
+
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for filename in LEGACY_METADATA_FILENAMES:
+        path = find_legacy_file(base_dir, filename)
+        if path is None or path in seen:
+            continue
+        found.append(path)
+        seen.add(path)
+    return found
+
+
+def extract_legacy_rows(source: Any, source_keys: list[str], *, source_name: str) -> list[dict[str, Any]]:
+    """Extract list-style legacy rows from a mapping or list payload."""
+
+    candidate_lists: list[Any] = []
+    if isinstance(source, list):
+        candidate_lists.append(source)
+    elif isinstance(source, dict):
+        candidate_lists.extend(value for value in get_matching_values(source, source_keys) if value is not None)
+    else:
+        print(f"Warning: {source_name} is not an object or list; ignoring")
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for candidate in candidate_lists:
+        if not isinstance(candidate, list):
+            joined_keys = ", ".join(source_keys)
+            print(f"Warning: {source_name}: expected one of [{joined_keys}] to be a list")
+            continue
+        for row in candidate:
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
 
 
 def normalize_legacy_variable_path(value: str) -> str:
@@ -238,7 +298,7 @@ def normalize_bin(item: dict[str, Any]) -> dict[str, str]:
 
 def extend_normalized_list(
     output: dict[str, Any],
-    source: dict[str, Any],
+    source: Any,
     source_keys: list[str],
     dest_key: str,
     normalizer: Callable[[dict[str, Any]], dict[str, str]],
@@ -246,20 +306,108 @@ def extend_normalized_list(
 ) -> None:
     """Normalize one or more legacy list blocks and append valid rows."""
 
-    for source_key in source_keys:
-        rows = source.get(source_key)
-        if rows is None:
-            continue
-        if not isinstance(rows, list):
-            print(f"Warning: {source_name}: '{source_key}' should be a list")
-            continue
+    for row in extract_legacy_rows(source, source_keys, source_name=source_name):
+        normalized = normalizer(row)
+        if normalized:
+            output[dest_key].append(normalized)
 
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            normalized = normalizer(row)
-            if normalized:
-                output[dest_key].append(normalized)
+
+def apply_top_level_metadata(output: dict[str, Any], source: dict[str, Any], *, source_name: str) -> None:
+    """Copy best-effort top-level metadata from one legacy mapping."""
+
+    top_map = {
+        "name": "name",
+        "version": "version",
+        "description": "description",
+        "homepage": "homepage",
+        "downloadurl": "downloadURL",
+        "download_url": "downloadURL",
+    }
+    for key, value in source.items():
+        canon = top_map.get(str(key).lower())
+        if canon is None or value in (None, ""):
+            continue
+        output[canon] = str(value)
+
+    local_values = get_matching_values(source, ["localVersion", "local_version"])
+    if local_values:
+        output["localVersion"] = _normalize_optional_int(
+            local_values[-1],
+            label="localVersion",
+            source_name=source_name,
+        )
+
+    portable_values = get_matching_values(source, ["only_portable", "onlyportable", "portable"])
+    if portable_values:
+        output["only_portable"] = _normalize_optional_bool(
+            portable_values[-1],
+            label="only_portable",
+            source_name=source_name,
+        )
+
+
+def normalize_path_entries(raw_entries: Any, *, source_name: str) -> list[str]:
+    """Normalize legacy PATH entries from strings or old table aliases."""
+
+    if raw_entries is None:
+        return []
+    if not isinstance(raw_entries, list):
+        print(f"Warning: {source_name}: 'path' should be a list")
+        return []
+
+    normalized: list[str] = []
+    for item in raw_entries:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            normalized.append(normalize_legacy_variable_path(item))
+            continue
+        if isinstance(item, dict):
+            values = get_matching_values(item, ["value", "path"])
+            if values:
+                normalized.append(normalize_legacy_variable_path(str(values[-1])))
+            continue
+    return normalized
+
+
+def extract_metadata_sources(source: dict[str, Any], *, source_name: str) -> list[dict[str, Any]]:
+    """Return top-level and legacy ``main`` metadata mappings from one payload."""
+
+    metadata_sources = [source]
+    for main_value in get_matching_values(source, ["main"]):
+        if isinstance(main_value, dict):
+            metadata_sources.append(main_value)
+            continue
+        if isinstance(main_value, list):
+            dict_rows = [row for row in main_value if isinstance(row, dict)]
+            if len(dict_rows) > 1:
+                print(f"Warning: {source_name}: found multiple 'main' tables; using the last one")
+            if dict_rows:
+                metadata_sources.append(dict_rows[-1])
+            continue
+        print(f"Warning: {source_name}: 'main' should be a table or list of tables")
+    return metadata_sources
+
+
+def merge_legacy_source(output: dict[str, Any], source: Any, *, source_name: str) -> None:
+    """Merge one legacy JSON or TOML payload into the canonical config."""
+
+    list_sources = [source]
+    if isinstance(source, dict):
+        metadata_sources = extract_metadata_sources(source, source_name=source_name)
+        for metadata_source in metadata_sources:
+            apply_top_level_metadata(output, metadata_source, source_name=source_name)
+        list_sources.extend(metadata_sources[1:])
+
+    for list_source in list_sources:
+        if isinstance(list_source, dict):
+            path_values = get_matching_values(list_source, ["path"])
+            if path_values:
+                output["path"] = normalize_path_entries(path_values[-1], source_name=source_name)
+
+        extend_normalized_list(output, list_source, ["environment", "env"], "environment", normalize_environment, source_name)
+        extend_normalized_list(output, list_source, ["shortcut", "shortcuts"], "shortcut", normalize_shortcut, source_name)
+        extend_normalized_list(output, list_source, ["bin"], "bin", normalize_bin, source_name)
 
 
 def infer_metadata_from_directory(base_dir: Path) -> dict[str, Any]:
@@ -299,65 +447,37 @@ def build_config(base_dir: Path) -> dict[str, Any]:
     out = new_config()
     inferred = infer_metadata_from_directory(base_dir)
 
-    opt_pkg = find_legacy_file(base_dir, "opt_pkg.json")
-    if opt_pkg:
-        data = read_json(opt_pkg)
-        if data:
-            top_map = {
-                "name": "name",
-                "version": "version",
-                "description": "description",
-                "homepage": "homepage",
-                "downloadurl": "downloadURL",
-                "download_url": "downloadURL",
-            }
-            for key, value in data.items():
-                canon = top_map.get(str(key).lower())
-                if canon is None or value in (None, ""):
-                    continue
-                out[canon] = str(value)
-
-            local_value = data.get("localVersion")
-            if local_value is None:
-                local_value = data.get("local_version")
-            out["localVersion"] = _normalize_optional_int(local_value, label="localVersion", source_name=opt_pkg.name)
-
-            portable_value = data.get("only_portable")
-            if portable_value is None:
-                portable_value = data.get("onlyportable")
-            if portable_value is None:
-                portable_value = data.get("portable")
-            out["only_portable"] = _normalize_optional_bool(
-                portable_value,
-                label="only_portable",
-                source_name=opt_pkg.name,
-            )
-
-            raw_path_entries = data.get("path")
-            if isinstance(raw_path_entries, list):
-                out["path"] = [normalize_legacy_variable_path(str(item)) for item in raw_path_entries if item is not None]
-            elif raw_path_entries is not None:
-                print(f"Warning: {opt_pkg.name}: 'path' should be a list")
-
-            extend_normalized_list(out, data, ["environment", "env"], "environment", normalize_environment, opt_pkg.name)
-            extend_normalized_list(out, data, ["shortcut"], "shortcut", normalize_shortcut, opt_pkg.name)
-            extend_normalized_list(out, data, ["bin"], "bin", normalize_bin, opt_pkg.name)
+    for metadata_file in pick_legacy_metadata_files(base_dir):
+        data = read_legacy_data(metadata_file)
+        if data is not None:
+            merge_legacy_source(out, data, source_name=metadata_file.name)
 
     for env_file in [*pick_all_matching(base_dir, "environment"), *pick_all_matching(base_dir, "env")]:
-        data = read_json(env_file)
-        if not data:
+        data = read_legacy_data(env_file)
+        if data is None:
             continue
         extend_normalized_list(out, data, ["environment", "env"], "environment", normalize_environment, env_file.name)
 
-    for shortcut_file in pick_all_matching(base_dir, "shortcut"):
-        data = read_json(shortcut_file)
-        if not data:
+    for path_file in pick_all_matching(base_dir, "path"):
+        data = read_legacy_data(path_file)
+        if data is None:
             continue
-        extend_normalized_list(out, data, ["shortcut"], "shortcut", normalize_shortcut, shortcut_file.name)
+        if isinstance(data, dict):
+            path_values = get_matching_values(data, ["path"])
+            if path_values:
+                out["path"].extend(normalize_path_entries(path_values[-1], source_name=path_file.name))
+        else:
+            out["path"].extend(normalize_path_entries(data, source_name=path_file.name))
+
+    for shortcut_file in [*pick_all_matching(base_dir, "shortcut"), *pick_all_matching(base_dir, "shortcuts")]:
+        data = read_legacy_data(shortcut_file)
+        if data is None:
+            continue
+        extend_normalized_list(out, data, ["shortcut", "shortcuts"], "shortcut", normalize_shortcut, shortcut_file.name)
 
     for bin_file in pick_all_matching(base_dir, "bin"):
-        data = read_json(bin_file)
-        if not data:
+        data = read_legacy_data(bin_file)
+        if data is None:
             continue
         extend_normalized_list(out, data, ["bin"], "bin", normalize_bin, bin_file.name)
 
