@@ -38,12 +38,31 @@ python helper_scripts\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
 
 Use `--dry-run` to print the generated TOML instead of writing it.
 
+## `shortcuts_to_pkg_toml.py`
+
+Imports real Windows `.lnk` files from a package version folder's `_shortcuts`
+directory into that folder's existing `pkg.toml`.
+
+The importer reads shortcut fields through Windows Script Host, converts paths
+inside package-owned `App`, `Icons`, and `Shortcuts` directories back to `$App`,
+`$Icons`, and `$Shortcuts`, and rewrites `[[shortcut]]` tables with matching
+names. Other TOML sections are preserved.
+
+Example:
+
+```bat
+python helper_scripts\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+Use `--dry-run` to print the updated TOML instead of writing it.
+
 ## Review checklist
 
 After running a helper script, check at least these items:
 
 - the package metadata matches the directory name
 - shortcut targets and working directories still point where you expect
+- imported shortcut names match their intended Start Menu folders
 - environment variables use the intended values
 - PATH entries are still appropriate
 - wrapper script content still makes sense for the target shell

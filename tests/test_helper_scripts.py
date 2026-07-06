@@ -18,11 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 PKG_PY = SRC_ROOT / "pkg.py"
 LEGACY_CONVERTER = SRC_ROOT / "helper_scripts" / "legacy_to_pkg_toml.py"
+SHORTCUT_IMPORTER = SRC_ROOT / "helper_scripts" / "shortcuts_to_pkg_toml.py"
 EXAMPLES_ROOT = SRC_ROOT / "helper_scripts" / "examples"
 
 
 def load_pkg_module():
     spec = importlib.util.spec_from_file_location("pkg_under_test_helper", PKG_PY)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def load_shortcut_importer_module():
+    spec = importlib.util.spec_from_file_location("shortcuts_to_pkg_toml_under_test", SHORTCUT_IMPORTER)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -333,6 +346,107 @@ class LegacyConverterTests(unittest.TestCase):
                     self.assertEqual(parsed["shortcut"][0]["name"], expected["first_shortcut"])
                 if "shortcut_target" in expected:
                     self.assertEqual(parsed["shortcut"][0]["targetPath"], expected["shortcut_target"])
+
+
+class ShortcutImporterTests(unittest.TestCase):
+    def test_importer_overwrites_matching_shortcuts_and_preserves_other_config(self) -> None:
+        """The importer replaces same-name shortcut tables without regenerating unrelated TOML."""
+
+        importer = load_shortcut_importer_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "Game" / "v1.0.0.l1"
+            shortcuts_dir = version_dir / "_shortcuts" / "Games"
+            app_dir = version_dir / "App"
+            icons_dir = version_dir / "Icons"
+            shortcuts_dir.mkdir(parents=True)
+            app_dir.mkdir()
+            icons_dir.mkdir()
+
+            (shortcuts_dir / "Launch Game.lnk").write_text("", encoding="utf-8")
+            (version_dir / "pkg.toml").write_text(
+                r"""
+name = "Game"
+version = "1.0.0"
+localVersion = 1
+
+[[environment]]
+Name = "GAME_HOME"
+Value = "$App"
+
+[[shortcut]]
+name = "Games\\Launch Game"
+targetPath = "$App\\old.exe"
+description = "Old shortcut"
+
+[[shortcut]]
+name = "Tools\\Keep Me"
+targetPath = "$App\\tools\\keep.exe"
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            shortcut_payload = {
+                "TargetPath": str(app_dir / "game.exe"),
+                "Arguments": "--fullscreen",
+                "WorkingDirectory": str(app_dir),
+                "IconLocation": f"{icons_dir / 'game.ico'},0",
+                "Description": "Launch Game",
+            }
+            with mock.patch.object(importer, "read_windows_shortcut", return_value=shortcut_payload):
+                rendered, shortcuts = importer.import_shortcuts(version_dir)
+
+            parsed = tomllib.loads(rendered)
+            self.assertEqual(len(shortcuts), 1)
+            self.assertEqual(parsed["environment"][0]["Name"], "GAME_HOME")
+            self.assertEqual(len(parsed["shortcut"]), 2)
+
+            imported = next(item for item in parsed["shortcut"] if item["name"] == "Games\\Launch Game")
+            self.assertEqual(imported["targetPath"], "$App\\game.exe")
+            self.assertEqual(imported["arguments"], "--fullscreen")
+            self.assertEqual(imported["workingDirectory"], "$App")
+            self.assertEqual(imported["iconLocation"], "$Icons\\game.ico,0")
+            self.assertEqual(imported["description"], "Launch Game")
+
+            preserved = next(item for item in parsed["shortcut"] if item["name"] == "Tools\\Keep Me")
+            self.assertEqual(preserved["targetPath"], "$App\\tools\\keep.exe")
+            self.assertNotIn("old.exe", rendered)
+
+    def test_importer_appends_new_shortcuts_from_nested_shortcut_directory(self) -> None:
+        """Nested files under ``_shortcuts`` become nested shortcut names in TOML."""
+
+        importer = load_shortcut_importer_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "Tool" / "v2.0.0.l3"
+            nested_dir = version_dir / "_shortcuts" / "Tools"
+            app_dir = version_dir / "App" / "bin"
+            nested_dir.mkdir(parents=True)
+            app_dir.mkdir(parents=True)
+
+            (nested_dir / "Tool.lnk").write_text("", encoding="utf-8")
+            (version_dir / "pkg.toml").write_text(
+                """
+name = "Tool"
+version = "2.0.0"
+localVersion = 3
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            shortcut_payload = {
+                "TargetPath": str(app_dir / "tool.exe"),
+                "Arguments": "",
+                "WorkingDirectory": "",
+                "IconLocation": "",
+                "Description": "",
+            }
+            with mock.patch.object(importer, "read_windows_shortcut", return_value=shortcut_payload):
+                rendered, _ = importer.import_shortcuts(version_dir)
+
+            parsed = tomllib.loads(rendered)
+            self.assertEqual(parsed["shortcut"][0]["name"], "Tools\\Tool")
+            self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\bin\\tool.exe")
 
 
 if __name__ == "__main__":
