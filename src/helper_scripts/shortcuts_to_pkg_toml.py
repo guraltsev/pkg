@@ -214,8 +214,9 @@ def read_windows_shortcut(shortcut_path: Path) -> dict[str, str]:
 
     script = r"""
 $ErrorActionPreference = 'Stop'
+$inputObject = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($args[0])
+$shortcut = $shell.CreateShortcut([string]$inputObject.ShortcutPath)
 [pscustomobject]@{
   TargetPath = [string]$shortcut.TargetPath
   Arguments = [string]$shortcut.Arguments
@@ -225,7 +226,8 @@ $shortcut = $shell.CreateShortcut($args[0])
 } | ConvertTo-Json -Compress
 """
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, str(shortcut_path)],
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        input=json.dumps({"ShortcutPath": str(shortcut_path)}),
         capture_output=True,
         text=True,
         check=False,

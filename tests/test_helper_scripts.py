@@ -349,6 +349,35 @@ class LegacyConverterTests(unittest.TestCase):
 
 
 class ShortcutImporterTests(unittest.TestCase):
+    def test_shortcut_reader_passes_the_lnk_path_through_stdin_json(self) -> None:
+        """The reader passes shortcut paths with spaces through stdin JSON."""
+
+        importer = load_shortcut_importer_module()
+        shortcut_path = Path(r"C:\games\CommanderKeen\v1.4_42493.l1\_shortcuts\Commander Keen.lnk")
+        payload = {
+            "TargetPath": r"C:\games\CommanderKeen\v1.4_42493.l1\App\keen.exe",
+            "Arguments": "",
+            "WorkingDirectory": "",
+            "IconLocation": "",
+            "Description": "",
+        }
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+        with mock.patch.object(importer.os, "name", "nt"):
+            with mock.patch.object(importer.subprocess, "run", return_value=completed) as run_mock:
+                self.assertEqual(importer.read_windows_shortcut(shortcut_path), payload)
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("[Console]::In.ReadToEnd() | ConvertFrom-Json", command[5])
+        self.assertIn("$shell.CreateShortcut([string]$inputObject.ShortcutPath)", command[5])
+        self.assertNotIn("$args[0]", command[5])
+        self.assertEqual(json.loads(run_mock.call_args.kwargs["input"]), {"ShortcutPath": str(shortcut_path)})
+
     def test_importer_overwrites_matching_shortcuts_and_preserves_other_config(self) -> None:
         """The importer replaces same-name shortcut tables without regenerating unrelated TOML."""
 
