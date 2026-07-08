@@ -1853,7 +1853,6 @@ Canonical config keys
 
      [origin]
      url = "https://example.invalid/tool.zip"
-     version = "1.2.3"
      checksum = "sha256:<64 hex characters>"
      extractSubdir = "tool"
 
@@ -1864,10 +1863,10 @@ Canonical config keys
      url = "https://example.invalid/tool-1.1.0.zip"
 
    If the current origin is one of those entries, omit top-level ``url`` and
-   ``script`` and set ``origin.version`` to the selected entry:
+   ``script``. ``pkg`` selects the entry matching the package top-level
+   ``version``:
 
      [origin]
-     version = "1.1.0"
 
      [[origin.versions]]
      version = "1.1.0"
@@ -1877,7 +1876,6 @@ Canonical config keys
 
      [origin]
      script = "scripts\populate-app.ps1"
-     version = "1.2.3"
 
    ``script`` and ``url`` are mutually exclusive. Use ``--refresh-app`` to
    replace an already populated ``App/``. Use ``--no-checksum`` to skip a
@@ -2113,7 +2111,7 @@ def normalize_origin_source(raw_source: Dict[str, Any], *, context: str, require
     return normalized
 
 
-def normalize_origin_config(raw_origin: Any) -> Optional[Dict[str, Any]]:
+def normalize_origin_config(raw_origin: Any, package_version: str) -> Optional[Dict[str, Any]]:
     """Normalize the optional ``[origin]`` table."""
 
     if raw_origin is None:
@@ -2121,12 +2119,12 @@ def normalize_origin_config(raw_origin: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw_origin, dict):
         raise ConfigValidationError(f"'origin' must be a table, got: {type(raw_origin).__name__}")
 
-    origin_keys = {"url", "version", "checksum", "extractSubdir", "script", "versions"}
+    origin_keys = {"url", "checksum", "extractSubdir", "script", "versions"}
     _validate_exact_keys(
         raw_origin,
         allowed=origin_keys,
         context="origin",
-        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script", "versions"],
+        ordered_allowed=["url", "checksum", "extractSubdir", "script", "versions"],
     )
 
     # Historical origins are explicit versioned source entries. They share the
@@ -2151,7 +2149,7 @@ def normalize_origin_config(raw_origin: Any) -> Optional[Dict[str, Any]]:
     if has_inline_source:
         current_source = {
             key: raw_origin[key]
-            for key in ("url", "version", "checksum", "extractSubdir", "script")
+            for key in ("url", "checksum", "extractSubdir", "script")
             if key in raw_origin
         }
         normalized = normalize_origin_source(current_source, context="origin", require_version=False)
@@ -2159,18 +2157,13 @@ def normalize_origin_config(raw_origin: Any) -> Optional[Dict[str, Any]]:
             normalized["versions"] = versions
         return normalized
 
-    selected_version = _normalize_optional_string(raw_origin.get("version"), field_name="origin.version")
-    if versions and selected_version:
+    if versions:
         for item in versions:
-            if item["version"] == selected_version:
+            if item["version"] == package_version:
                 normalized = dict(item)
                 normalized["versions"] = versions
-                normalized["selectedVersion"] = selected_version
                 return normalized
-        raise ConfigValidationError("[origin].version must match one entry in [[origin.versions]]")
-
-    if versions:
-        raise ConfigValidationError("[origin] must declare url/script or set version to one [[origin.versions]] entry")
+        raise ConfigValidationError("[[origin.versions]] must contain an entry matching top-level version")
 
     raise ConfigValidationError("[origin] must declare exactly one of 'url' or 'script'")
 
@@ -2238,7 +2231,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         if only_portable_value is None
         else _normalize_only_portable_value(only_portable_value, field_name="only_portable")
     )
-    normalized_origin = normalize_origin_config(raw.get("origin"))
+    normalized_origin = normalize_origin_config(raw.get("origin"), identity.version)
 
     environment_entries: List[Dict[str, str]] = []
     raw_environment = raw.get("environment")
@@ -2822,28 +2815,38 @@ def create_starter_config(identity: PackageIdentity) -> str:
         f"# homepage = {_to_toml_scalar(example_homepage)}",
         "# [origin]",
         f"# url = {_to_toml_scalar(example_download)}",
-        f"# version = {_to_toml_scalar(metadata['version'])}",
         "# checksum = \"sha256:<64 hex characters>\"",
         "# extractSubdir = \"tool-portable\"",
         "#",
         "# Or replace url/checksum/extractSubdir with a package-local script:",
         "# script = \"scripts/populate-app.ps1\"",
         "#",
-        "# Optional history of older origins:",
+        "# Multiple origin versions:",
+        "#   Use repeated [[origin.versions]] tables to keep older upstream",
+        "#   payload locations in the same pkg.toml. Each entry must have a",
+        "#   unique version plus either url or script.",
+        "#",
+        "# Current origin can stay inline above, while old versions live here:",
         "# [[origin.versions]]",
         "# version = \"1.0.0\"",
         "# url = \"https://example.invalid/tool-1.0.0.zip\"",
         "# checksum = \"sha256:<64 hex characters>\"",
         "# extractSubdir = \"tool-1.0.0\"",
         "#",
-        "# To select one historical entry as the current origin, omit top-level",
-        "# url/script above and set [origin].version to a matching entry:",
+        "# [[origin.versions]]",
+        "# version = \"0.9.0\"",
+        "# url = \"https://example.invalid/tool-0.9.0.zip\"",
+        "# extractSubdir = \"tool-0.9.0\"",
+        "#",
+        "# Or use the package top-level version to select the current origin:",
+        "#   1. omit top-level url/script above",
+        "#   2. define a [[origin.versions]] entry whose version matches",
+        "#      the top-level package version above",
         "# [origin]",
-        "# version = \"1.0.0\"",
         "#",
         "# [[origin.versions]]",
-        "# version = \"1.0.0\"",
-        "# url = \"https://example.invalid/tool-1.0.0.zip\"",
+        f"# version = {_to_toml_scalar(metadata['version'])}",
+        "# url = \"https://example.invalid/tool-current.zip\"",
         "",
         "# Variable expansion reference:",
         "#   $App, $Icons, $Shortcuts -> package directories under <package>/current/",

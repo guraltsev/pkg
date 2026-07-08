@@ -137,7 +137,6 @@ only_portable = false
 
 [origin]
 url = "https://example.invalid/ripgrep.zip"
-version = "14.1.0"
 checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 extractSubdir = "ripgrep"
 
@@ -167,7 +166,6 @@ Built-in origin mode downloads an HTTP(S) zip archive:
 ```toml
 [origin]
 url = "https://example.invalid/tool-portable.zip"
-version = "1.2.3"
 checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 extractSubdir = "tool-portable"
 ```
@@ -177,16 +175,11 @@ extractSubdir = "tool-portable"
 and skips verification. `extractSubdir` selects a directory inside the archive
 whose contents become `App/`.
 
-`origin.version` is optional upstream-origin metadata. It is passed to origin
-scripts in `config.origin.version` and does not change the package directory
-version used by `pkg`.
-
 Historical origins can be recorded with repeated `[[origin.versions]]` tables:
 
 ```toml
 [origin]
 url = "https://example.invalid/tool-2.0.0.zip"
-version = "2.0.0"
 
 [[origin.versions]]
 version = "1.0.0"
@@ -195,11 +188,13 @@ checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 ```
 
 When the current origin is one of the versioned entries, omit top-level `url`
-or `script` and set `[origin].version` to the selected entry:
+or `script`. `pkg` selects the entry whose `version` matches the top-level
+package `version`:
 
 ```toml
-[origin]
 version = "1.0.0"
+
+[origin]
 
 [[origin.versions]]
 version = "1.0.0"
@@ -207,16 +202,15 @@ url = "https://example.invalid/tool-1.0.0.zip"
 ```
 
 `HealthCheck` verifies that origin history is internally consistent: versioned
-entries must have unique `version` values, `[origin].version` must select an
-existing entry when used as a selector, and script origins must point to
-supported package-local script files.
+entries must have unique `version` values, history-only origins must include
+an entry matching the top-level package `version`, and script origins must
+point to supported package-local script files.
 
 Script origin mode runs a package-local script:
 
 ```toml
 [origin]
 script = "scripts\\populate-app.ps1"
-version = "1.2.3"
 ```
 
 Scripts must live under the version directory and use `.ps1`, `.cmd`, `.bat`,

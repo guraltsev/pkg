@@ -119,7 +119,11 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertIn(f"only_portable = {str(only_portable).lower()}", text)
         self.assertIn("# [origin]", text)
         self.assertIn("# [[origin.versions]]", text)
-        self.assertIn("# To select one historical entry as the current origin", text)
+        self.assertIn("# Multiple origin versions:", text)
+        self.assertIn("#   1. omit top-level url/script above", text)
+        self.assertIn("# Or use the package top-level version to select the current origin:", text)
+        self.assertIn("#   2. define a [[origin.versions]] entry whose version matches", text)
+        self.assertIn("#      the top-level package version above", text)
         for example_block in ("shortcut", "environment", "path", "bin"):
             self.assertIn(f"# [[{example_block}]]", text)
 
@@ -676,7 +680,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
                 [origin]
                 url = "https://example.invalid/tool.zip"
-                version = "2026.7"
                 checksum = "sha256:{checksum}"
                 extractSubdir = "tool"
                 """,
@@ -731,8 +734,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual((version_dir / "App" / "existing.txt").read_text(encoding="utf-8"), "keep")
             self.assertIn("App is already populated; skipping origin population", output)
 
-    def test_install_can_select_current_origin_from_versioned_entries(self) -> None:
-        """Install uses the versioned origin entry selected by [origin].version."""
+    def test_install_selects_versioned_origin_matching_package_version(self) -> None:
+        """Install uses the versioned origin entry matching the package version."""
 
         module = load_pkg_module()
         archive = self.zip_bytes({"selected.exe": "selected"})
@@ -746,15 +749,12 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 version = "1.0.0"
                 localVersion = 1
 
-                [origin]
-                version = "1.0"
-
                 [[origin.versions]]
                 version = "0.9"
                 url = "https://example.invalid/old.zip"
 
                 [[origin.versions]]
-                version = "1.0"
+                version = "1.0.0"
                 url = "https://example.invalid/current.zip"
                 """,
             )
@@ -926,14 +926,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
                 [origin]
                 script = "scripts/populate.cmd"
-                version = "2026.7"
                 """,
             )
 
             def run_script(*_args, **kwargs):
                 payload = json.loads(kwargs["input"])
                 self.assertEqual(payload["identity"]["name"], "ScriptOriginApp")
-                self.assertEqual(payload["config"]["origin"]["version"], "2026.7")
+                self.assertNotIn("version", payload["config"]["origin"])
                 self.assertEqual(Path(payload["PkgVars"]["App"]).resolve(), (version_dir / "App").resolve())
                 self.assertEqual(Path(kwargs["cwd"]).resolve(), script_dir.resolve())
                 app_dir = version_dir / "App"
@@ -971,15 +970,12 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 version = "1.0.0"
                 localVersion = 1
 
-                [origin]
-                version = "1.0"
-
                 [[origin.versions]]
                 version = "0.9"
                 url = "https://example.invalid/old.zip"
 
                 [[origin.versions]]
-                version = "1.0"
+                version = "1.0.0"
                 script = "scripts/populate.cmd"
                 """,
             )
@@ -1005,9 +1001,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 version = "1.0.0"
                 localVersion = 1
 
-                [origin]
-                version = "1.0"
-
                 [[origin.versions]]
                 version = "1.0"
                 url = "https://example.invalid/one.zip"
@@ -1024,8 +1017,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("duplicate version: 1.0", output)
 
-    def test_health_check_rejects_missing_selected_origin_version(self) -> None:
-        """HealthCheck reports a selector that does not match origin history."""
+    def test_health_check_rejects_missing_package_version_origin_history(self) -> None:
+        """HealthCheck reports origin history that lacks the package version."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1037,11 +1030,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 version = "1.0.0"
                 localVersion = 1
 
-                [origin]
-                version = "2.0"
-
                 [[origin.versions]]
-                version = "1.0"
+                version = "2.0"
                 url = "https://example.invalid/one.zip"
                 """,
             )
@@ -1050,7 +1040,35 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
-            self.assertIn("[origin].version must match one entry", output)
+            self.assertIn("[[origin.versions]] must contain an entry matching top-level version", output)
+
+    def test_health_check_rejects_top_level_origin_version(self) -> None:
+        """HealthCheck rejects removed top-level [origin].version syntax."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "OldSelectorOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "OldSelectorOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                version = "1.0.0"
+
+                [[origin.versions]]
+                version = "1.0.0"
+                url = "https://example.invalid/one.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("Unknown key 'version' in origin", output)
 
     def test_health_check_rejects_bad_origin_script_reference(self) -> None:
         """HealthCheck reports package-local script reference problems."""

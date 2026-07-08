@@ -1,0 +1,51 @@
+{
+  "name": "emacs",
+  "version": "30.2",
+  "localVersion": "2",
+  "description": "",
+  "homepage": "https://www.gnu.org/software/emacs/",
+  "downloadUrl": "http://gnu.mirror.constant.com/emacs/windows/emacs-29/emacs-29.4.zip",
+  "environment": null,
+  "bin": [
+    {
+      "Name": "emacs.cmd",
+      "Content": "@ $App\\bin\\emacs.exe %*"
+    },
+    {
+      "Name": "emacsclient.cmd",
+      "Content": "@ $App\\bin\\emacsclient.exe %*"
+    },
+    {
+      "Name": "emacsclientw.cmd",
+      "Content": "@ $App\\bin\\emacsclientw.exe %*"
+    }
+  ],
+  "path": null,
+  "shortcut": [
+    {
+      "Name": "Emacs.lnk",
+      "TargetPath": "$App\\bin\\runemacs.exe",
+      "Arguments": "",
+      "WorkingDirectory": "%USERPROFILE%",
+      "IconLocation": "",
+      "Description": "Emacs text editor"
+    },
+    {
+      "Name": "Emacs (debug init).lnk",
+      "TargetPath": "$App\\bin\\runemacs.exe",
+      "Arguments": "--debug-init",
+      "WorkingDirectory": "%USERPROFILE%",
+      "IconLocation": "",
+      "Description": "Emacs text editor (debug)"
+    },
+    {
+      "Name": "Emacs client.lnk",
+      "TargetPath": "$App\\bin\\emacsclientw.exe",
+      "Arguments": "-c -n -a \"\"",
+      "WorkingDirectory": "%USERPROFILE%",
+      "IconLocation": "",
+      "Description": "Emacs text editor (client)"
+    }
+  ],
+  "only_portable": false
+}

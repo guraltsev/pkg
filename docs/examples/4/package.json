@@ -1,0 +1,20 @@
+{
+    "name":  "Tixati",
+    "version":  "3.29-1",
+    "localVersion":  "6",
+    "description":  "Peer-to-peer file sharing program that uses the popular BitTorrent protocol",
+    "homepage":  "https://www.tixati.com/",
+    "downloadUrl":  "https://download2.tixati.com/download/tixati-3.29-1.portable.zip",
+    "environment":  null,
+    "bin":  null,
+    "path":  null,
+    "shortcut":  [
+                     {
+                         "Name":  "Tixati.lnk",
+                         "TargetPath":  "$App\\tixati_Windows64bit.exe",
+                         "WorkingDirectory":  "",
+                         "IconLocation":  "",
+                         "Description":  "peer-2-peer Bittorrent client"
+                     }
+                 ]
+}

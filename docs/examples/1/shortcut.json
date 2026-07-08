@@ -1,0 +1,9 @@
+{"shortcut":[
+{
+			"Name": "Tools\\WU Mgr.lnk",
+            "TargetPath": "$AppPath\\App\\WUMgr.exe",
+            "WorkingDirectory": "",
+            "IconLocation": "",
+            "Description": "Windows Update Manager"
+		}
+]}
