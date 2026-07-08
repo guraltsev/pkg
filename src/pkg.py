@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Single-file implementation of ``pkg``.
+"""Install and maintain local Windows packages declared by ``pkg.toml``.
 
-The package manager lives entirely in ``pkg.py`` and stays organized through
-clearly labeled sections instead of a heavier internal layering scheme.
-
-
-Section guide
--------------
-
-- ``Shared models and pure helpers`` contains shared data models, validation
-  helpers, text expansion, version comparison, and atomic file writers.
-- ``Windows integration boundary`` contains only thin Python wrappers around
-  direct Windows primitives such as shortcut creation, registry access,
-  junction creation, privilege checks, and environment-change broadcasts.
-- ``Package-management logic and CLI`` contains config normalization, metadata
-  synchronization, runtime validation, and direct action functions that
-  coordinate those Windows wrappers.
+Call ``main()`` for the command-line workflow or use high-level helpers such as
+``install_package(...)``, ``update_package_config(...)``, and
+``health_check_package(...)`` when embedding the behavior. The module reads one
+versioned package directory, normalizes runtime configuration, manages the
+``current`` junction, populates ``App/`` from configured origins, and applies
+shortcuts, environment variables, ``PATH`` entries, and wrapper scripts for
+the requested scope.
 """
 
 from __future__ import annotations
@@ -89,11 +81,16 @@ class Action(Enum):
 class StepResult:
     """Outcome of a single mutation step.
 
-    Attributes:
-        ok: ``True`` when the step succeeded.
-        changed: ``True`` when the step made a filesystem/registry change.
-        warnings: Non-fatal issues emitted while performing the step.
-        errors: Fatal issues encountered by the step.
+    Attributes
+    ----------
+    ok : bool
+        ``True`` when the step succeeded.
+    changed : bool
+        ``True`` when the step made a filesystem or registry change.
+    warnings : list[str]
+        Non-fatal issues emitted while performing the step.
+    errors : list[str]
+        Fatal issues encountered by the step.
     """
 
     ok: bool
@@ -106,12 +103,18 @@ class StepResult:
 class ActionResult:
     """Outcome of a high-level CLI action.
 
-    Attributes:
-        ok: ``True`` when the action completed successfully.
-        changed: ``True`` when the action made one or more changes.
-        warnings: Non-fatal warnings accumulated during the action.
-        errors: Fatal errors accumulated during the action.
-        exit_code: Process exit code that should be returned to the caller.
+    Attributes
+    ----------
+    ok : bool
+        ``True`` when the action completed successfully.
+    changed : bool
+        ``True`` when the action made one or more changes.
+    warnings : list[str]
+        Non-fatal warnings accumulated during the action.
+    errors : list[str]
+        Fatal errors accumulated during the action.
+    exit_code : int
+        Process exit code that should be returned to the caller.
     """
 
     ok: bool
@@ -125,17 +128,24 @@ class ActionResult:
 class PackageIdentity:
     """Directory-derived identity for a package version.
 
-    Attributes:
-        name: Package name derived from the package-root directory name.
-        version: Upstream version string derived from the version directory.
-        local_version: Local revision number derived from the ``.lN`` suffix.
-        version_string: Original version-directory name, e.g. ``v1.2.3.l4``.
-        package_root: Parent directory that contains all versions and
-            ``current``.
-        version_path: Concrete version directory represented by the identity.
-        is_current: ``True`` when the version already matches ``current``.
-        only_portable_by_name: ``True`` when the package name convention marks
-            it as portable (``*-portable``).
+    Attributes
+    ----------
+    name : str
+        Package name derived from the package-root directory name.
+    version : str
+        Upstream version string derived from the version directory.
+    local_version : int
+        Local revision number derived from the ``.lN`` suffix.
+    version_string : str
+        Original version-directory name, for example ``v1.2.3.l4``.
+    package_root : Path
+        Parent directory that contains all versions and ``current``.
+    version_path : Path
+        Concrete version directory represented by the identity.
+    is_current : bool
+        ``True`` when the version already matches ``current``.
+    only_portable_by_name : bool
+        ``True`` when the package naming convention marks it as portable.
     """
 
     name: str
@@ -157,20 +167,25 @@ class PackageIdentity:
     ) -> "PackageIdentity":
         """Construct an identity object from one package root and version path.
 
-        Args:
-            package_root: Directory that owns ``current`` and all version
-                directories.
-            version_path: Concrete version directory represented by the
-                identity.
-            is_current: Whether ``current`` already resolves to *version_path*.
+        Parameters
+        ----------
+        package_root : Path
+            Directory that owns ``current`` and all version directories.
+        version_path : Path
+            Concrete version directory represented by the identity.
+        is_current : bool
+            Whether ``current`` already resolves to ``version_path``.
 
-        Returns:
-            A :class:`PackageIdentity` derived directly from the filesystem
-            layout.
+        Returns
+        -------
+        PackageIdentity
+            Identity derived directly from the filesystem layout.
 
-        Raises:
-            ValueError: If *version_path* does not follow the
-                ``v<upstream>.l<local>`` naming convention.
+        Raises
+        ------
+        ValueError
+            Raised when ``version_path`` does not follow the
+            ``v<upstream>.l<local>`` naming convention.
         """
 
         match = VERSION_DIR_NAME_RE.match(version_path.name)
@@ -194,10 +209,13 @@ class PackageIdentity:
 class ExpansionResult:
     """Result of variable expansion.
 
-    Attributes:
-        value: Expanded text.
-        unresolved: Ordered list of unresolved variable tokens left in the
-            output, for example ``${MISSING}``.
+    Attributes
+    ----------
+    value : str
+        Expanded text.
+    unresolved : list[str]
+        Ordered list of unresolved variable tokens left in the output, for
+        example ``${MISSING}``.
     """
 
     value: str
@@ -216,6 +234,7 @@ class ExpansionMode(Enum):
 
     GENERAL = "general"
     SCRIPT = "script"
+
 
 class _DynamicStdoutHandler(logging.Handler):
     """Logging handler that writes to the current stdout stream.
@@ -275,10 +294,14 @@ def log_error(message: str) -> None:
 def is_version_directory_name(name: str) -> bool:
     """Return whether a directory name matches the package version pattern.
 
-    Args:
+    Parameters
+
+    ----------
         name: Directory name to validate.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` when *name* matches ``v<upstream>.l<local>``.
     """
 
@@ -288,10 +311,14 @@ def is_version_directory_name(name: str) -> bool:
 def split_package_version(version: str) -> Tuple[str, int]:
     """Split a package version string into upstream and local components.
 
-    Args:
+    Parameters
+
+    ----------
         version: Version text such as ``v1.2.3.l4`` or ``1.2.3``.
 
-    Returns:
+    Returns
+
+    -------
         A tuple ``(upstream_version, local_revision)``. Missing or malformed
         local revisions are treated as ``0``.
     """
@@ -317,11 +344,15 @@ def compare_package_versions(version1: str, version2: str) -> int:
     The comparison understands upstream semantic-ish version segments,
     prerelease suffixes, and the package-local ``.lN`` revision component.
 
-    Args:
+    Parameters
+
+    ----------
         version1: Left-hand version string.
         version2: Right-hand version string.
 
-    Returns:
+    Returns
+
+    -------
         ``1`` if *version1* is newer, ``-1`` if *version2* is newer, or ``0``
         if they represent the same version.
     """
@@ -329,10 +360,14 @@ def compare_package_versions(version1: str, version2: str) -> int:
     def parse_identifier(token: str) -> Union[int, str]:
         """Parse one dotted version token into a comparable value.
 
-        Args:
+        Parameters
+
+        ----------
             token: One version token, for example ``42`` or ``beta``.
 
-        Returns:
+        Returns
+
+        -------
             An ``int`` when the token is numeric; otherwise a lower-cased
             string.
         """
@@ -345,10 +380,14 @@ def compare_package_versions(version1: str, version2: str) -> int:
     def parse_upstream(upstream: str) -> Tuple[List[Union[int, str]], Optional[List[Union[int, str]]]]:
         """Parse the upstream portion of a version string.
 
-        Args:
+        Parameters
+
+        ----------
             upstream: Upstream version without the ``.lN`` local revision.
 
-        Returns:
+        Returns
+
+        -------
             A tuple ``(main_identifiers, prerelease_identifiers)`` where the
             prerelease part is ``None`` for stable releases.
         """
@@ -373,13 +412,17 @@ def compare_package_versions(version1: str, version2: str) -> int:
     ) -> int:
         """Compare parsed identifier lists.
 
-        Args:
+        Parameters
+
+        ----------
             left: Parsed identifiers for the left-hand version.
             right: Parsed identifiers for the right-hand version.
             pad_numeric: Whether to treat missing trailing numeric identifiers as
                 zero when one side runs out of tokens.
 
-        Returns:
+        Returns
+
+        -------
             ``1`` if *left* is newer, ``-1`` if *right* is newer, or ``0`` if
             they compare equal.
         """
@@ -426,10 +469,14 @@ def compare_package_versions(version1: str, version2: str) -> int:
 def normalize_path(path: Union[str, Path]) -> Path:
     r"""Normalize a filesystem path for reliable comparisons.
 
-    Args:
+    Parameters
+
+    ----------
         path: Input path as a string or :class:`~pathlib.Path` instance.
 
-    Returns:
+    Returns
+
+    -------
         A resolved path with any Windows extended-length prefix (``\\?\``)
         removed.
     """
@@ -443,13 +490,19 @@ def normalize_path(path: Union[str, Path]) -> Path:
 def read_toml_file(path: Path) -> Dict[str, Any]:
     """Read a TOML file into plain Python data.
 
-    Args:
+    Parameters
+
+    ----------
         path: TOML file to load.
 
-    Returns:
+    Returns
+
+    -------
         A dictionary-like tree of plain Python values.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the file cannot be read.
         tomllib.TOMLDecodeError: If the file is not valid TOML.
         ConfigValidationError: If the parsed document is not a top-level table.
@@ -464,13 +517,17 @@ def read_toml_file(path: Path) -> Dict[str, Any]:
 def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
     """Write text atomically to a file.
 
-    Args:
+    Parameters
+
+    ----------
         path: Destination file path.
         text: Text content to write.
         backup: Whether to create ``<path>.bak`` before replacing an existing
             file.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the temporary file or final replacement cannot be written.
     """
 
@@ -498,11 +555,15 @@ def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
 def write_bytes_atomic(path: Path, content: bytes) -> None:
     """Write bytes atomically to a file.
 
-    Args:
+    Parameters
+
+    ----------
         path: Destination file path.
         content: Raw bytes to write.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the temporary file or final replacement cannot be written.
     """
 
@@ -539,12 +600,16 @@ def expand_text(text: str, identity: PackageIdentity, mode: ExpansionMode) -> Ex
       :class:`ExpansionMode.SCRIPT`.
     - ``$$`` becomes a literal ``$``.
 
-    Args:
+    Parameters
+
+    ----------
         text: Source text that may contain variables.
         identity: Package identity used to resolve package-variable paths.
         mode: Expansion ruleset to apply.
 
-    Returns:
+    Returns
+
+    -------
         An :class:`ExpansionResult` containing the expanded text and any
         unresolved variable tokens.
     """
@@ -641,10 +706,14 @@ else:
 def require_winreg() -> Any:
     """Return the :mod:`winreg` module or raise a platform error.
 
-    Returns:
+    Returns
+
+    -------
         The imported :mod:`winreg` module.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the current interpreter does not provide :mod:`winreg`.
     """
 
@@ -656,10 +725,14 @@ def require_winreg() -> Any:
 def _run_hidden(command: List[str]) -> subprocess.CompletedProcess:
     """Run one Windows command without opening a console window.
 
-    Args:
+    Parameters
+
+    ----------
         command: Command-line tokens to execute.
 
-    Returns:
+    Returns
+
+    -------
         The completed subprocess result.
     """
 
@@ -674,10 +747,14 @@ def _run_hidden(command: List[str]) -> subprocess.CompletedProcess:
 def _escape_powershell_single_quoted(value: str) -> str:
     """Escape text for a PowerShell single-quoted string literal.
 
-    Args:
+    Parameters
+
+    ----------
         value: Text that will be embedded in PowerShell.
 
-    Returns:
+    Returns
+
+    -------
         The same text with apostrophes doubled.
     """
 
@@ -695,7 +772,9 @@ def create_shortcut(
 ) -> None:
     """Create one ``.lnk`` file through PowerShell automation.
 
-    Args:
+    Parameters
+
+    ----------
         shortcut_path: Full ``.lnk`` path to create.
         target_path: Executable path the shortcut should launch.
         arguments: Optional command-line arguments.
@@ -703,7 +782,9 @@ def create_shortcut(
         icon_location: Optional ``path,index`` icon reference.
         description: Optional description shown by Windows.
 
-    Raises:
+    Raises
+
+    ------
         RuntimeError: If PowerShell reports a shortcut-creation failure.
     """
 
@@ -732,11 +813,15 @@ $Shortcut.Save()
 def create_junction(source: Path, target: Path) -> None:
     r"""Create or replace one NTFS junction.
 
-    Args:
+    Parameters
+
+    ----------
         source: Path where the junction should be created.
         target: Existing directory the junction should reference.
 
-    Raises:
+    Raises
+
+    ------
         RuntimeError: If the junction cannot be created safely.
     """
 
@@ -760,10 +845,14 @@ def create_junction(source: Path, target: Path) -> None:
 def _win_get_reparse_tag(path: Path) -> Optional[int]:
     """Read the reparse tag for one filesystem entry.
 
-    Args:
+    Parameters
+
+    ----------
         path: Filesystem entry to inspect.
 
-    Returns:
+    Returns
+
+    -------
         The integer reparse tag, or ``None`` when the tag cannot be read.
     """
 
@@ -846,10 +935,14 @@ def _win_get_reparse_tag(path: Path) -> Optional[int]:
 def is_junction(path: Path) -> bool:
     """Return whether one path is an NTFS junction.
 
-    Args:
+    Parameters
+
+    ----------
         path: Filesystem entry to inspect.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` when *path* exists and is a junction; otherwise ``False``.
     """
 
@@ -869,10 +962,14 @@ def is_junction(path: Path) -> bool:
 def get_junction_target(path: Path) -> Optional[Path]:
     """Resolve the target of one junction path.
 
-    Args:
+    Parameters
+
+    ----------
         path: Junction path to inspect.
 
-    Returns:
+    Returns
+
+    -------
         The normalized target path, or ``None`` when the target cannot be read.
     """
 
@@ -885,10 +982,14 @@ def get_junction_target(path: Path) -> Optional[Path]:
 def environment_registry_location(scope: Scope) -> Tuple[Any, str]:
     """Return the registry location used for one environment scope.
 
-    Args:
+    Parameters
+
+    ----------
         scope: Installation scope whose environment location is needed.
 
-    Returns:
+    Returns
+
+    -------
         A tuple ``(root_hkey_or_none, subkey)``.
     """
 
@@ -903,15 +1004,21 @@ def environment_registry_location(scope: Scope) -> Tuple[Any, str]:
 def read_registry_value(root: Any, subkey: str, name: str) -> Tuple[Any, int]:
     """Read one registry value.
 
-    Args:
+    Parameters
+
+    ----------
         root: Registry hive constant.
         subkey: Registry key path below *root*.
         name: Value name to read.
 
-    Returns:
+    Returns
+
+    -------
         Tuple ``(value, registry_type)`` from ``QueryValueEx``.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the value cannot be read.
     """
 
@@ -923,14 +1030,18 @@ def read_registry_value(root: Any, subkey: str, name: str) -> Tuple[Any, int]:
 def write_registry_value(root: Any, subkey: str, name: str, value: str, reg_type: int) -> None:
     """Write one registry value.
 
-    Args:
+    Parameters
+
+    ----------
         root: Registry hive constant.
         subkey: Registry key path below *root*.
         name: Value name to write.
         value: Value data to store.
         reg_type: ``winreg`` registry type constant.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If the value cannot be written.
     """
 
@@ -942,7 +1053,9 @@ def write_registry_value(root: Any, subkey: str, name: str, value: str, reg_type
 def broadcast_environment_change() -> None:
     """Notify Windows that environment values changed.
 
-    Raises:
+    Raises
+
+    ------
         OSError: If Windows does not accept the broadcast notification.
     """
 
@@ -982,7 +1095,9 @@ def broadcast_environment_change() -> None:
 def is_current_user_admin() -> bool:
     """Return whether the current process has Administrator privileges.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` when the current process is elevated; otherwise ``False``.
     """
 
@@ -997,7 +1112,9 @@ def is_current_user_admin() -> bool:
 def wait_for_keypress() -> None:
     """Pause for a keypress using the Windows console when possible.
 
-    Returns:
+    Returns
+
+    -------
         ``None``.
     """
 
@@ -1023,17 +1140,23 @@ from typing import Any, Dict, List, Optional, Tuple
 def compute_scope_paths(scope: Scope) -> Dict[str, Path]:
     """Resolve the filesystem locations needed by one install scope.
 
-    Args:
+    Parameters
+
+    ----------
         scope: Installation scope for which paths should be calculated.
 
-    Returns:
+    Returns
+
+    -------
         A small mapping containing only the path values the install flow
         actually uses:
 
         - ``shortcut_root``: Start Menu root for generated shortcuts.
         - ``bin_dir``: Directory for generated wrapper files.
 
-    Raises:
+    Raises
+
+    ------
         ValueError: If required environment variables such as ``APPDATA`` or
             ``PROGRAMDATA`` are missing.
     """
@@ -1108,11 +1231,15 @@ def _warn_if_output_path_is_unusual(kind: str, default_root: Path, expanded_name
 def _current_version_matches(package_root: Path, version_path: Path) -> bool:
     """Return whether ``package_root/current`` points at ``version_path``.
 
-    Args:
+    Parameters
+
+    ----------
         package_root: Package root that may contain the ``current`` junction.
         version_path: Concrete version directory to compare against.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` when ``current`` exists, is a junction, and resolves to
         *version_path*.
     """
@@ -1132,13 +1259,19 @@ def _current_version_matches(package_root: Path, version_path: Path) -> bool:
 def _resolve_unique_version_directory(package_root: Path) -> Path:
     """Return the only version directory under a package root without ``current``.
 
-    Args:
+    Parameters
+
+    ----------
         package_root: Package root that is missing a ``current`` junction.
 
-    Returns:
+    Returns
+
+    -------
         The single version directory found directly under *package_root*.
 
-    Raises:
+    Raises
+
+    ------
         ValueError: If there are no version directories or if more than one
             version directory exists and the caller must disambiguate.
     """
@@ -1167,11 +1300,15 @@ def _resolve_unique_version_directory(package_root: Path) -> Path:
 def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
     """Resolve a user-supplied path to one concrete package version.
 
-    Args:
+    Parameters
+
+    ----------
         raw_path: User-supplied path that may point at a version directory, a
             ``current`` junction, or the package root.
 
-    Returns:
+    Returns
+
+    -------
         Tuple ``(identity, installing_from_current)`` where *identity*
         describes the concrete version directory to operate on and
         *installing_from_current* reports whether the caller pointed at
@@ -1179,7 +1316,9 @@ def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
         A package root with no ``current`` junction is accepted when it
         contains exactly one version directory.
 
-    Raises:
+    Raises
+
+    ------
         ValueError: If the path does not match a supported package layout.
     """
 
@@ -1257,18 +1396,24 @@ def update_current_junction_if_needed(identity: PackageIdentity, *, force: bool 
     intentional: install uses reruns as a repair path for external state,
     so same-version targets are not treated as a junction no-op here.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package version that should become or remain ``current``.
         force: Whether to allow replacing ``current`` when it already
             points to a newer version. Same-version targets may still
             refresh ``current`` without ``force``.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` when ``current`` was recreated or repointed; ``False``
         only when ``current`` was intentionally left untouched because a
         newer version was already active.
 
-    Raises:
+    Raises
+
+    ------
         ValueError: If the existing ``current`` path is unsafe or malformed.
         RuntimeError: If the junction replacement fails.
     """
@@ -1366,12 +1511,16 @@ def install_shortcuts(
 ) -> StepResult:
     """Install every shortcut declared by a package.
 
-    Args:
+    Parameters
+
+    ----------
         shortcuts: Normalized ``[[shortcut]]`` rows from the runtime config.
         identity: Package identity used for variable expansion.
         scope_paths: Scope-specific filesystem locations computed for install.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` summarizing the shortcut step.
     """
 
@@ -1468,13 +1617,17 @@ def install_shortcuts(
 def set_environment_variable(name: str, value: str, scope: Scope, expand: bool = True) -> bool:
     """Set one environment variable in the Windows registry.
 
-    Args:
+    Parameters
+
+    ----------
         name: Variable name.
         value: Variable value.
         scope: Target installation scope.
         expand: Whether to store the value as ``REG_EXPAND_SZ``.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` on success; ``False`` on failure.
     """
 
@@ -1504,12 +1657,16 @@ def install_environment_variables(
 ) -> StepResult:
     """Install every environment variable declared by a package.
 
-    Args:
+    Parameters
+
+    ----------
         environment_entries: Normalized ``[[environment]]`` rows.
         identity: Package identity used for variable expansion.
         scope: Target install scope for registry writes.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` summarizing the environment-variable step.
     """
 
@@ -1545,10 +1702,14 @@ def install_environment_variables(
 def _path_key(path_value: str) -> str:
     """Normalize a PATH entry for de-duplication.
 
-    Args:
+    Parameters
+
+    ----------
         path_value: Original PATH entry.
 
-    Returns:
+    Returns
+
+    -------
         A normalized, case-insensitive comparison key.
     """
 
@@ -1559,10 +1720,14 @@ def _path_key(path_value: str) -> str:
 def get_current_path(scope: Scope) -> List[str]:
     """Read PATH entries from the Windows registry.
 
-    Args:
+    Parameters
+
+    ----------
         scope: Installation scope whose PATH should be read.
 
-    Returns:
+    Returns
+
+    -------
         A list of PATH components. Missing values return an empty list.
     """
 
@@ -1583,11 +1748,15 @@ def get_current_path(scope: Scope) -> List[str]:
 def set_path(path_entries: List[str], scope: Scope) -> bool:
     """Write PATH entries to the registry.
 
-    Args:
+    Parameters
+
+    ----------
         path_entries: Ordered PATH components to store.
         scope: Installation scope whose PATH should be updated.
 
-    Returns:
+    Returns
+
+    -------
         ``True`` on success; otherwise ``False``.
     """
 
@@ -1612,13 +1781,17 @@ def set_path(path_entries: List[str], scope: Scope) -> bool:
 def add_to_path(new_entries: List[str], identity: PackageIdentity, scope: Scope) -> StepResult:
     """Append directories to PATH while avoiding duplicates.
 
-    Args:
+    Parameters
+
+    ----------
         new_entries: PATH entries that may still contain ``$App``-style
             variables.
         identity: Package identity used for expansion.
         scope: Installation scope whose PATH should be updated.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` summarizing the PATH update.
     """
 
@@ -1686,12 +1859,16 @@ def add_to_path(new_entries: List[str], identity: PackageIdentity, scope: Scope)
 def ensure_bin_in_path(scope_paths: Dict[str, Path], identity: PackageIdentity, scope: Scope) -> StepResult:
     """Ensure the per-scope ``bin`` directory exists and is on PATH.
 
-    Args:
+    Parameters
+
+    ----------
         scope_paths: Scope-specific filesystem locations computed for install.
         identity: Package identity passed through to PATH expansion helpers.
         scope: Installation scope whose PATH should include ``bin``.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` summarizing the bin-directory and PATH work.
     """
 
@@ -1724,12 +1901,16 @@ def install_wrappers(
 ) -> StepResult:
     """Install every wrapper declared by a package.
 
-    Args:
+    Parameters
+
+    ----------
         wrapper_entries: Normalized ``[[bin]]`` rows from the runtime config.
         identity: Package identity used for variable expansion.
         scope_paths: Scope-specific filesystem locations computed for install.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` summarizing the wrapper-install step.
     """
 
@@ -1948,7 +2129,9 @@ def _validate_exact_keys(
 ) -> None:
     """Validate that a mapping uses only canonical keys.
 
-    Args:
+    Parameters
+
+    ----------
         data: Mapping to validate.
         allowed: Canonical keys accepted in *context*.
         context: Human-readable location such as ``config`` or ``shortcut[0]``.
@@ -1957,7 +2140,9 @@ def _validate_exact_keys(
             canonical replacement, or ``None`` for special cases with no direct
             replacement.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *data* contains an unknown or legacy key.
     """
 
@@ -1983,14 +2168,20 @@ def _validate_exact_keys(
 def _normalize_optional_string(value: Any, *, field_name: str) -> Optional[str]:
     """Normalize an optional string field.
 
-    Args:
+    Parameters
+
+    ----------
         value: Raw value to normalize.
         field_name: Human-readable field name for error messages.
 
-    Returns:
+    Returns
+
+    -------
         ``None`` when *value* is ``None``; otherwise the normalized string.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *value* is not a string or ``None``.
     """
 
@@ -2004,14 +2195,20 @@ def _normalize_optional_string(value: Any, *, field_name: str) -> Optional[str]:
 def _normalize_required_string(value: Any, *, field_name: str) -> str:
     """Normalize a required-or-empty string field.
 
-    Args:
+    Parameters
+
+    ----------
         value: Raw value to normalize.
         field_name: Human-readable field name for error messages.
 
-    Returns:
+    Returns
+
+    -------
         A string value, or ``""`` when *value* is missing.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *value* is present but not a string.
     """
 
@@ -2025,14 +2222,20 @@ def _normalize_required_string(value: Any, *, field_name: str) -> str:
 def _normalize_local_version_value(value: Any, *, field_name: str) -> int:
     """Normalize the ``localVersion`` scalar.
 
-    Args:
+    Parameters
+
+    ----------
         value: Raw value to normalize.
         field_name: Human-readable field name for error messages.
 
-    Returns:
+    Returns
+
+    -------
         The normalized integer local version.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *value* is not an integer or digit string.
     """
 
@@ -2048,14 +2251,20 @@ def _normalize_local_version_value(value: Any, *, field_name: str) -> int:
 def _normalize_only_portable_value(value: Any, *, field_name: str) -> bool:
     """Normalize the ``only_portable`` scalar.
 
-    Args:
+    Parameters
+
+    ----------
         value: Raw value to normalize.
         field_name: Human-readable field name for error messages.
 
-    Returns:
+    Returns
+
+    -------
         The normalized boolean value.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *value* is not a boolean.
     """
 
@@ -2219,16 +2428,22 @@ def normalize_origin_config(raw_origin: Any, package_version: str) -> Optional[D
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
-    Args:
+    Parameters
+
+    ----------
         raw: Parsed TOML data or ``None``.
         identity: Directory-derived package identity used to supply defaults.
 
-    Returns:
+    Returns
+
+    -------
         A normalized dictionary that stays close to the canonical ``pkg.toml``
         shape. The install path uses this one representation directly instead
         of translating into another layer of short-lived row objects.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If *raw* is not a canonical configuration table.
     """
 
@@ -2405,10 +2620,14 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
 def validate_runtime_config(config: Dict[str, Any]) -> None:
     """Validate required fields in a normalized runtime config.
 
-    Args:
+    Parameters
+
+    ----------
         config: Runtime config to validate.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If required fields are missing.
     """
 
@@ -2445,15 +2664,21 @@ def validate_runtime_config(config: Dict[str, Any]) -> None:
 def check_metadata_consistency(identity: PackageIdentity, raw_config: Dict[str, Any]) -> List[str]:
     """Compare directory-derived metadata with raw configuration metadata.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package identity derived from the directory layout.
         raw_config: Raw config dictionary derived from ``pkg.toml``.
 
-    Returns:
+    Returns
+
+    -------
         A list of human-readable mismatch descriptions. The list is empty when
         the metadata is consistent.
 
-    Raises:
+    Raises
+
+    ------
         TypeError: If *raw_config* is not a dictionary.
     """
 
@@ -2488,17 +2713,23 @@ def check_metadata_consistency(identity: PackageIdentity, raw_config: Dict[str, 
 def read_runtime_config(identity: PackageIdentity, use_defaults: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
     """Read and validate ``pkg.toml`` for one package version.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package identity whose ``pkg.toml`` should be loaded.
         use_defaults: Whether to fall back to defaults when parsing or
             validation fails.
 
-    Returns:
+    Returns
+
+    -------
         A tuple ``(runtime_config, raw_dict, warnings)`` where ``raw_dict`` is
         the file-authored config when ``pkg.toml`` exists, or ``{}`` when no
         config is available.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If the config is invalid and *use_defaults* is
             ``False``.
         RuntimeError: If the config cannot be read and *use_defaults* is
@@ -2534,11 +2765,15 @@ def update_config_file(identity: PackageIdentity) -> StepResult:
     templates; existing configs are rewritten only when they already use the
     canonical top-level metadata keys that ``pkg`` owns.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package identity whose directory-derived metadata should be
             written back to ``pkg.toml``.
 
-    Returns:
+    Returns
+
+    -------
         A :class:`StepResult` describing the update.
     """
 
@@ -2564,10 +2799,14 @@ def update_config_file(identity: PackageIdentity) -> StepResult:
 def _to_toml_scalar(value: Any) -> str:
     """Render a Python value as TOML literal text.
 
-    Args:
+    Parameters
+
+    ----------
         value: Python scalar or list value.
 
-    Returns:
+    Returns
+
+    -------
         TOML literal text representing *value*.
     """
 
@@ -2585,10 +2824,14 @@ def _to_toml_scalar(value: Any) -> str:
 def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
     """Return the directory-derived metadata owned by ``pkg``.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package identity whose metadata should be serialized.
 
-    Returns:
+    Returns
+
+    -------
         Dictionary containing only metadata fields that ``pkg`` owns.
     """
 
@@ -2685,14 +2928,20 @@ def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, s
 def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str, bool]:
     """Synchronize owned metadata directly in canonical ``pkg.toml`` text.
 
-    Args:
+    Parameters
+
+    ----------
         text: Existing TOML text to update.
         identity: Package identity that supplies the target metadata values.
 
-    Returns:
+    Returns
+
+    -------
         Tuple ``(rendered_text, changed)``.
 
-    Raises:
+    Raises
+
+    ------
         ConfigValidationError: If the existing file is not valid TOML or still
             uses legacy top-level metadata spellings.
     """
@@ -2826,10 +3075,14 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
 def create_starter_config(identity: PackageIdentity) -> str:
     """Create a documented starter ``pkg.toml`` for a package.
 
-    Args:
+    Parameters
+
+    ----------
         identity: Package identity that supplies starter metadata values.
 
-    Returns:
+    Returns
+
+    -------
         TOML text that includes synchronized metadata, documentation comments,
         and commented example blocks for the supported runtime sections.
     """
@@ -2937,7 +3190,9 @@ def create_starter_config(identity: PackageIdentity) -> str:
 def print_action_banner(operation: Action, scope: Scope) -> None:
     """Emit the standard CLI banner for one operation.
 
-    Args:
+    Parameters
+
+    ----------
         operation: Action currently being executed.
         scope: Installation scope selected by the caller.
     """
@@ -2954,12 +3209,16 @@ def print_action_banner(operation: Action, scope: Scope) -> None:
 def action_failure(message: str, *, exit_code: int, warnings: Optional[List[str]] = None) -> ActionResult:
     """Create a failed action result and report the error.
 
-    Args:
+    Parameters
+
+    ----------
         message: Human-readable error message.
         exit_code: Exit code that should be returned to the caller.
         warnings: Optional list of already-collected warnings.
 
-    Returns:
+    Returns
+
+    -------
         An :class:`ActionResult` representing the failure.
     """
 
@@ -3277,29 +3536,41 @@ def install_components(
     4. add package-specific extra ``PATH`` entries
     5. create wrapper/bin files
 
-    Args:
-        identity: Package version being installed.
-        scope: Selected installation scope.
-        scope_paths: Scope-specific filesystem locations computed for install.
-        runtime_config: Canonical normalized runtime config derived from
-            ``pkg.toml``.
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version being installed.
+    scope : Scope
+        Selected installation scope.
+    scope_paths : dict[str, Path]
+        Scope-specific filesystem locations computed for installation.
+    runtime_config : dict[str, Any]
+        Canonical normalized runtime config derived from ``pkg.toml``.
 
-    Returns:
-        Aggregated :class:`StepResult` for all component steps.
+    Returns
+    -------
+    StepResult
+        Aggregated step result for the fixed install sequence.
     """
 
+    # Create package-owned shortcuts before mutating PATH or wrapper files so a
+    # partial install still exposes the most user-visible entrypoints first.
     shortcut_result = StepResult(ok=True, changed=False)
     if runtime_config["shortcut"]:
         log_info("")
         log_info("Creating shortcuts...")
         shortcut_result = install_shortcuts(runtime_config["shortcut"], identity, scope_paths)
 
+    # Apply environment variables next so later wrapper and PATH work can rely
+    # on the persisted scope values that users expect after installation.
     environment_result = StepResult(ok=True, changed=False)
     if runtime_config["environment"]:
         log_info("")
         log_info("Setting environment variables...")
         environment_result = install_environment_variables(runtime_config["environment"], identity, scope)
 
+    # Treat PATH management as one phase because wrapper creation may require a
+    # shared ``bin`` directory as well as package-specific extra entries.
     bin_path_result = StepResult(ok=True, changed=False)
     extra_path_result = StepResult(ok=True, changed=False)
     if runtime_config["bin"] or runtime_config["path"]:
@@ -3312,12 +3583,16 @@ def install_components(
     if runtime_config["path"]:
         extra_path_result = add_to_path(runtime_config["path"], identity, scope)
 
+    # Emit wrapper files last so they can target directories and PATH entries
+    # that were prepared earlier in the install sequence.
     wrapper_result = StepResult(ok=True, changed=False)
     if runtime_config["bin"]:
         log_info("")
         log_info("Creating executable wrappers...")
         wrapper_result = install_wrappers(runtime_config["bin"], identity, scope_paths)
 
+    # Merge per-step status into one result object that accurately reports
+    # whether the overall install mutated state and whether any step failed.
     combined = StepResult(ok=True, changed=False)
     for step_result in (shortcut_result, environment_result, bin_path_result, extra_path_result, wrapper_result):
         combined.ok = combined.ok and step_result.ok
@@ -3347,32 +3622,45 @@ def install_package(
     can be restored. Depending on *package_path*, reinstall may also refresh
     the ``current`` junction.
 
-    Args:
-        package_path: User-supplied path to a version directory, package root,
-            or ``current`` junction.
-        scope: Installation scope to use for mutations.
-        fix_config: Whether installs may synchronize mismatched metadata
-            automatically.
-        use_defaults: Whether installs may fall back to runtime defaults when
-            TOML loading fails.
-        force: Whether installs may replace ``current`` even when it already
-            points to a newer version. Ordinary same-version repair reruns do
-            not require ``force``.
-        refresh_app: Whether to repopulate ``App/`` from origin even when it
-            already contains files.
-        no_checksum: Whether to skip configured origin checksum verification.
+    Parameters
+    ----------
+    package_path : Path
+        User-supplied path to a version directory, package root, or
+        ``current`` junction.
+    scope : Scope, default=Scope.USER
+        Installation scope to use for mutations.
+    fix_config : bool, default=False
+        Whether installs may synchronize mismatched metadata automatically.
+    use_defaults : bool, default=False
+        Whether installs may fall back to runtime defaults when TOML loading
+        fails.
+    force : bool, default=False
+        Whether installs may replace ``current`` even when it already points to
+        a newer version. Ordinary same-version repair reruns do not require
+        ``force``.
+    refresh_app : bool, default=False
+        Whether to repopulate ``App/`` from origin even when it already
+        contains files.
+    no_checksum : bool, default=False
+        Whether to skip configured origin checksum verification.
 
-    Returns:
-        An :class:`ActionResult` describing the install outcome.
+    Returns
+    -------
+    ActionResult
+        Truthful description of the install outcome and recommended exit code.
     """
 
     print_action_banner(Action.INSTALL, scope)
 
+    # Resolve the caller's path first so every later step works from a concrete
+    # version directory and knows whether ``current`` was the original target.
     try:
         identity, installing_from_current = resolve_input_path(Path(package_path))
     except ValueError as exc:
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
 
+    # Load runtime config and scope paths before any mutations so validation or
+    # filesystem failures stop the install cleanly.
     try:
         scope_paths = compute_scope_paths(scope)
         runtime_config, raw_config_data, load_warnings = read_runtime_config(identity, use_defaults=use_defaults)
@@ -3385,6 +3673,8 @@ def install_package(
     for warning in load_warnings:
         log_warning(warning)
 
+    # Keep directory-derived metadata authoritative. When the config disagrees,
+    # either stop with actionable guidance or repair it explicitly.
     config_sync_changed = False
     inconsistencies = check_metadata_consistency(identity, raw_config_data)
     if inconsistencies:
@@ -3450,6 +3740,8 @@ def install_package(
     log_info(f"only_portable: {runtime_config['only_portable']}")
     log_info("")
 
+    # Reject scope combinations the package model cannot support before any
+    # junction or origin work begins.
     if runtime_config["only_portable"] and scope == Scope.MACHINE:
         return action_failure(
             "only_portable packages cannot be installed system-wide. Please use User scope.",
@@ -3464,6 +3756,9 @@ def install_package(
             warnings=warnings,
         )
 
+    # Update the package-root ``current`` junction unless the caller already
+    # targeted it directly. Older installed versions are left intact unless the
+    # caller explicitly forces replacement.
     junction_changed = False
     if installing_from_current:
         log_info("Installing from resolved 'current' target (skipping junction management)")
@@ -3485,6 +3780,8 @@ def install_package(
                 exit_code=EXIT_SUCCESS,
             )
 
+    # Populate ``App/`` before installing shortcuts or wrappers so every later
+    # artifact can rely on the application payload being present.
     log_info("")
     origin_result = populate_app_from_origin(
         identity,
@@ -3505,6 +3802,7 @@ def install_package(
             exit_code=EXIT_MUTATION_ERROR,
         )
 
+    # Apply the fixed component sequence only after origin population succeeds.
     log_info("")
     log_info("Installing components...")
     component_result = install_components(identity, scope, scope_paths, runtime_config)
@@ -3533,13 +3831,18 @@ def install_package(
 def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> ActionResult:
     """Synchronize ``pkg.toml`` metadata for one package.
 
-    Args:
-        package_path: User-supplied path to a version directory, package root,
-            or ``current`` junction.
-        scope: Selected CLI scope, used only for the standard banner output.
+    Parameters
+    ----------
+    package_path : Path
+        User-supplied path to a version directory, package root, or
+        ``current`` junction.
+    scope : Scope, default=Scope.USER
+        Selected CLI scope, used only for standard banner output.
 
-    Returns:
-        An :class:`ActionResult` describing the metadata-update outcome.
+    Returns
+    -------
+    ActionResult
+        Metadata update outcome and recommended exit code.
     """
 
     print_action_banner(Action.UPDATE_CONFIG, scope)
@@ -3566,7 +3869,21 @@ def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> A
 
 
 def health_check_package(package_path: Path, *, scope: Scope = Scope.USER) -> ActionResult:
-    """Validate one package configuration without mutating state."""
+    """Validate one package configuration without mutating state.
+
+    Parameters
+    ----------
+    package_path : Path
+        User-supplied path to a version directory, package root, or
+        ``current`` junction.
+    scope : Scope, default=Scope.USER
+        Selected CLI scope, used only for standard banner output.
+
+    Returns
+    -------
+    ActionResult
+        Validation outcome and recommended exit code.
+    """
 
     print_action_banner(Action.HEALTH_CHECK, scope)
 
@@ -3613,11 +3930,16 @@ class _ExtendedHelpAction(argparse.Action):
     def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
         """Create the extended-help argparse action.
 
-        Args:
-            option_strings: CLI flags that trigger the action.
-            dest: Argparse destination name.
-            default: Default argparse value.
-            help: Help text shown in ``--help`` output.
+        Parameters
+        ----------
+        option_strings : list[str]
+            CLI flags that trigger the action.
+        dest : str, default=argparse.SUPPRESS
+            Argparse destination name.
+        default : Any, default=argparse.SUPPRESS
+            Default argparse value.
+        help : str | None, default=None
+            Help text shown in ``--help`` output.
         """
 
         super().__init__(option_strings=option_strings, dest=dest, default=default, nargs=0, help=help)
@@ -3625,11 +3947,16 @@ class _ExtendedHelpAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         """Print standard and extended help, then exit.
 
-        Args:
-            parser: Active argument parser.
-            namespace: Parsed namespace (unused).
-            values: Parsed values for the option (unused).
-            option_string: Exact CLI option that triggered the action.
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            Active argument parser.
+        namespace : argparse.Namespace
+            Parsed namespace, unused by this action.
+        values : Any
+            Parsed values for the option, unused by this action.
+        option_string : str | None, default=None
+            Exact CLI option that triggered the action.
         """
 
         _ = namespace
@@ -3645,11 +3972,15 @@ class _ExtendedHelpAction(argparse.Action):
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point for ``pkg``.
 
-    Args:
-        argv: Optional argument list excluding the program name. When omitted,
-            :data:`sys.argv[1:]` is used by :mod:`argparse`.
+    Parameters
+    ----------
+    argv : list[str] | None, default=None
+        Optional argument list excluding the program name. When omitted,
+        :data:`sys.argv[1:]` is used by :mod:`argparse`.
 
-    Returns:
+    Returns
+    -------
+    int
         Process exit code.
     """
 
@@ -3680,18 +4011,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         version=f"%(prog)s {__version__}",
         help="Show program's version number and exit",
     )
-
-
-
-    #``pkg.cmd`` forwards ``--python`` to ``pkg.py`` as part of the bootstrap
-    # interpreter-selection contract. The argument stays hidden from ordinary
-    # help because users normally select Python through the launcher.
-
-    #TODO: this is not correct. pkg.cmd parses its --python argument to decide
-    # which python to use to run the pkg.py (if not the default) but we want to 
-    # avoid implementing argument parsing and removal logic in windows shell language
-    # so we just forward all agrguments to pkg.py later. It is therefore important that pkg.py not 
-    # break when receiving a seemingly useless --python argument.
+    # ``pkg.cmd`` forwards ``--python`` while deciding which interpreter should
+    # launch this script. Keep accepting the flag here so the batch wrapper can
+    # pass it through unchanged without needing its own argument rewriting.
 
     parser.add_argument(
         "--python",

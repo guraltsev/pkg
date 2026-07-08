@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Best-effort converter from legacy package config files to ``pkg.toml``.
+"""Convert legacy package metadata files into one canonical ``pkg.toml``.
 
-The helper scans a directory for older JSON files and rewrites what it can into
-one canonical ``pkg.toml`` file. It prefers producing current schema that
-``pkg.py`` accepts today over preserving every old shape. Missing files,
-partially malformed input, and uncertain metadata are treated as warnings rather
-than hard failures, so manual review is still expected.
+Call ``main()`` to scan one package version directory for older JSON or TOML
+files and emit current-schema ``pkg.toml`` content. The converter keeps working
+through missing files, malformed legacy sections, and uncertain metadata by
+printing warnings so callers can review the result before relying on it.
 """
 
 from __future__ import annotations
@@ -27,6 +26,8 @@ LEGACY_METADATA_FILENAMES = [
     "pkg.json",
     "pkg.toml",
 ]
+
+
 def new_config() -> dict[str, Any]:
     """Create an empty canonical config dictionary."""
 
@@ -48,11 +49,15 @@ def new_config() -> dict[str, Any]:
 def to_toml_scalar(value: Any) -> str:
     """Render a Python value as TOML literal text.
 
-    Args:
-        value: Python scalar or list value to render.
+    Parameters
+    ----------
+    value : Any
+        Python scalar or list value to render.
 
-    Returns:
-        TOML literal text representing *value*.
+    Returns
+    -------
+    str
+        TOML literal text representing ``value``.
     """
 
     if value is None:
@@ -82,10 +87,14 @@ def toml_path_lines(path_entries: list[str]) -> list[str]:
 def read_legacy_data(path: Path) -> Any | None:
     """Read a legacy JSON or TOML file.
 
-    Args:
-        path: Legacy config file path to read.
+    Parameters
+    ----------
+    path : Path
+        Legacy config file path to read.
 
-    Returns:
+    Returns
+    -------
+    Any | None
         Parsed object, or ``None`` when the file cannot be parsed.
     """
 
@@ -439,21 +448,31 @@ def merge_missing_metadata(output: dict[str, Any], inferred: dict[str, Any]) -> 
 def build_config(base_dir: Path) -> dict[str, Any]:
     """Build a canonical ``pkg.toml``-style config from legacy files.
 
-    Args:
-        base_dir: Directory that contains legacy JSON files.
+    Parameters
+    ----------
+    base_dir : Path
+        Directory that contains legacy JSON and TOML files.
 
-    Returns:
-        Canonical configuration dictionary.
+    Returns
+    -------
+    dict[str, Any]
+        Canonical configuration dictionary assembled from the discovered
+        sources.
     """
 
     out = new_config()
     inferred = infer_metadata_from_directory(base_dir)
 
+    # Merge primary metadata files first so explicit package identity and
+    # origin fields are established before section-specific files add rows.
     for metadata_file in pick_legacy_metadata_files(base_dir):
         data = read_legacy_data(metadata_file)
         if data is not None:
             merge_legacy_source(out, data, source_name=metadata_file.name)
 
+    # Legacy repos often split repeated tables into dedicated files. Extend the
+    # canonical lists in discovery order so later review sees every recovered
+    # declaration in one config.
     for env_file in [*pick_all_matching(base_dir, "environment"), *pick_all_matching(base_dir, "env")]:
         data = read_legacy_data(env_file)
         if data is None:
@@ -554,7 +573,9 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
 def main() -> int:
     """Run the legacy-to-TOML converter CLI.
 
-    Returns:
+    Returns
+    -------
+    int
         Process exit code.
     """
 

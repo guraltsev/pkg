@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 """Import Windows shortcut files from ``_shortcuts`` into ``pkg.toml``.
 
-The helper reads real ``.lnk`` files from a package version directory, converts
-paths under package-owned folders to ``$App``, ``$Icons``, and ``$Shortcuts``,
-and rewrites matching ``[[shortcut]]`` entries in the existing TOML file.
-Unrelated configuration sections are preserved.
-
-Section guide
--------------
-
-- ``Command workflow`` - CLI parsing and the end-to-end TOML update operation.
-- ``Shortcut reading`` - Windows Shell integration for reading ``.lnk`` files.
-- ``Path normalization`` - Conversion of absolute package paths to variables.
-- ``TOML rendering`` - Targeted replacement of ``[[shortcut]]`` tables.
+Call ``import_shortcuts(...)`` or the command-line ``main()`` wrapper to read
+real ``.lnk`` files from one package version directory and rewrite matching
+``[[shortcut]]`` entries in the existing TOML file. Package-owned absolute
+paths are converted back to ``$App``, ``$Icons``, and ``$Shortcuts`` while
+unrelated configuration sections and comments are preserved.
 """
 
 from __future__ import annotations
@@ -42,7 +35,7 @@ from typing import Any
 class ShortcutEntry:
     """Represent one canonical ``[[shortcut]]`` table.
 
-    Parameters
+    Attributes
     ----------
     name : str
         Shortcut name relative to the package shortcut root, without ``.lnk``.
@@ -161,10 +154,13 @@ def main() -> int:
     if not config_path.is_absolute():
         config_path = base_dir / config_path
 
+    # Let callers inspect the exact rewritten TOML before any file mutation.
     if args.dry_run:
         print(rendered, end="")
         return 0
 
+    # Preserve the prior config by default because shortcut import rewrites one
+    # section in place and users may want an easy rollback.
     if not args.no_backup:
         shutil.copy2(config_path, config_path.with_name(config_path.name + ".bak"))
     config_path.write_text(rendered, encoding="utf-8")
@@ -269,6 +265,8 @@ def normalize_package_path(value: str, path_context: list[tuple[Path, str]]) -> 
     if value == "":
         return ""
 
+    # Normalize old variable spellings first, then prefer the longest absolute
+    # prefix so nested package folders map back to the most specific variable.
     normalized = normalize_known_package_variables(value)
     for prefix, variable in path_context:
         converted = replace_path_prefix(normalized, prefix, variable)
