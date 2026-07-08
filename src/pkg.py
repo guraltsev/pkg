@@ -23,6 +23,7 @@ from __future__ import annotations
 #------------------------------------------
 # Section: Shared models and pure helpers
 #------------------------------------------
+import hashlib
 import json
 import logging
 import os
@@ -30,9 +31,12 @@ import re
 import shutil
 import tempfile
 import tomllib
+import urllib.parse
+import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 __version__ = "0.12.0"
@@ -73,10 +77,12 @@ class Action(Enum):
 
     ``INSTALL`` applies the package to the selected scope. ``UPDATE_CONFIG``
     only synchronizes configuration metadata back to ``pkg.toml``.
+    ``HEALTH_CHECK`` validates package metadata without mutating state.
     """
 
     INSTALL = "Install"
     UPDATE_CONFIG = "UpdateConfig"
+    HEALTH_CHECK = "HealthCheck"
 
 
 @dataclass
@@ -1804,6 +1810,7 @@ Quick start
 Notes:
   - ``pkg --help`` and ``pkg --version`` do not write files.
   - ``Install`` does not auto-create ``pkg.toml``.
+  - ``HealthCheck`` validates ``pkg.toml`` and origin script references without writing files.
   - ``UpdateConfig`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``UpdateConfig`` syncs only canonical top-level metadata keys in an existing file.
   - Contributor notes live in ``docs/development.md``.
@@ -1840,7 +1847,43 @@ Machine scope (requires admin):
 Canonical config keys
 ~~~~~~~~~~~~~~~~~~~~~
 
-1) Shortcuts (``shortcut`` list)
+1) Origin (optional ``origin`` table)
+   A package can populate a missing or empty ``App/`` before components are
+   installed. Built-in zip origins use:
+
+     [origin]
+     url = "https://example.invalid/tool.zip"
+     version = "1.2.3"
+     checksum = "sha256:<64 hex characters>"
+     extractSubdir = "tool"
+
+   Historical zip origins use repeated versioned tables:
+
+     [[origin.versions]]
+     version = "1.1.0"
+     url = "https://example.invalid/tool-1.1.0.zip"
+
+   If the current origin is one of those entries, omit top-level ``url`` and
+   ``script`` and set ``origin.version`` to the selected entry:
+
+     [origin]
+     version = "1.1.0"
+
+     [[origin.versions]]
+     version = "1.1.0"
+     url = "https://example.invalid/tool-1.1.0.zip"
+
+   Script origins use:
+
+     [origin]
+     script = "scripts\populate-app.ps1"
+     version = "1.2.3"
+
+   ``script`` and ``url`` are mutually exclusive. Use ``--refresh-app`` to
+   replace an already populated ``App/``. Use ``--no-checksum`` to skip a
+   configured checksum with a warning.
+
+2) Shortcuts (``shortcut`` list)
    Supported keys:
 
    - ``name`` (required): output name after expansion; may be a simple name,
@@ -1852,13 +1895,13 @@ Canonical config keys
    - ``iconLocation`` (optional): e.g. ``C:\path\icon.ico,0``
    - ``description`` (optional)
 
-2) Environment variables (``environment`` list)
+3) Environment variables (``environment`` list)
    Canonical keys are ``Name`` and ``Value``.
 
-3) PATH additions (``path`` list)
+4) PATH additions (``path`` list)
    Use repeated ``[[path]]`` tables with the single key ``value``.
 
-4) Bin wrappers (``bin`` list)
+5) Bin wrappers (``bin`` list)
    Each entry has ``name`` and ``content``. ``name`` follows the same output
    placement rule as shortcuts: it may be a simple name, a nested relative
    path, or a path-like destination outside the default bin root. Wrapper
@@ -2022,6 +2065,116 @@ def _normalize_only_portable_value(value: Any, *, field_name: str) -> bool:
     return value
 
 
+def normalize_origin_source(raw_source: Dict[str, Any], *, context: str, require_version: bool) -> Dict[str, str]:
+    """Normalize one origin source table."""
+
+    source_keys = {"url", "version", "checksum", "extractSubdir", "script"}
+    _validate_exact_keys(
+        raw_source,
+        allowed=source_keys,
+        context=context,
+        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script"],
+    )
+
+    url = _normalize_optional_string(raw_source.get("url"), field_name=f"{context}.url")
+    origin_version = _normalize_optional_string(raw_source.get("version"), field_name=f"{context}.version")
+    script = _normalize_optional_string(raw_source.get("script"), field_name=f"{context}.script")
+    checksum = _normalize_optional_string(raw_source.get("checksum"), field_name=f"{context}.checksum")
+    extract_subdir = _normalize_optional_string(raw_source.get("extractSubdir"), field_name=f"{context}.extractSubdir")
+
+    if bool(url) == bool(script):
+        raise ConfigValidationError(f"[{context}] must declare exactly one of 'url' or 'script'")
+    if require_version and not origin_version:
+        raise ConfigValidationError(f"[{context}].version is required")
+
+    if url:
+        parsed_url = urllib.parse.urlparse(url)
+        if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+            raise ConfigValidationError(f"[{context}].url must be an HTTP or HTTPS URL")
+        normalized: Dict[str, str] = {"mode": "zip", "url": url}
+        if origin_version is not None:
+            normalized["version"] = origin_version
+        if checksum:
+            algorithm, separator, expected_hex = checksum.partition(":")
+            if separator != ":" or algorithm.lower() != "sha256":
+                raise ConfigValidationError(f"[{context}].checksum must use sha256:<hex> syntax")
+            if len(expected_hex) != 64 or re.fullmatch(r"[0-9A-Fa-f]{64}", expected_hex) is None:
+                raise ConfigValidationError(f"[{context}].checksum must be sha256 followed by 64 hex characters")
+            normalized["checksum"] = f"sha256:{expected_hex.lower()}"
+        if extract_subdir is not None:
+            normalized["extractSubdir"] = extract_subdir
+        return normalized
+
+    if script is not None and script.strip() == "":
+        raise ConfigValidationError(f"[{context}].script must not be empty")
+    normalized = {"mode": "script", "script": script or ""}
+    if origin_version is not None:
+        normalized["version"] = origin_version
+    return normalized
+
+
+def normalize_origin_config(raw_origin: Any) -> Optional[Dict[str, Any]]:
+    """Normalize the optional ``[origin]`` table."""
+
+    if raw_origin is None:
+        return None
+    if not isinstance(raw_origin, dict):
+        raise ConfigValidationError(f"'origin' must be a table, got: {type(raw_origin).__name__}")
+
+    origin_keys = {"url", "version", "checksum", "extractSubdir", "script", "versions"}
+    _validate_exact_keys(
+        raw_origin,
+        allowed=origin_keys,
+        context="origin",
+        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script", "versions"],
+    )
+
+    # Historical origins are explicit versioned source entries. They share the
+    # same provider fields as the current origin but must always name a version.
+    raw_versions = raw_origin.get("versions")
+    versions: List[Dict[str, str]] = []
+    if raw_versions is not None:
+        if not isinstance(raw_versions, list):
+            raise ConfigValidationError(f"'origin.versions' must be a list, got: {type(raw_versions).__name__}")
+        seen_versions: set[str] = set()
+        for index, item in enumerate(raw_versions):
+            if not isinstance(item, dict):
+                raise ConfigValidationError(f"'origin.versions[{index}]' must be a table, got: {type(item).__name__}")
+            normalized_item = normalize_origin_source(item, context=f"origin.versions[{index}]", require_version=True)
+            item_version = normalized_item["version"]
+            if item_version in seen_versions:
+                raise ConfigValidationError(f"[origin.versions] contains duplicate version: {item_version}")
+            seen_versions.add(item_version)
+            versions.append(normalized_item)
+
+    has_inline_source = bool(raw_origin.get("url")) or bool(raw_origin.get("script"))
+    if has_inline_source:
+        current_source = {
+            key: raw_origin[key]
+            for key in ("url", "version", "checksum", "extractSubdir", "script")
+            if key in raw_origin
+        }
+        normalized = normalize_origin_source(current_source, context="origin", require_version=False)
+        if versions:
+            normalized["versions"] = versions
+        return normalized
+
+    selected_version = _normalize_optional_string(raw_origin.get("version"), field_name="origin.version")
+    if versions and selected_version:
+        for item in versions:
+            if item["version"] == selected_version:
+                normalized = dict(item)
+                normalized["versions"] = versions
+                normalized["selectedVersion"] = selected_version
+                return normalized
+        raise ConfigValidationError("[origin].version must match one entry in [[origin.versions]]")
+
+    if versions:
+        raise ConfigValidationError("[origin] must declare url/script or set version to one [[origin.versions]] entry")
+
+    raise ConfigValidationError("[origin] must declare exactly one of 'url' or 'script'")
+
+
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
@@ -2049,7 +2202,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         "localVersion",
         "description",
         "homepage",
-        "downloadURL",
+        "origin",
         "only_portable",
         "environment",
         "shortcut",
@@ -2062,7 +2215,8 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         "portable": "only_portable",
         "onlyportable": "only_portable",
         "local_version": "localVersion",
-        "download_url": "downloadURL",
+        "downloadurl": "origin",
+        "download_url": "origin",
         "main": None,
     }
     _validate_exact_keys(
@@ -2084,6 +2238,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         if only_portable_value is None
         else _normalize_only_portable_value(only_portable_value, field_name="only_portable")
     )
+    normalized_origin = normalize_origin_config(raw.get("origin"))
 
     environment_entries: List[Dict[str, str]] = []
     raw_environment = raw.get("environment")
@@ -2197,7 +2352,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
     return {
         "description": _normalize_optional_string(raw.get("description"), field_name="description"),
         "homepage": _normalize_optional_string(raw.get("homepage"), field_name="homepage"),
-        "downloadURL": _normalize_optional_string(raw.get("downloadURL"), field_name="downloadURL"),
+        "origin": normalized_origin,
         "only_portable": normalized_only_portable,
         "environment": environment_entries,
         "shortcut": shortcut_entries,
@@ -2516,7 +2671,7 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
         "localVersion",
         "description",
         "homepage",
-        "downloadURL",
+        "origin",
         "only_portable",
         "environment",
         "shortcut",
@@ -2529,7 +2684,8 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
         "portable": "only_portable",
         "onlyportable": "only_portable",
         "local_version": "localVersion",
-        "download_url": "downloadURL",
+        "downloadurl": "origin",
+        "download_url": "origin",
         "main": None,
     }
     _validate_exact_keys(
@@ -2664,7 +2820,30 @@ def create_starter_config(identity: PackageIdentity) -> str:
         "",
         f"# description = {_to_toml_scalar(example_description)}",
         f"# homepage = {_to_toml_scalar(example_homepage)}",
-        f"# downloadURL = {_to_toml_scalar(example_download)}",
+        "# [origin]",
+        f"# url = {_to_toml_scalar(example_download)}",
+        f"# version = {_to_toml_scalar(metadata['version'])}",
+        "# checksum = \"sha256:<64 hex characters>\"",
+        "# extractSubdir = \"tool-portable\"",
+        "#",
+        "# Or replace url/checksum/extractSubdir with a package-local script:",
+        "# script = \"scripts/populate-app.ps1\"",
+        "#",
+        "# Optional history of older origins:",
+        "# [[origin.versions]]",
+        "# version = \"1.0.0\"",
+        "# url = \"https://example.invalid/tool-1.0.0.zip\"",
+        "# checksum = \"sha256:<64 hex characters>\"",
+        "# extractSubdir = \"tool-1.0.0\"",
+        "#",
+        "# To select one historical entry as the current origin, omit top-level",
+        "# url/script above and set [origin].version to a matching entry:",
+        "# [origin]",
+        "# version = \"1.0.0\"",
+        "#",
+        "# [[origin.versions]]",
+        "# version = \"1.0.0\"",
+        "# url = \"https://example.invalid/tool-1.0.0.zip\"",
         "",
         "# Variable expansion reference:",
         "#   $App, $Icons, $Shortcuts -> package directories under <package>/current/",
@@ -2740,6 +2919,286 @@ def action_failure(message: str, *, exit_code: int, warnings: Optional[List[str]
         errors=[message],
         exit_code=exit_code,
     )
+
+
+def _app_contains_entries(app_path: Path) -> bool:
+    """Return whether ``App/`` exists and contains at least one entry."""
+
+    return app_path.exists() and any(app_path.iterdir())
+
+
+def app_needs_origin_population(identity: PackageIdentity, refresh_app: bool) -> bool:
+    """Return whether the selected package version needs ``App/`` population."""
+
+    app_path = identity.version_path / "App"
+    return refresh_app or not _app_contains_entries(app_path)
+
+
+def populate_app_from_origin(
+    identity: PackageIdentity,
+    runtime_config: Dict[str, Any],
+    *,
+    no_checksum: bool = False,
+    refresh_app: bool = False,
+) -> StepResult:
+    """Populate ``App/`` from the package origin when the install requires it."""
+
+    origin = runtime_config.get("origin")
+    app_path = identity.version_path / "App"
+    if origin is None:
+        return StepResult(ok=True, changed=False)
+
+    if not app_needs_origin_population(identity, refresh_app):
+        log_info("App is already populated; skipping origin population")
+        return StepResult(ok=True, changed=False)
+
+    if refresh_app and _app_contains_entries(app_path):
+        log_info("--refresh-app enabled; clearing App before origin population")
+    elif app_path.exists():
+        log_info("App is empty; populating from origin...")
+    else:
+        log_info("App is missing; populating from origin...")
+
+    try:
+        if origin["mode"] == "zip":
+            populate_app_from_zip_origin(identity, origin, no_checksum=no_checksum)
+        elif origin["mode"] == "script":
+            populate_app_from_script_origin(identity, origin, runtime_config, refresh_app=refresh_app)
+        else:
+            return StepResult(ok=False, errors=[f"Unsupported origin mode: {origin['mode']}"])
+    except Exception as exc:
+        message = str(exc)
+        log_error(message)
+        return StepResult(ok=False, changed=False, errors=[message])
+    return StepResult(ok=True, changed=True)
+
+
+def populate_app_from_zip_origin(identity: PackageIdentity, origin: Dict[str, str], *, no_checksum: bool) -> None:
+    """Populate ``App/`` from a downloaded zip archive."""
+
+    app_path = identity.version_path / "App"
+    with tempfile.TemporaryDirectory(prefix=".pkg-origin-", dir=str(identity.version_path)) as temp_root_name:
+        temp_root = Path(temp_root_name)
+        archive_path = temp_root / "origin.zip"
+        staging_dir = temp_root / "extract"
+        prepared_app = temp_root / "App.new"
+        staging_dir.mkdir()
+
+        log_info(f"Downloading origin: {origin['url']}")
+        with urllib.request.urlopen(origin["url"]) as response:
+            with open(archive_path, "wb") as file_handle:
+                shutil.copyfileobj(response, file_handle)
+
+        checksum = origin.get("checksum")
+        if checksum and no_checksum:
+            log_warning("Checksum verification skipped because --no-checksum was provided")
+        elif checksum:
+            log_info("Verifying sha256 checksum...")
+            expected = checksum.split(":", 1)[1].lower()
+            digest = hashlib.sha256()
+            with open(archive_path, "rb") as file_handle:
+                for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest().lower() != expected:
+                raise RuntimeError("[origin].checksum did not match downloaded file")
+
+        log_info("Extracting zip archive...")
+        safe_extract_zip(archive_path, staging_dir)
+
+        selected_source = staging_dir
+        extract_subdir = origin.get("extractSubdir")
+        if extract_subdir:
+            log_info(f"Using archive subdirectory: {extract_subdir}")
+            selected_source = staging_dir / extract_subdir
+        resolved_source = selected_source.resolve()
+        resolved_staging = staging_dir.resolve()
+        if not resolved_source.is_relative_to(resolved_staging):
+            raise RuntimeError("[origin].extractSubdir cannot escape the archive")
+        if not selected_source.exists() or not selected_source.is_dir():
+            raise RuntimeError("[origin].extractSubdir was not found in the archive")
+
+        prepared_app.mkdir()
+        _copy_directory_contents(selected_source, prepared_app)
+        _replace_app_directory(identity.version_path, app_path, prepared_app)
+
+
+def safe_extract_zip(zip_path: Path, destination: Path) -> None:
+    """Extract a zip archive after rejecting unsafe members."""
+
+    resolved_destination = destination.resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            member_path = Path(member.filename)
+            windows_member_path = PureWindowsPath(member.filename)
+            if (
+                member_path.is_absolute()
+                or windows_member_path.is_absolute()
+                or windows_member_path.drive
+                or ".." in member_path.parts
+                or ".." in windows_member_path.parts
+            ):
+                raise RuntimeError("Zip archive contains an unsafe path")
+            resolved_member_path = (destination / member_path).resolve()
+            if not resolved_member_path.is_relative_to(resolved_destination):
+                raise RuntimeError("Zip archive contains an unsafe path")
+            file_type = (member.external_attr >> 16) & 0o170000
+            if file_type == 0o120000:
+                raise RuntimeError("Zip archive contains an unsupported symlink")
+        archive.extractall(destination)
+
+
+def _copy_directory_contents(source: Path, destination: Path) -> None:
+    """Copy the entries under one directory into another directory."""
+
+    for entry in source.iterdir():
+        target = destination / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, target)
+        else:
+            shutil.copy2(entry, target)
+
+
+def _replace_app_directory(version_path: Path, app_path: Path, prepared_app: Path) -> None:
+    """Replace ``App/`` with already prepared contents."""
+
+    resolved_version = version_path.resolve()
+    resolved_app = app_path.resolve(strict=False)
+    if resolved_app.parent != resolved_version or resolved_app.name != "App":
+        raise RuntimeError("Refusing to replace App outside the package version directory")
+
+    backup_path = Path(tempfile.mkdtemp(prefix=".pkg-old-App-", dir=str(version_path)))
+    backup_path.rmdir()
+    if app_path.exists():
+        if _app_contains_entries(app_path):
+            shutil.move(str(app_path), str(backup_path))
+        else:
+            shutil.rmtree(app_path)
+    try:
+        shutil.move(str(prepared_app), str(app_path))
+    except Exception:
+        if backup_path.exists() and not app_path.exists():
+            shutil.move(str(backup_path), str(app_path))
+        raise
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+
+
+def populate_app_from_script_origin(
+    identity: PackageIdentity,
+    origin: Dict[str, str],
+    runtime_config: Dict[str, Any],
+    *,
+    refresh_app: bool,
+) -> None:
+    """Run a package-local origin script and verify that it populated ``App/``."""
+
+    script_path = _resolve_origin_script_path(identity, origin["script"])
+    app_path = identity.version_path / "App"
+    if refresh_app and app_path.exists():
+        resolved_app = app_path.resolve(strict=False)
+        if resolved_app.parent != identity.version_path.resolve() or resolved_app.name != "App":
+            raise RuntimeError("Refusing to clear App outside the package version directory")
+        shutil.rmtree(app_path)
+
+    log_info(f"Running origin script: {origin['script']}")
+    payload = json.dumps(build_origin_script_payload(identity, runtime_config), ensure_ascii=False)
+    extension = script_path.suffix.lower()
+    if extension == ".ps1":
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+    elif extension in {".cmd", ".bat"}:
+        command = ["cmd.exe", "/c", str(script_path)]
+    else:
+        command = [str(script_path)]
+
+    completed = subprocess.run(
+        command,
+        input=payload,
+        text=True,
+        capture_output=True,
+        cwd=str(script_path.parent),
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    for line in completed.stdout.splitlines():
+        log_info(line)
+    for line in completed.stderr.splitlines():
+        log_warning(line)
+    if completed.returncode != 0:
+        raise RuntimeError(f"Origin script failed with exit code {completed.returncode}")
+    if not _app_contains_entries(app_path):
+        raise RuntimeError("Origin script completed but App is missing or empty")
+
+
+def _resolve_origin_script_path(identity: PackageIdentity, script: str) -> Path:
+    """Resolve and validate a package-local origin script path."""
+
+    return _validate_origin_script_reference(identity, script, context="origin")
+
+
+def _validate_origin_script_reference(identity: PackageIdentity, script: str, *, context: str) -> Path:
+    """Validate and resolve an origin script reference."""
+
+    raw_script = Path(script)
+    if raw_script.is_absolute():
+        raise RuntimeError(f"[{context}].script must be relative to the package version directory")
+    script_path = (identity.version_path / raw_script).resolve()
+    if not script_path.is_relative_to(identity.version_path.resolve()):
+        raise RuntimeError(f"[{context}].script cannot escape the package version directory")
+    if not script_path.exists() or not script_path.is_file():
+        raise RuntimeError(f"[{context}].script was not found")
+    if script_path.suffix.lower() not in {".ps1", ".cmd", ".bat", ".exe"}:
+        raise RuntimeError(f"[{context}].script has an unsupported extension")
+    return script_path
+
+
+def build_origin_script_payload(identity: PackageIdentity, runtime_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the JSON object passed to origin scripts on stdin."""
+
+    return {
+        "config": {
+            "name": identity.name,
+            "version": identity.version,
+            "localVersion": identity.local_version,
+            "only_portable": runtime_config["only_portable"],
+            "origin": runtime_config.get("origin"),
+            "shortcut": runtime_config["shortcut"],
+            "environment": runtime_config["environment"],
+            "path": [{"value": value} for value in runtime_config["path"]],
+            "bin": runtime_config["bin"],
+        },
+        "identity": {
+            "name": identity.name,
+            "version": identity.version,
+            "localVersion": identity.local_version,
+            "versionString": identity.version_string,
+        },
+        "PkgVars": {
+            "PkgRoot": str(identity.version_path.resolve()),
+            "App": str((identity.version_path / "App").resolve()),
+            "Icons": str((identity.version_path / "Icons").resolve()),
+            "Shortcuts": str((identity.version_path / "Shortcuts").resolve()),
+        },
+    }
+
+
+def validate_origin_health(identity: PackageIdentity, origin: Optional[Dict[str, Any]]) -> List[str]:
+    """Return origin configuration health-check errors."""
+
+    if origin is None:
+        return []
+
+    errors: List[str] = []
+    origin_sources: List[Tuple[str, Dict[str, Any]]] = [("origin", origin)]
+    for index, item in enumerate(origin.get("versions", [])):
+        origin_sources.append((f"origin.versions[{index}]", item))
+
+    for context, item in origin_sources:
+        if item.get("mode") == "script":
+            try:
+                _validate_origin_script_reference(identity, item.get("script", ""), context=context)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+    return errors
 
 
 def install_components(
@@ -2820,6 +3279,8 @@ def install_package(
     fix_config: bool = False,
     use_defaults: bool = False,
     force: bool = False,
+    refresh_app: bool = False,
+    no_checksum: bool = False,
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -2840,6 +3301,9 @@ def install_package(
         force: Whether installs may replace ``current`` even when it already
             points to a newer version. Ordinary same-version repair reruns do
             not require ``force``.
+        refresh_app: Whether to repopulate ``App/`` from origin even when it
+            already contains files.
+        no_checksum: Whether to skip configured origin checksum verification.
 
     Returns:
         An :class:`ActionResult` describing the install outcome.
@@ -2965,6 +3429,26 @@ def install_package(
             )
 
     log_info("")
+    origin_result = populate_app_from_origin(
+        identity,
+        runtime_config,
+        no_checksum=no_checksum,
+        refresh_app=refresh_app,
+    )
+    warnings.extend(origin_result.warnings)
+    if not origin_result.ok:
+        log_error("Origin population failed:")
+        for error in origin_result.errors:
+            log_error(f"  - {error}")
+        return ActionResult(
+            ok=False,
+            changed=junction_changed or config_sync_changed or origin_result.changed,
+            warnings=warnings,
+            errors=origin_result.errors,
+            exit_code=EXIT_MUTATION_ERROR,
+        )
+
+    log_info("")
     log_info("Installing components...")
     component_result = install_components(identity, scope, scope_paths, runtime_config)
     warnings.extend(component_result.warnings)
@@ -2983,7 +3467,7 @@ def install_package(
 
     return ActionResult(
         ok=True,
-        changed=junction_changed or config_sync_changed or component_result.changed,
+        changed=junction_changed or config_sync_changed or origin_result.changed or component_result.changed,
         warnings=warnings,
         exit_code=EXIT_SUCCESS,
     )
@@ -3022,6 +3506,48 @@ def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> A
         errors=step_result.errors,
         exit_code=EXIT_SUCCESS if step_result.ok else EXIT_MUTATION_ERROR,
     )
+
+
+def health_check_package(package_path: Path, *, scope: Scope = Scope.USER) -> ActionResult:
+    """Validate one package configuration without mutating state."""
+
+    print_action_banner(Action.HEALTH_CHECK, scope)
+
+    try:
+        identity, _ = resolve_input_path(Path(package_path))
+    except ValueError as exc:
+        return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
+
+    try:
+        runtime_config, raw_config_data, load_warnings = read_runtime_config(identity, use_defaults=False)
+    except (ConfigValidationError, RuntimeError, ValueError) as exc:
+        return action_failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_USER_ERROR)
+    except OSError as exc:
+        return action_failure(f"Failed to load package metadata/config: {exc}", exit_code=EXIT_MUTATION_ERROR)
+
+    warnings = list(load_warnings)
+    for warning in load_warnings:
+        log_warning(warning)
+
+    errors = check_metadata_consistency(identity, raw_config_data)
+    errors.extend(validate_origin_health(identity, runtime_config.get("origin")))
+    if errors:
+        log_error("Health check failed:")
+        for error in errors:
+            log_error(f"  - {error}")
+        return ActionResult(
+            ok=False,
+            changed=False,
+            warnings=warnings,
+            errors=errors,
+            exit_code=EXIT_USER_ERROR,
+        )
+
+    log_info(f"Package: {identity.name}")
+    log_info(f"Version: {identity.version_string}")
+    log_info(f"Path: {identity.version_path}")
+    log_info("Health check passed.")
+    return ActionResult(ok=True, changed=False, warnings=warnings, exit_code=EXIT_SUCCESS)
 
 
 class _ExtendedHelpAction(argparse.Action):
@@ -3078,6 +3604,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "  %(prog)s                         # Install in User scope from current directory\n"
             "  %(prog)s --scope Machine          # Install system-wide (requires admin)\n"
             "  %(prog)s --action UpdateConfig     # Sync configuration metadata only\n"
+            "  %(prog)s --action HealthCheck      # Validate package metadata only\n"
             "  %(prog)s --fix-config             # Install and sync config metadata if it mismatches\n"
             "  %(prog)s --pause                  # Pause for a keypress before exit\n"
             "  %(prog)s --help-extended          # Show detailed help and config examples\n"
@@ -3124,7 +3651,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser.add_argument(
         "--action",
-        choices=[Action.INSTALL.value, Action.UPDATE_CONFIG.value],
+        choices=[Action.INSTALL.value, Action.UPDATE_CONFIG.value, Action.HEALTH_CHECK.value],
         default=Action.INSTALL.value,
         help="Action to perform",
     )
@@ -3157,6 +3684,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
+        "--refresh-app",
+        action="store_true",
+        default=False,
+        help="Clear and repopulate App from [origin] before installing components",
+    )
+
+    parser.add_argument(
+        "--no-checksum",
+        action="store_true",
+        default=False,
+        help="Skip [origin].checksum verification with a warning",
+    )
+
+    parser.add_argument(
         "path",
         nargs="?",
         default=".",
@@ -3178,9 +3719,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 fix_config=args.fix_config,
                 use_defaults=args.use_defaults,
                 force=args.force,
+                refresh_app=args.refresh_app,
+                no_checksum=args.no_checksum,
             )
         elif action == Action.UPDATE_CONFIG:
             result = update_package_config(package_path, scope=scope)
+        elif action == Action.HEALTH_CHECK:
+            result = health_check_package(package_path, scope=scope)
         else:
             message = f"Unknown action: {action}"
             log_error(message)

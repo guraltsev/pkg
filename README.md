@@ -1,11 +1,13 @@
 # pkg
 
-`pkg` is a Windows package tool for locally cached applications that already
-live on disk in versioned directories.
+`pkg` is a Windows package tool for locally cached applications in versioned
+directories. A package can already include `App/`, or it can declare an
+`[origin]` step that populates `App/` during install.
 
 It does four main things:
 
 - keeps the package-level `current` junction pointed at the active version
+- populates a missing or empty `App/` from `[origin]` when configured
 - creates shortcuts from `pkg.toml`
 - writes environment variables and PATH entries for the selected scope
 - creates wrapper files in the selected scope bin directory when `[[bin]]`
@@ -76,6 +78,12 @@ Repair mismatched top-level metadata during install:
 python pkg.py --fix-config C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
+Refresh `App/` from the package origin before reinstalling components:
+
+```bat
+python pkg.py --refresh-app C:\Packages\Ripgrep\v14.1.0.l1
+```
+
 The convenience wrappers call the same entry point:
 
 - `install.cmd`
@@ -84,6 +92,12 @@ The convenience wrappers call the same entry point:
 - `pkg.cmd`
 
 Run `python pkg.py --help` for the full CLI reference.
+
+Validate package metadata without installing:
+
+```bat
+python pkg.py --action HealthCheck C:\Packages\Ripgrep\v14.1.0.l1
+```
 
 ## Bootstrap interpreter selection
 
@@ -107,6 +121,7 @@ Top-level metadata owned by `pkg`:
 
 Runtime tables:
 
+- `[origin]`
 - `[[shortcut]]`
 - `[[environment]]`
 - `[[path]]`
@@ -119,6 +134,12 @@ name = "Ripgrep"
 version = "14.1.0"
 localVersion = 1
 only_portable = false
+
+[origin]
+url = "https://example.invalid/ripgrep.zip"
+version = "14.1.0"
+checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+extractSubdir = "ripgrep"
 
 [[shortcut]]
 name = "Ripgrep"
@@ -135,6 +156,76 @@ value = "$App"
 name = "rg.cmd"
 content = "@echo off\r\n\"$App\\rg.exe\" %*\r\n"
 ```
+
+`[origin]` is optional. When present, install populates `App/` only if the
+directory is missing or empty. If `App/` already contains anything, install
+skips origin population and still repairs shortcuts, environment variables,
+PATH entries, and wrappers.
+
+Built-in origin mode downloads an HTTP(S) zip archive:
+
+```toml
+[origin]
+url = "https://example.invalid/tool-portable.zip"
+version = "1.2.3"
+checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+extractSubdir = "tool-portable"
+```
+
+`checksum` is optional, but when present it is verified by default. Use
+`--no-checksum` only for an explicit local override; install prints a warning
+and skips verification. `extractSubdir` selects a directory inside the archive
+whose contents become `App/`.
+
+`origin.version` is optional upstream-origin metadata. It is passed to origin
+scripts in `config.origin.version` and does not change the package directory
+version used by `pkg`.
+
+Historical origins can be recorded with repeated `[[origin.versions]]` tables:
+
+```toml
+[origin]
+url = "https://example.invalid/tool-2.0.0.zip"
+version = "2.0.0"
+
+[[origin.versions]]
+version = "1.0.0"
+url = "https://example.invalid/tool-1.0.0.zip"
+checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
+
+When the current origin is one of the versioned entries, omit top-level `url`
+or `script` and set `[origin].version` to the selected entry:
+
+```toml
+[origin]
+version = "1.0.0"
+
+[[origin.versions]]
+version = "1.0.0"
+url = "https://example.invalid/tool-1.0.0.zip"
+```
+
+`HealthCheck` verifies that origin history is internally consistent: versioned
+entries must have unique `version` values, `[origin].version` must select an
+existing entry when used as a selector, and script origins must point to
+supported package-local script files.
+
+Script origin mode runs a package-local script:
+
+```toml
+[origin]
+script = "scripts\\populate-app.ps1"
+version = "1.2.3"
+```
+
+Scripts must live under the version directory and use `.ps1`, `.cmd`, `.bat`,
+or `.exe`. The script receives JSON on stdin, including `PkgVars.App`,
+`PkgVars.Icons`, and `PkgVars.Shortcuts`, and must leave `App/` non-empty.
+
+`--refresh-app` explicitly repopulates an already populated `App/`. Zip origin
+prepares the new payload before replacing the directory. Script origin clears
+`App/` first, then runs the script.
 
 ## Variable rules
 
@@ -179,7 +270,7 @@ continues.
 
 ## Helper scripts
 
-Best-effort migration helpers live in [`helper_scripts/`](helper_scripts/README.md).
+Best-effort migration helpers live in [`pkg.modules/`](src/pkg.modules/README.md).
 They are for manual transitions from older formats and are not part of the
 supported runtime surface.
 

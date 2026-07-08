@@ -24,8 +24,9 @@ The converter is intentionally best-effort:
 - malformed files become warnings when possible
 - missing metadata may be inferred from the directory name
 - legacy variable spellings are rewritten toward current package variables
-- output is always the current top-level metadata plus `[[shortcut]]`,
-  `[[environment]]`, `[[path]]`, and `[[bin]]`
+- legacy `downloadURL` or `download_url` values are emitted as `[origin].url`
+- output is always the current top-level metadata plus optional `[origin]`,
+  `[[shortcut]]`, `[[environment]]`, `[[path]]`, and `[[bin]]`
 
 It does **not** preserve every old config shape, and it does not define a
 compatibility promise for the main tool.
@@ -33,7 +34,14 @@ compatibility promise for the main tool.
 Example:
 
 ```bat
-python helper_scripts\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
+python pkg.modules\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
+```
+
+From the parent `src\` directory, the convenience launcher calls the same
+script:
+
+```bat
+legacy_to_pkg_toml.cmd --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
 ```
 
 Use `--dry-run` to print the generated TOML instead of writing it.
@@ -51,7 +59,14 @@ names. Other TOML sections are preserved.
 Example:
 
 ```bat
-python helper_scripts\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+python pkg.modules\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+From the parent `src\` directory, the convenience launcher calls the same
+script:
+
+```bat
+shortcuts_to_pkg_toml.cmd --dir C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Use `--dry-run` to print the updated TOML instead of writing it.
@@ -66,6 +81,8 @@ After running a helper script, check at least these items:
 - environment variables use the intended values
 - PATH entries are still appropriate
 - wrapper script content still makes sense for the target shell
+- `[origin].url` points at a zip archive that `pkg` should use to populate
+  `App/`
 
 When in doubt, treat the helper output as a starting point and edit the TOML by
 hand.

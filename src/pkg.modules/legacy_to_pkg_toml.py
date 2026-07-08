@@ -37,7 +37,7 @@ def new_config() -> dict[str, Any]:
         "only_portable": None,
         "description": None,
         "homepage": None,
-        "downloadURL": None,
+        "origin": None,
         "path": [],
         "environment": [],
         "shortcut": [],
@@ -320,14 +320,16 @@ def apply_top_level_metadata(output: dict[str, Any], source: dict[str, Any], *, 
         "version": "version",
         "description": "description",
         "homepage": "homepage",
-        "downloadurl": "downloadURL",
-        "download_url": "downloadURL",
     }
     for key, value in source.items():
         canon = top_map.get(str(key).lower())
         if canon is None or value in (None, ""):
             continue
         output[canon] = str(value)
+
+    download_values = get_matching_values(source, ["downloadURL", "download_url"])
+    if download_values and download_values[-1] not in (None, ""):
+        output["origin"] = {"url": str(download_values[-1])}
 
     local_values = get_matching_values(source, ["localVersion", "local_version"])
     if local_values:
@@ -502,10 +504,17 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
         lines.append(f"localVersion = {to_toml_scalar(cfg['localVersion'])}")
     if cfg.get("only_portable") is not None:
         lines.append(f"only_portable = {to_toml_scalar(cfg['only_portable'])}")
-    for key in ["description", "homepage", "downloadURL"]:
+    for key in ["description", "homepage"]:
         if cfg.get(key) not in (None, ""):
             lines.append(f"{key} = {to_toml_scalar(cfg[key])}")
     if lines[-1] != "":
+        lines.append("")
+
+    origin = cfg.get("origin")
+    if isinstance(origin, dict) and origin.get("url") not in (None, ""):
+        lines.extend(["[origin]", f"url = {to_toml_scalar(origin['url'])}"])
+        if origin.get("version") not in (None, ""):
+            lines.append(f"version = {to_toml_scalar(origin['version'])}")
         lines.append("")
 
     lines.extend(toml_path_lines(cfg.get("path", [])))

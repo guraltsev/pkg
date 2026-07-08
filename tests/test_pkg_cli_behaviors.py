@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
+import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
 import tomllib
+import zipfile
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -84,6 +88,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def write_config(self, version_dir: Path, text: str) -> None:
         version_dir.joinpath("pkg.toml").write_text(textwrap.dedent(text).lstrip(), encoding="utf-8")
 
+    def zip_bytes(self, entries: dict[str, str]) -> bytes:
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zip_file:
+            for name, content in entries.items():
+                zip_file.writestr(name, content)
+        return archive.getvalue()
+
     def assert_documented_starter_config(
         self,
         text: str,
@@ -106,6 +117,9 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertIn(f'version = "{version}"', text)
         self.assertIn(f"localVersion = {local_version}", text)
         self.assertIn(f"only_portable = {str(only_portable).lower()}", text)
+        self.assertIn("# [origin]", text)
+        self.assertIn("# [[origin.versions]]", text)
+        self.assertIn("# To select one historical entry as the current origin", text)
         for example_block in ("shortcut", "environment", "path", "bin"):
             self.assertIn(f"# [[{example_block}]]", text)
 
@@ -621,6 +635,474 @@ class PkgCliBehaviorTests(unittest.TestCase):
             written = (Path(env["USERPROFILE"]) / "bin" / "tool.cmd").read_text(encoding="ascii")
             self.assertIn("echo two", written)
             self.assertNotIn("echo one", written)
+
+    def test_install_rejects_top_level_download_url(self) -> None:
+        """Install rejects the removed top-level downloadURL schema."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "OldDownloadApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "OldDownloadApp"
+                version = "1.0.0"
+                localVersion = 1
+                downloadURL = "https://example.invalid/app.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("Unsupported legacy key 'downloadURL'", output)
+
+    def test_install_populates_missing_app_from_zip_origin_before_components(self) -> None:
+        """Install downloads a zip origin into a missing App before installing components."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"tool/tool.exe": "payload"})
+        checksum = hashlib.sha256(archive).hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ZipOriginApp")
+            self.write_config(
+                version_dir,
+                f"""
+                name = "ZipOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                version = "2026.7"
+                checksum = "sha256:{checksum}"
+                extractSubdir = "tool"
+                """,
+            )
+
+            def assert_app_ready(*_args, **_kwargs):
+                self.assertEqual((version_dir / "App" / "tool.exe").read_text(encoding="utf-8"), "payload")
+                return module.StepResult(ok=True, changed=False)
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)) as urlopen_mock:
+                        with mock.patch.object(module, "install_components", side_effect=assert_app_ready):
+                            code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            urlopen_mock.assert_called_once_with("https://example.invalid/tool.zip")
+            self.assertIn("Verifying sha256 checksum", output)
+
+    def test_install_skips_zip_origin_when_app_is_already_populated(self) -> None:
+        """Install does not download origin when App already contains entries."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "SkipOriginApp")
+            (version_dir / "App").mkdir()
+            (version_dir / "App" / "existing.txt").write_text("keep", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "SkipOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen") as urlopen_mock:
+                        with mock.patch.object(
+                            module,
+                            "install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            urlopen_mock.assert_not_called()
+            self.assertEqual((version_dir / "App" / "existing.txt").read_text(encoding="utf-8"), "keep")
+            self.assertIn("App is already populated; skipping origin population", output)
+
+    def test_install_can_select_current_origin_from_versioned_entries(self) -> None:
+        """Install uses the versioned origin entry selected by [origin].version."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"selected.exe": "selected"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "SelectedOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "SelectedOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                version = "1.0"
+
+                [[origin.versions]]
+                version = "0.9"
+                url = "https://example.invalid/old.zip"
+
+                [[origin.versions]]
+                version = "1.0"
+                url = "https://example.invalid/current.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)) as urlopen_mock:
+                        with mock.patch.object(
+                            module,
+                            "install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            urlopen_mock.assert_called_once_with("https://example.invalid/current.zip")
+            self.assertTrue((version_dir / "App" / "selected.exe").exists())
+
+    def test_refresh_app_replaces_existing_app_from_zip_origin(self) -> None:
+        """--refresh-app replaces existing App contents from a zip origin."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"new.exe": "new"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "RefreshOriginApp")
+            (version_dir / "App").mkdir()
+            (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "RefreshOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)):
+                        with mock.patch.object(
+                            module,
+                            "install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            code, output = self.run_main(module, ["--refresh-app", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            self.assertEqual((version_dir / "App" / "new.exe").read_text(encoding="utf-8"), "new")
+            self.assertFalse((version_dir / "App" / "old.exe").exists())
+
+    def test_checksum_mismatch_aborts_without_app_mutation(self) -> None:
+        """Checksum mismatch fails before replacing an existing App directory."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"new.exe": "new"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ChecksumOriginApp")
+            (version_dir / "App").mkdir()
+            (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "ChecksumOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                checksum = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)):
+                        code, output = self.run_main(module, ["--refresh-app", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_MUTATION_ERROR)
+            self.assertEqual((version_dir / "App" / "old.exe").read_text(encoding="utf-8"), "old")
+            self.assertIn("[origin].checksum did not match downloaded file", output)
+
+    def test_unsafe_zip_path_aborts_without_app_mutation(self) -> None:
+        """Unsafe archive paths are rejected before App is replaced."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"../escape.exe": "bad"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "UnsafeZipApp")
+            (version_dir / "App").mkdir()
+            (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "UnsafeZipApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)):
+                        code, output = self.run_main(module, ["--refresh-app", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_MUTATION_ERROR)
+            self.assertEqual((version_dir / "App" / "old.exe").read_text(encoding="utf-8"), "old")
+            self.assertIn("unsafe path", output)
+
+    def test_no_checksum_allows_install_with_warning(self) -> None:
+        """--no-checksum skips configured checksum verification and warns."""
+
+        module = load_pkg_module()
+        archive = self.zip_bytes({"tool.exe": "payload"})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "NoChecksumOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "NoChecksumOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                checksum = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.urllib.request, "urlopen", return_value=io.BytesIO(archive)):
+                        with mock.patch.object(
+                            module,
+                            "install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            code, output = self.run_main(module, ["--no-checksum", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            self.assertTrue((version_dir / "App" / "tool.exe").exists())
+            self.assertIn("WARNING: Checksum verification skipped", output)
+
+    def test_script_origin_receives_payload_and_working_directory(self) -> None:
+        """Script origin receives enriched JSON on stdin and runs from the script directory."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ScriptOriginApp")
+            script_dir = version_dir / "scripts"
+            script_dir.mkdir()
+            script_path = script_dir / "populate.cmd"
+            script_path.write_text("@echo off\r\n", encoding="ascii")
+            self.write_config(
+                version_dir,
+                """
+                name = "ScriptOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                script = "scripts/populate.cmd"
+                version = "2026.7"
+                """,
+            )
+
+            def run_script(*_args, **kwargs):
+                payload = json.loads(kwargs["input"])
+                self.assertEqual(payload["identity"]["name"], "ScriptOriginApp")
+                self.assertEqual(payload["config"]["origin"]["version"], "2026.7")
+                self.assertEqual(Path(payload["PkgVars"]["App"]).resolve(), (version_dir / "App").resolve())
+                self.assertEqual(Path(kwargs["cwd"]).resolve(), script_dir.resolve())
+                app_dir = version_dir / "App"
+                app_dir.mkdir()
+                (app_dir / "created.txt").write_text("ok", encoding="utf-8")
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(module.subprocess, "run", side_effect=run_script) as run_mock:
+                        with mock.patch.object(
+                            module,
+                            "install_components",
+                            return_value=module.StepResult(ok=True, changed=False),
+                        ):
+                            code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            run_mock.assert_called_once()
+            self.assertTrue((version_dir / "App" / "created.txt").exists())
+
+    def test_health_check_accepts_valid_origin_history(self) -> None:
+        """HealthCheck validates origin history without downloading or installing."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "HealthyOriginApp")
+            script_dir = version_dir / "scripts"
+            script_dir.mkdir()
+            (script_dir / "populate.cmd").write_text("@echo off\r\n", encoding="ascii")
+            self.write_config(
+                version_dir,
+                """
+                name = "HealthyOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                version = "1.0"
+
+                [[origin.versions]]
+                version = "0.9"
+                url = "https://example.invalid/old.zip"
+
+                [[origin.versions]]
+                version = "1.0"
+                script = "scripts/populate.cmd"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module.urllib.request, "urlopen") as urlopen_mock:
+                    code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            urlopen_mock.assert_not_called()
+            self.assertIn("Health check passed.", output)
+
+    def test_health_check_rejects_duplicate_origin_history_versions(self) -> None:
+        """HealthCheck reports duplicate versioned origin entries."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "DuplicateOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "DuplicateOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                version = "1.0"
+
+                [[origin.versions]]
+                version = "1.0"
+                url = "https://example.invalid/one.zip"
+
+                [[origin.versions]]
+                version = "1.0"
+                url = "https://example.invalid/two.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("duplicate version: 1.0", output)
+
+    def test_health_check_rejects_missing_selected_origin_version(self) -> None:
+        """HealthCheck reports a selector that does not match origin history."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "MissingSelectedOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "MissingSelectedOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                version = "2.0"
+
+                [[origin.versions]]
+                version = "1.0"
+                url = "https://example.invalid/one.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("[origin].version must match one entry", output)
+
+    def test_health_check_rejects_bad_origin_script_reference(self) -> None:
+        """HealthCheck reports package-local script reference problems."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "BadScriptOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "BadScriptOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                script = "scripts/missing.cmd"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("[origin].script was not found", output)
+
+    def test_newer_current_skip_also_skips_origin_population(self) -> None:
+        """A preserved newer current skips origin population and component install."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "NewerCurrentApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "NewerCurrentApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://example.invalid/tool.zip"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=False):
+                    with mock.patch.object(module.urllib.request, "urlopen") as urlopen_mock:
+                        with mock.patch.object(module, "install_components") as install_components_mock:
+                            code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            urlopen_mock.assert_not_called()
+            install_components_mock.assert_not_called()
 
 
 if __name__ == "__main__":

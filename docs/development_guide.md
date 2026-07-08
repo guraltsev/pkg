@@ -67,7 +67,9 @@ The intended flow is:
    paths the install flow uses
 3. `read_runtime_config()` loads `pkg.toml`, normalizes it into one canonical
    dict/list structure, and validates that structure
-4. `install_package()` and `update_package_config()` coordinate behavior using
+4. `install_package()` manages `current`, runs origin population when needed,
+   and then runs the fixed component install sequence
+5. `update_package_config()` coordinates metadata repair using
    those explicit values rather than a wrapper object
 
 Do not resolve the same package path twice inside one action. 
@@ -84,8 +86,11 @@ When changing install behavior:
 1. keep parsing and normalization in the config helpers
 2. keep direct OS mutation in the Windows boundary when the operation is
    Windows-specific
-3. edit `install_components()` directly so the order remains obvious
-4. test behavior by patching the concrete top-level helper that performs the
+3. keep origin population as an explicit `install_package()` step before
+   component installation
+4. edit `install_components()` directly when changing shortcut, environment,
+   PATH, or wrapper behavior so the order remains obvious
+5. test behavior by patching the concrete top-level helper that performs the
    step
 
 Repetition is acceptable when it avoids indirection and does not contain behavioral decisions that could diverge. 
@@ -96,13 +101,14 @@ Repetition is acceptable when it avoids indirection and does not contain behavio
 close to that file shape:
 
 - top-level scalar metadata stays as plain values
+- `origin` stays as either `None` or one normalized table with a direct mode
 - `shortcut`, `environment`, and `bin` stay as lists of normalized dicts
 - `path` stays as a list of strings
 
 Do not add compatibility layers for old aliases or deprecated config shapes.
 
 If a migration helper needs to understand an older format, keep that logic in
-`helper_scripts/`, not in the runtime path.
+`pkg.modules/`, not in the runtime path.
 
 ## Documentation rules
 

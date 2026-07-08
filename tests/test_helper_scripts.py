@@ -17,9 +17,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 PKG_PY = SRC_ROOT / "pkg.py"
-LEGACY_CONVERTER = SRC_ROOT / "helper_scripts" / "legacy_to_pkg_toml.py"
-SHORTCUT_IMPORTER = SRC_ROOT / "helper_scripts" / "shortcuts_to_pkg_toml.py"
-EXAMPLES_ROOT = SRC_ROOT / "helper_scripts" / "examples"
+LEGACY_CONVERTER = SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py"
+SHORTCUT_IMPORTER = SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py"
+EXAMPLES_ROOT = SRC_ROOT / "pkg.modules" / "examples"
 
 
 def load_pkg_module():
@@ -123,7 +123,7 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertIn("targetPath = \"$App\\\\good.exe\"", rendered)
             self.assertEqual(parsed["description"], "Good test package")
             self.assertEqual(parsed["homepage"], "https://example.invalid/goodapp")
-            self.assertEqual(parsed["downloadURL"], "https://example.invalid/goodapp.zip")
+            self.assertEqual(parsed["origin"]["url"], "https://example.invalid/goodapp.zip")
             self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
             self.assertEqual(parsed["environment"][0]["Name"], "GOODAPP_HOME")
             self.assertEqual(parsed["environment"][0]["Value"], "$App")
@@ -137,6 +137,8 @@ class LegacyConverterTests(unittest.TestCase):
                 "APPDATA": str(Path(tmpdir) / "AppData"),
                 "USERPROFILE": str(Path(tmpdir) / "UserProfile"),
             }
+            (version_dir / "App").mkdir()
+            (version_dir / "App" / "good.exe").write_text("", encoding="utf-8")
             with mock.patch.dict(os.environ, env, clear=False):
                 with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
                     with mock.patch.object(
@@ -217,7 +219,7 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertTrue(parsed["only_portable"])
             self.assertEqual(parsed["description"], "Legacy alias config")
             self.assertEqual(parsed["homepage"], "https://example.invalid/alias")
-            self.assertEqual(parsed["downloadURL"], "https://example.invalid/alias.zip")
+            self.assertEqual(parsed["origin"]["url"], "https://example.invalid/alias.zip")
             self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
             self.assertEqual(parsed["environment"][0]["Name"], "ALIASAPP_HOME")
             self.assertEqual(parsed["environment"][0]["Value"], "$App")

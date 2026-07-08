@@ -16,7 +16,7 @@ REM RequiresAdmin: Set to 1 to request admin privileges.
 set "RequiresAdmin=0"
 
 REM scriptSubdir: Subdirectory under the script's location where target script lives.
-set "scriptSubdir="
+set "scriptSubdir=pkg.modules"
 
 REM scriptName: Name of target script (without path). If empty, uses caller's name + extension.
 set "scriptName="
