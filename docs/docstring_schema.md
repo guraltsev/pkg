@@ -1,6 +1,6 @@
 # Docstring Style
 
-This file controls docstrings. Use `docs/python_rules.md` as a guide for code
+This file controls docstrings. Use `docs/python_rules.md` for code
 organization and inline comments.
 
 Docstrings document the public contract, intended use, and important behavior

@@ -809,6 +809,31 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual((version_dir / "App" / "new.exe").read_text(encoding="utf-8"), "new")
             self.assertFalse((version_dir / "App" / "old.exe").exists())
 
+    def test_install_fails_when_selected_origin_version_has_no_source(self) -> None:
+        """Install fails only when an incomplete versioned origin is used."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "IncompleteCurrentOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "IncompleteCurrentOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [[origin.versions]]
+                version = "1.0.0"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_MUTATION_ERROR)
+            self.assertIn("does not declare url or script", output)
+
     def test_checksum_mismatch_aborts_without_app_mutation(self) -> None:
         """Checksum mismatch fails before replacing an existing App directory."""
 
@@ -986,6 +1011,33 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             urlopen_mock.assert_not_called()
+            self.assertIn("Health check passed.", output)
+
+    def test_health_check_accepts_origin_history_without_sources(self) -> None:
+        """HealthCheck accepts version-only origin history entries."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "VersionOnlyOriginApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "VersionOnlyOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [[origin.versions]]
+                version = "0.9"
+
+                [[origin.versions]]
+                version = "1.0.0"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, ["--action", "HealthCheck", str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertIn("Health check passed.", output)
 
     def test_health_check_rejects_duplicate_origin_history_versions(self) -> None:

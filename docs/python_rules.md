@@ -174,32 +174,3 @@ tour.
 
 Prefer direct, readable code over generic, reusable, or enterprise-style
 architecture.
-
-# Instructions specific to this repo
-
-Each .py file in this repo is self-contained and its logic is NOT split into submodules. 
-
-It stays organized through
-clearly labeled sections that correspond to logical boundaries and roughly correspond to submodules. 
-
-Section formatting:
-
-```python
-#------------------------------------------
-# Section: Shared models and pure helpers
-#------------------------------------------
-#
-# [... Short documentation of section]
-```
-
-The .py file docstring  at the top MUST contain a section TOC/guide:
-
-
-```python
-
-Section guide
--------------
-
-- ``section name`` - Brief 1-2 line explanation 
-
-```

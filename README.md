@@ -175,7 +175,8 @@ extractSubdir = "tool-portable"
 and skips verification. `extractSubdir` selects a directory inside the archive
 whose contents become `App/`.
 
-Historical origins can be recorded with repeated `[[origin.versions]]` tables:
+Historical origins can be recorded with repeated `[[origin.versions]]` tables.
+Entries may contain only `version` until you try to install from that entry:
 
 ```toml
 [origin]
@@ -204,7 +205,7 @@ url = "https://example.invalid/tool-1.0.0.zip"
 `HealthCheck` verifies that origin history is internally consistent: versioned
 entries must have unique `version` values, history-only origins must include
 an entry matching the top-level package `version`, and script origins must
-point to supported package-local script files.
+point to supported package-local script files when a script is declared.
 
 Script origin mode runs a package-local script:
 

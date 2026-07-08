@@ -1856,7 +1856,8 @@ Canonical config keys
      checksum = "sha256:<64 hex characters>"
      extractSubdir = "tool"
 
-   Historical zip origins use repeated versioned tables:
+   Historical origins use repeated versioned tables. Entries may contain only
+   a version until you try to install from that entry:
 
      [[origin.versions]]
      version = "1.1.0"
@@ -2111,6 +2112,53 @@ def normalize_origin_source(raw_source: Dict[str, Any], *, context: str, require
     return normalized
 
 
+def normalize_origin_history_source(raw_source: Dict[str, Any], *, context: str) -> Dict[str, str]:
+    """Normalize a permissive historical origin source table."""
+
+    source_keys = {"url", "version", "checksum", "extractSubdir", "script"}
+    _validate_exact_keys(
+        raw_source,
+        allowed=source_keys,
+        context=context,
+        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script"],
+    )
+
+    origin_version = _normalize_optional_string(raw_source.get("version"), field_name=f"{context}.version")
+    if not origin_version:
+        raise ConfigValidationError(f"[{context}].version is required")
+
+    normalized: Dict[str, str] = {"version": origin_version}
+    url = _normalize_optional_string(raw_source.get("url"), field_name=f"{context}.url")
+    script = _normalize_optional_string(raw_source.get("script"), field_name=f"{context}.script")
+    if url and script:
+        raise ConfigValidationError(f"[{context}] cannot declare both 'url' and 'script'")
+    if url:
+        parsed_url = urllib.parse.urlparse(url)
+        if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+            raise ConfigValidationError(f"[{context}].url must be an HTTP or HTTPS URL")
+        normalized["mode"] = "zip"
+        normalized["url"] = url
+    if script is not None:
+        if script.strip() == "":
+            raise ConfigValidationError(f"[{context}].script must not be empty")
+        normalized["mode"] = "script"
+        normalized["script"] = script
+
+    checksum = _normalize_optional_string(raw_source.get("checksum"), field_name=f"{context}.checksum")
+    if checksum:
+        algorithm, separator, expected_hex = checksum.partition(":")
+        if separator != ":" or algorithm.lower() != "sha256":
+            raise ConfigValidationError(f"[{context}].checksum must use sha256:<hex> syntax")
+        if len(expected_hex) != 64 or re.fullmatch(r"[0-9A-Fa-f]{64}", expected_hex) is None:
+            raise ConfigValidationError(f"[{context}].checksum must be sha256 followed by 64 hex characters")
+        normalized["checksum"] = f"sha256:{expected_hex.lower()}"
+
+    extract_subdir = _normalize_optional_string(raw_source.get("extractSubdir"), field_name=f"{context}.extractSubdir")
+    if extract_subdir is not None:
+        normalized["extractSubdir"] = extract_subdir
+    return normalized
+
+
 def normalize_origin_config(raw_origin: Any, package_version: str) -> Optional[Dict[str, Any]]:
     """Normalize the optional ``[origin]`` table."""
 
@@ -2138,7 +2186,7 @@ def normalize_origin_config(raw_origin: Any, package_version: str) -> Optional[D
         for index, item in enumerate(raw_versions):
             if not isinstance(item, dict):
                 raise ConfigValidationError(f"'origin.versions[{index}]' must be a table, got: {type(item).__name__}")
-            normalized_item = normalize_origin_source(item, context=f"origin.versions[{index}]", require_version=True)
+            normalized_item = normalize_origin_history_source(item, context=f"origin.versions[{index}]")
             item_version = normalized_item["version"]
             if item_version in seen_versions:
                 raise ConfigValidationError(f"[origin.versions] contains duplicate version: {item_version}")
@@ -2824,7 +2872,8 @@ def create_starter_config(identity: PackageIdentity) -> str:
         "# Multiple origin versions:",
         "#   Use repeated [[origin.versions]] tables to keep older upstream",
         "#   payload locations in the same pkg.toml. Each entry must have a",
-        "#   unique version plus either url or script.",
+        "#   unique version. url/script can be filled in later, but installing",
+        "#   from that version requires one of them.",
         "#",
         "# Current origin can stay inline above, while old versions live here:",
         "# [[origin.versions]]",
@@ -2963,6 +3012,11 @@ def populate_app_from_origin(
         log_info("App is missing; populating from origin...")
 
     try:
+        if "mode" not in origin:
+            origin_version = origin.get("version", "unknown")
+            raise RuntimeError(
+                f"Origin version '{origin_version}' does not declare url or script, so it cannot populate App"
+            )
         if origin["mode"] == "zip":
             populate_app_from_zip_origin(identity, origin, no_checksum=no_checksum)
         elif origin["mode"] == "script":
