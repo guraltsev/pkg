@@ -2587,7 +2587,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
     if raw_bin is not None:
         if not isinstance(raw_bin, list):
             raise ConfigValidationError(f"'bin' must be a list, got: {type(raw_bin).__name__}")
-        bin_keys = {"name", "content"}
+        bin_keys = {"name", "content", "command", "forward_args", "extra_args"}
         for index, item in enumerate(raw_bin):
             if not isinstance(item, dict):
                 raise ConfigValidationError(f"'bin[{index}]' must be a table, got: {type(item).__name__}")
@@ -2595,9 +2595,33 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
                 item,
                 allowed=bin_keys,
                 context=f"bin[{index}]",
-                ordered_allowed=["name", "content"],
+                ordered_allowed=["name", "content", "command", "forward_args", "extra_args"],
             )
-            content = _normalize_required_string(item.get("content"), field_name="bin.content")
+            content = _normalize_required_string(item.get("content"), field_name=f"bin[{index}].content")
+            command = _normalize_required_string(item.get("command"), field_name=f"bin[{index}].command")
+            extra_args = _normalize_required_string(item.get("extra_args"), field_name=f"bin[{index}].extra_args")
+            forward_args = item.get("forward_args", False)
+            if not isinstance(forward_args, bool):
+                raise ConfigValidationError(
+                    f"'bin[{index}].forward_args' must be a boolean, got: {type(forward_args).__name__}"
+                )
+            if "content" in item and any(key in item for key in ("command", "extra_args", "forward_args")):
+                raise ConfigValidationError(
+                    f"'bin[{index}].content' cannot be combined with command-form wrapper options"
+                )
+            if command:
+                # Build the conventional batch wrapper before applying script-variable
+                # expansion, so declared commands retain the same expansion rules as content.
+                content = f"@echo off\r\ncall {command}"
+                if extra_args:
+                    content += f" {extra_args}"
+                if forward_args:
+                    content += " %*"
+                content += "\r\n"
+            elif extra_args or forward_args:
+                raise ConfigValidationError(
+                    f"'bin[{index}]' may use 'extra_args' and 'forward_args' only with 'command'"
+                )
             if "\n" not in content:
                 content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
             bin_entries.append({
@@ -2653,7 +2677,7 @@ def validate_runtime_config(config: Dict[str, Any]) -> None:
         if not wrapper.get("name", "").strip():
             missing.append("name")
         if wrapper.get("content", "") == "":
-            missing.append("content")
+            missing.append("content or command")
         if missing:
             errors.append(f"bin[{index}] missing required key(s): {', '.join(missing)}")
     if errors:
@@ -3174,13 +3198,12 @@ def create_starter_config(identity: PackageIdentity) -> str:
         "# [[path]]",
         "# value = \"$App\"",
         "",
-        "# Example wrapper script placed in the scope bin directory.",
+        "# Example batch wrapper placed in the scope bin directory.",
         "# [[bin]]",
         f"# name = {_to_toml_scalar(example_wrapper_name)}",
-        "# content = '''",
-        "# @echo off",
-        f"# {example_wrapper_command}",
-        "# '''",
+        f"# command = {_to_toml_scalar(example_wrapper_command)}",
+        "# forward_args = true",
+        "# extra_args = \"--example\"",
     ]
     return "\n".join(lines).rstrip() + "\n"
 

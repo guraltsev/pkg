@@ -19,7 +19,7 @@ SRC_ROOT = ROOT / "src"
 PKG_PY = SRC_ROOT / "pkg.py"
 LEGACY_CONVERTER = SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py"
 SHORTCUT_IMPORTER = SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py"
-EXAMPLES_ROOT = SRC_ROOT / "pkg.modules" / "examples"
+EXAMPLES_ROOT = ROOT / "tests" / "fixtures" / "legacy_examples"
 
 
 def load_pkg_module():

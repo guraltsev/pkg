@@ -602,6 +602,70 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertIn("$app = Join-Path $PSScriptRoot 'Tool.exe'", written)
             self.assertIn("& $app @args", written)
 
+    def test_bin_command_generates_a_batch_wrapper_with_declared_arguments(self) -> None:
+        """Command-form wrappers add fixed arguments and forward caller arguments."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "CommandBinApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "CommandBinApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [[bin]]
+                name = "tool.cmd"
+                command = '\"$App\\Tool.exe\"'
+                extra_args = "--fixed value"
+                forward_args = true
+                """,
+            )
+            env = self.user_env(tmpdir)
+
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                    with mock.patch.object(
+                        module,
+                        "ensure_bin_in_path",
+                        return_value=module.StepResult(ok=True, changed=False),
+                    ):
+                        code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            written = (Path(env["USERPROFILE"]) / "bin" / "tool.cmd").read_text(encoding="ascii")
+            self.assertEqual(
+                written,
+                f'@echo off\ncall "{version_dir.parent / "current" / "App" / "Tool.exe"}" --fixed value %*\n',
+            )
+
+    def test_bin_content_rejects_command_form_options(self) -> None:
+        """Custom wrapper content cannot be combined with generated-wrapper options."""
+
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ContentBinApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "ContentBinApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [[bin]]
+                name = "tool.cmd"
+                content = "@echo off"
+                forward_args = false
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR)
+            self.assertIn("cannot be combined with command-form wrapper options", output)
+
     def test_install_updates_existing_wrapper_file(self) -> None:
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:

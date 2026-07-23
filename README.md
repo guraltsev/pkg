@@ -153,8 +153,15 @@ value = "$App"
 
 [[bin]]
 name = "rg.cmd"
-content = "@echo off\r\n\"$App\\rg.exe\" %*\r\n"
+command = "\"$App\\rg.exe\""
+forward_args = true
+extra_args = "--color=auto"
 ```
+
+Each `[[bin]]` table can instead use `content` (with only `name`) for a fully
+custom wrapper.
+With `command`, `pkg` generates a batch file containing `@echo off` and `call
+<command>`, then appends `extra_args` and `%*` when `forward_args = true`.
 
 `[origin]` is optional. When present, install populates `App/` only if the
 directory is missing or empty. If `App/` already contains anything, install
