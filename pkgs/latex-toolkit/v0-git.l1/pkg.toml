@@ -1,0 +1,81 @@
+# Package metadata follows the containing v0-git.l1 version directory.
+name = "latex-toolkit"
+version = "0-git"
+localVersion = 1
+only_portable = false
+
+description = "Preservation-focused command-line transformations for LaTeX source."
+homepage = "https://github.com/guraltsev/latex-toolkit"
+
+[origin]
+mode = "git"
+url = "git@github.com:guraltsev/latex-toolkit.git"
+
+[update]
+allow_automatic_update = true
+
+[update.payload]
+mode = "git"
+
+[[bin]]
+name = "lt_brace_args.cmd"
+content = '''
+@echo off
+call "$App\src\lt_brace_args.cmd" %*
+'''
+
+[[bin]]
+name = "lt_full_normalize.cmd"
+content = '''
+@echo off
+call "$App\src\lt_full_normalize.cmd" %*
+'''
+
+[[bin]]
+name = "lt_greek_latex2unicode.cmd"
+content = '''
+@echo off
+call "$App\src\lt_greek_latex2unicode.cmd" %*
+'''
+
+[[bin]]
+name = "lt_greek_unicode2latex.cmd"
+content = '''
+@echo off
+call "$App\src\lt_greek_unicode2latex.cmd" %*
+'''
+
+[[bin]]
+name = "lt_math_dollar2latex.cmd"
+content = '''
+@echo off
+call "$App\src\lt_math_dollar2latex.cmd" %*
+'''
+
+[[bin]]
+name = "lt_math_latex2dollar.cmd"
+content = '''
+@echo off
+call "$App\src\lt_math_latex2dollar.cmd" %*
+'''
+
+[[bin]]
+name = "lt_sentence-per-line.cmd"
+content = '''
+@echo off
+call "$App\src\lt_sentence-per-line.cmd" %*
+'''
+
+[[bin]]
+name = "lt_syntax_regularizer.cmd"
+content = '''
+@echo off
+call "$App\src\lt_syntax_regularizer.cmd" %*
+'''
+
+[[bin]]
+name = "lt_template.cmd"
+content = '''
+@echo off
+call "$App\src\lt_template.cmd" %*
+'''

@@ -34,6 +34,17 @@ candidate, asks the `updates` module to stage a complete version under
 workflow. Check and unpack hooks are imported from `pkg.local/` as trusted
 in-process Python extensions; they are never executed as shell commands.
 
+The explicit `git-inplace` payload mode is the deliberate mutable exception to
+immutable staging. It fast-forwards the existing checkout only when tracked
+files are clean and the checked candidate still matches the fetched ref, then
+reruns ordinary installation to repair package components. Ordinary `git`
+payloads, including bootstrap `v0-git` packages, create and activate a new
+timestamped version directory.
+
+A Git origin defaults to `refs/heads/main` and supplies the default Git update
+check, so package metadata needs only one source URL and ref. Explicit update
+checks remain available for checkout-path or remote-name customization.
+
 Update work, locks, timing state, and receipts are manager-owned data beneath
 the package root's `.pkg/` directory. A finalized version directory contains
 only package-authored files and its completed `App/` payload.

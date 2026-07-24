@@ -178,6 +178,21 @@ directory is missing or empty. If `App/` already contains anything, install
 skips origin population and still repairs shortcuts, environment variables,
 PATH entries, and wrappers.
 
+A Git origin clones one exact commit from the configured ref into `App/`:
+
+```toml
+[origin]
+mode = "git"
+url = "git@github.com:owner/repository.git"
+# ref = "refs/heads/main"
+```
+
+The Git ref defaults to `refs/heads/main`. When a Git update is configured,
+`[update.check]` may be omitted: it defaults to Git mode with the origin ref.
+If an explicit Git update check is present, its ref must match the origin.
+Update discovery and candidate cloning use the origin URL from `pkg.toml`;
+they do not trust a checkout-local remote URL.
+
 Built-in origin mode downloads an HTTP(S) zip archive:
 
 ```toml
@@ -253,19 +268,32 @@ python pkg.py --action Update C:\Packages\Tool
 python pkg.py --action AutoUpdate C:\Packages\Tool
 ```
 
-A Git checkout can check and prepare the configured remote ref directly:
+A Git origin can check and prepare its configured ref directly:
 
 ```toml
+[origin]
+mode = "git"
+url = "git@github.com:owner/repository.git"
+
 [update]
 allow_automatic_update = true
-
-[update.check]
-mode = "git"
-ref = "refs/heads/main"
 
 [update.payload]
 mode = "git"
 ```
+
+The omitted origin ref and update check both default to Git on
+`refs/heads/main`. Declare `origin.ref` once for a different branch.
+
+An initial `v0-git` package using `payload.mode = "git"` is a bootstrap
+checkout. `Update` clones the candidate into a new immutable timestamped
+version directory and activates it through ordinary installation.
+
+Use `payload.mode = "git-inplace"` only when the package should retain its
+current version directory and fast-forward the existing `App/` checkout.
+Tracked local changes and divergent commits stop an in-place update; untracked
+runtime files are preserved. An install through `current` performs the same due
+automatic check when `allow_automatic_update = true`.
 
 Downloaded releases use a trusted local Python module to find the release and
 the built-in verified zip extractor to populate `App/`:

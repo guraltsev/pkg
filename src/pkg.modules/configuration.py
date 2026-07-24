@@ -206,15 +206,37 @@ def normalize_origin_source(
     raw_source: Dict[str, Any], *, context: str, require_version: bool
 ) -> Dict[str, str]:
     """Normalize one origin source table."""
-    source_keys = {"url", "version", "checksum", "extractSubdir", "script"}
+    source_keys = {
+        "mode",
+        "url",
+        "ref",
+        "version",
+        "checksum",
+        "extractSubdir",
+        "script",
+    }
     _validate_exact_keys(
         raw_source,
         allowed=source_keys,
         context=context,
-        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script"],
+        ordered_allowed=[
+            "mode",
+            "url",
+            "ref",
+            "version",
+            "checksum",
+            "extractSubdir",
+            "script",
+        ],
     )
 
+    mode = _normalize_optional_string(
+        raw_source.get("mode"), field_name=f"{context}.mode"
+    )
     url = _normalize_optional_string(raw_source.get("url"), field_name=f"{context}.url")
+    git_ref = _normalize_optional_string(
+        raw_source.get("ref"), field_name=f"{context}.ref"
+    )
     origin_version = _normalize_optional_string(
         raw_source.get("version"), field_name=f"{context}.version"
     )
@@ -227,6 +249,35 @@ def normalize_origin_source(
     extract_subdir = _normalize_optional_string(
         raw_source.get("extractSubdir"), field_name=f"{context}.extractSubdir"
     )
+
+    if mode == "git":
+        if not url or script is not None:
+            raise ConfigValidationError(
+                f"[{context}] Git origin requires 'url' and cannot declare 'script'"
+            )
+        if url.startswith("-") or any(ord(character) < 32 for character in url):
+            raise ConfigValidationError(f"[{context}].url is not a safe Git URL")
+        if checksum is not None or extract_subdir is not None:
+            raise ConfigValidationError(
+                f"[{context}] Git origin cannot declare checksum or extractSubdir"
+            )
+        git_ref = git_ref or "refs/heads/main"
+        if not git_ref.startswith("refs/"):
+            raise ConfigValidationError(
+                f"[{context}].ref must be a full refs/... string for Git origin"
+            )
+        if require_version and not origin_version:
+            raise ConfigValidationError(f"[{context}].version is required")
+        normalized = {"mode": "git", "url": url, "ref": git_ref}
+        if origin_version is not None:
+            normalized["version"] = origin_version
+        return normalized
+    if mode is not None:
+        raise ConfigValidationError(f"[{context}].mode must be 'git' when provided")
+    if git_ref is not None:
+        raise ConfigValidationError(
+            f"[{context}].ref is supported only when mode = 'git'"
+        )
 
     if bool(url) == bool(script):
         raise ConfigValidationError(
@@ -272,12 +323,28 @@ def normalize_origin_history_source(
     raw_source: Dict[str, Any], *, context: str
 ) -> Dict[str, str]:
     """Normalize a permissive historical origin source table."""
-    source_keys = {"url", "version", "checksum", "extractSubdir", "script"}
+    source_keys = {
+        "mode",
+        "url",
+        "ref",
+        "version",
+        "checksum",
+        "extractSubdir",
+        "script",
+    }
     _validate_exact_keys(
         raw_source,
         allowed=source_keys,
         context=context,
-        ordered_allowed=["url", "version", "checksum", "extractSubdir", "script"],
+        ordered_allowed=[
+            "mode",
+            "url",
+            "ref",
+            "version",
+            "checksum",
+            "extractSubdir",
+            "script",
+        ],
     )
 
     origin_version = _normalize_optional_string(
@@ -285,6 +352,11 @@ def normalize_origin_history_source(
     )
     if not origin_version:
         raise ConfigValidationError(f"[{context}].version is required")
+
+    if raw_source.get("mode") is not None:
+        return normalize_origin_source(
+            raw_source, context=context, require_version=True
+        )
 
     normalized: Dict[str, str] = {"version": origin_version}
     url = _normalize_optional_string(raw_source.get("url"), field_name=f"{context}.url")
@@ -344,12 +416,28 @@ def normalize_origin_config(
             f"'origin' must be a table, got: {type(raw_origin).__name__}"
         )
 
-    origin_keys = {"url", "checksum", "extractSubdir", "script", "versions"}
+    origin_keys = {
+        "mode",
+        "url",
+        "ref",
+        "checksum",
+        "extractSubdir",
+        "script",
+        "versions",
+    }
     _validate_exact_keys(
         raw_origin,
         allowed=origin_keys,
         context="origin",
-        ordered_allowed=["url", "checksum", "extractSubdir", "script", "versions"],
+        ordered_allowed=[
+            "mode",
+            "url",
+            "ref",
+            "checksum",
+            "extractSubdir",
+            "script",
+            "versions",
+        ],
     )
 
     # Historical origins are explicit versioned source entries. They share the
@@ -382,7 +470,7 @@ def normalize_origin_config(
     if has_inline_source:
         current_source = {
             key: raw_origin[key]
-            for key in ("url", "checksum", "extractSubdir", "script")
+            for key in ("mode", "url", "ref", "checksum", "extractSubdir", "script")
             if key in raw_origin
         }
         normalized = normalize_origin_source(
@@ -428,7 +516,9 @@ def _validate_package_local_path(
 
 
 def normalize_update_config(
-    raw_update: Any, identity: PackageIdentity
+    raw_update: Any,
+    identity: PackageIdentity,
+    origin: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Normalize the optional update policy and its check and payload modes."""
     if raw_update is None:
@@ -446,9 +536,18 @@ def normalize_update_config(
         raise ConfigValidationError("'update.allow_automatic_update' must be a boolean")
     check = raw_update.get("check")
     payload = raw_update.get("payload")
-    if not isinstance(check, dict) or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         raise ConfigValidationError(
-            "[update.check] and [update.payload] are required tables"
+            "[update.payload] is a required table"
+        )
+    if check is None and origin is not None and origin.get("mode") == "git":
+        check = {
+            "mode": "git",
+            "ref": origin["ref"],
+        }
+    elif not isinstance(check, dict):
+        raise ConfigValidationError(
+            "[update.check] is required unless [origin].mode = 'git'"
         )
     mode = check.get("mode")
     if mode == "git":
@@ -459,7 +558,12 @@ def normalize_update_config(
             ordered_allowed=["mode", "appPath", "remote", "ref"],
         )
         app_path = check.get("appPath", "App")
-        ref = check.get("ref")
+        default_ref = (
+            origin["ref"]
+            if origin is not None and origin.get("mode") == "git"
+            else "refs/heads/main"
+        )
+        ref = check.get("ref", default_ref)
         if (
             not isinstance(app_path, str)
             or Path(app_path).is_absolute()
@@ -498,9 +602,9 @@ def normalize_update_config(
     else:
         raise ConfigValidationError("[update.check].mode must be 'git' or 'module'")
     payload_mode = payload.get("mode")
-    if payload_mode not in {"git", "zip", "module"}:
+    if payload_mode not in {"git", "git-inplace", "zip", "module"}:
         raise ConfigValidationError(
-            "[update.payload].mode must be 'git', 'zip', or 'module'"
+            "[update.payload].mode must be 'git', 'git-inplace', 'zip', or 'module'"
         )
     allowed_payload = {
         "mode",
@@ -515,9 +619,9 @@ def normalize_update_config(
         context="update.payload",
         ordered_allowed=list(allowed_payload),
     )
-    if payload_mode == "git" and mode != "git":
+    if payload_mode in {"git", "git-inplace"} and mode != "git":
         raise ConfigValidationError(
-            "[update.payload].mode = 'git' requires a git update check"
+            f"[update.payload].mode = '{payload_mode}' requires a git update check"
         )
     normalized_payload: Dict[str, Any] = {
         "mode": payload_mode,
@@ -628,7 +732,19 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         )
     )
     normalized_origin = normalize_origin_config(raw.get("origin"), identity.version)
-    normalized_update = normalize_update_config(raw.get("update"), identity)
+    normalized_update = normalize_update_config(
+        raw.get("update"), identity, normalized_origin
+    )
+    if (
+        normalized_origin is not None
+        and normalized_origin.get("mode") == "git"
+        and normalized_update is not None
+        and normalized_update["check"]["mode"] == "git"
+        and normalized_origin["ref"] != normalized_update["check"]["ref"]
+    ):
+        raise ConfigValidationError(
+            "Git origin and update check must use the same ref"
+        )
 
     environment_entries: List[Dict[str, str]] = []
     raw_environment = raw.get("environment")

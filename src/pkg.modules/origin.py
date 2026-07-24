@@ -1,14 +1,16 @@
 """Populate application payloads from declared package origins.
 
-Zip and script origins prepare a complete temporary application tree before
-replacing ``App/``. Checksums, archive paths, and package-local script references
-are validated before the existing payload is mutated.
+Git, zip, and script origins prepare a complete temporary application tree
+before replacing ``App/``. Source refs, checksums, archive paths, and
+package-local script references are validated before the existing payload is
+mutated.
 
 Implementation Approach
 -----------------------
-Origin selection is performed by normalized configuration. Downloads and
-scripts write into temporary staging directories; validated contents are then
-moved into place with recovery of the previous application directory on error.
+Origin selection is performed by normalized configuration. Clones, downloads,
+and scripts write into temporary staging directories; validated contents are
+then moved into place with recovery of the previous application directory on
+error.
 """
 
 from __future__ import annotations
@@ -69,6 +71,8 @@ def populate_app_from_origin(
             )
         if origin["mode"] == "zip":
             populate_app_from_zip_origin(identity, origin, no_checksum=no_checksum)
+        elif origin["mode"] == "git":
+            populate_app_from_git_origin(identity, origin)
         elif origin["mode"] == "script":
             populate_app_from_script_origin(
                 identity, origin, runtime_config, refresh_app=refresh_app
@@ -82,6 +86,64 @@ def populate_app_from_origin(
         log_error(message)
         return StepResult(ok=False, changed=False, errors=[message])
     return StepResult(ok=True, changed=True)
+
+
+def populate_app_from_git_origin(
+    identity: PackageIdentity, origin: Dict[str, str]
+) -> None:
+    """Populate ``App/`` with the exact commit at a configured Git ref."""
+    app_path = identity.version_path / "App"
+    with tempfile.TemporaryDirectory(
+        prefix=".pkg-origin-", dir=str(identity.version_path)
+    ) as temp_root_name:
+        prepared_app = Path(temp_root_name) / "App.new"
+
+        # Resolve the configured ref before cloning so the installed checkout
+        # records one exact source state even if the branch advances.
+        log_info(f"Cloning Git origin: {origin['url']} ({origin['ref']})")
+        remote = subprocess.run(
+            ["git", "ls-remote", "--exit-code", origin["url"], origin["ref"]],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()[0]
+        subprocess.run(
+            ["git", "clone", "--no-checkout", origin["url"], str(prepared_app)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(prepared_app),
+                "fetch",
+                "--no-tags",
+                "origin",
+                origin["ref"],
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        fetched = subprocess.run(
+            ["git", "-C", str(prepared_app), "rev-parse", "FETCH_HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if fetched != remote:
+            raise RuntimeError(
+                "Configured Git ref changed during origin population; retry installation"
+            )
+        subprocess.run(
+            ["git", "-C", str(prepared_app), "checkout", "--detach", fetched],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _replace_app_directory(identity.version_path, app_path, prepared_app)
 
 
 def populate_app_from_zip_origin(

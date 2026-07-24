@@ -80,6 +80,7 @@ from _pkg_modules.updates import (  # noqa: E402
     _load_update_state,
     _next_version_identity,
     _prepare_update,
+    _refresh_git_app_inplace,
     _toml_value,
     _update_paths,
     _write_update_state,
@@ -453,6 +454,18 @@ def update_package(
         if automatic and not update["allow_automatic_update"]:
             log_info("Update is available but automatic activation is disabled")
             return ActionResult(True, warnings=warnings)
+
+        # Explicit in-place Git packages keep one mutable version. Refresh its
+        # checkout, then repair installed components without recursively
+        # checking for another update.
+        if update["payload"]["mode"] == "git-inplace":
+            _refresh_git_app_inplace(identity, config, candidate)
+            result = install_package(
+                identity.version_path, scope=scope, _skip_update_check=True
+            )
+            result.changed = True
+            result.warnings = warnings + result.warnings
+            return result
 
         # Reuse an already committed candidate or atomically commit a complete
         # staged version before entering the normal install workflow.

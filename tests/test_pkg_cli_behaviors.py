@@ -115,6 +115,16 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 zip_file.writestr(name, content)
         return archive.getvalue()
 
+    def run_git(self, cwd: Path, *args: str) -> None:
+        """Run one Git command for a local repository fixture."""
+        subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def assert_documented_starter_config(
         self,
         text: str,
@@ -185,6 +195,203 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertEqual(code, module.EXIT_USER_ERROR)
         self.assertIn("Operation: Install", output)
         self.assertIn("Install failed.", output)
+
+    def test_git_inplace_automatic_update_fast_forwards_existing_checkout(
+        self,
+    ) -> None:
+        """Git-inplace automatic update advances the existing checkout."""
+        module = load_pkg_module()
+        layout = runtime_module("layout")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            upstream = root / "upstream"
+            upstream.mkdir()
+
+            # Build a local upstream repository so Git discovery, fetch, and
+            # fast-forward behavior remain real without using the network.
+            self.run_git(upstream, "init")
+            self.run_git(upstream, "checkout", "-b", "main")
+            self.run_git(upstream, "config", "user.name", "Pkg Tests")
+            self.run_git(
+                upstream, "config", "user.email", "pkg-tests@example.invalid"
+            )
+            upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "initial")
+
+            package_root = root / "RollingApp"
+            version_dir = package_root / "v0-git.l1"
+            version_dir.mkdir(parents=True)
+            self.run_git(root, "clone", str(upstream), str(version_dir / "App"))
+            self.run_git(
+                version_dir / "App",
+                "remote",
+                "set-url",
+                "origin",
+                str(root / "wrong-remote"),
+            )
+            self.write_config(
+                version_dir,
+                f"""
+                name = "RollingApp"
+                version = "0-git"
+                localVersion = 1
+
+                [origin]
+                mode = "git"
+                url = "{upstream.as_posix()}"
+
+                [update]
+                allow_automatic_update = true
+
+                [update.payload]
+                mode = "git-inplace"
+                """,
+            )
+
+            # Publish a new upstream commit after the installed checkout has
+            # been created, making one observable update available.
+            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "update")
+
+            # Simulate the Windows current junction while keeping the Git and
+            # package filesystem transitions real.
+            current = package_root / "current"
+            current.mkdir()
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(layout, "is_junction", return_value=True):
+                    with mock.patch.object(
+                        layout, "get_junction_target", return_value=version_dir
+                    ):
+                        with mock.patch.object(
+                            module,
+                            "update_current_junction_if_needed",
+                            return_value=True,
+                        ):
+                            result = module.update_package(
+                                package_root, automatic=True
+                            )
+
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertTrue(result.changed)
+            self.assertEqual(
+                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
+                "two",
+            )
+            self.assertEqual(
+                sorted(path.name for path in package_root.glob("v*.l*")),
+                ["v0-git.l1"],
+            )
+
+    def test_v0_git_update_creates_populated_timestamped_version(self) -> None:
+        """Ordinary Git update promotes v0-git into a populated new version."""
+        module = load_pkg_module()
+        layout = runtime_module("layout")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            upstream = root / "upstream"
+            upstream.mkdir()
+
+            # Build the bootstrap commit and install it as the v0-git App
+            # checkout before publishing the candidate commit.
+            self.run_git(upstream, "init")
+            self.run_git(upstream, "checkout", "-b", "main")
+            self.run_git(upstream, "config", "user.name", "Pkg Tests")
+            self.run_git(
+                upstream, "config", "user.email", "pkg-tests@example.invalid"
+            )
+            upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "initial")
+
+            package_root = root / "ImmutableGitApp"
+            version_dir = package_root / "v0-git.l1"
+            version_dir.mkdir(parents=True)
+            self.write_config(
+                version_dir,
+                f"""
+                name = "ImmutableGitApp"
+                version = "0-git"
+                localVersion = 1
+
+                [origin]
+                mode = "git"
+                url = "{upstream.as_posix()}"
+
+                [update]
+                allow_automatic_update = true
+
+                [update.payload]
+                mode = "git"
+                """,
+            )
+
+            # The first install bootstraps App solely from the configured Git
+            # origin, without requiring a pre-existing checkout or remote.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "update_current_junction_if_needed", return_value=True
+                ):
+                    initial_result = module.install_package(version_dir)
+            self.assertTrue(initial_result.ok, msg=initial_result.errors)
+            self.assertEqual(
+                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
+                "one",
+            )
+
+            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "update")
+
+            # Simulate current-junction operations while exercising real Git
+            # discovery, cloning, metadata synchronization, and staging.
+            current = package_root / "current"
+            current.mkdir()
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(layout, "is_junction", return_value=True):
+                    with mock.patch.object(
+                        layout, "get_junction_target", return_value=version_dir
+                    ):
+                        with mock.patch.object(
+                            module,
+                            "update_current_junction_if_needed",
+                            return_value=True,
+                        ):
+                            result = module.update_package(
+                                package_root, automatic=True
+                            )
+
+            new_versions = [
+                path
+                for path in package_root.glob("v*.l*")
+                if path.name != "v0-git.l1"
+            ]
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertTrue(result.changed)
+            self.assertEqual(len(new_versions), 1)
+
+            new_version = new_versions[0]
+            new_config = tomllib.loads(
+                (new_version / "pkg.toml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(new_config["name"], "ImmutableGitApp")
+            self.assertEqual(
+                new_config["version"], new_version.name[1:].rsplit(".l", 1)[0]
+            )
+            self.assertEqual(new_config["localVersion"], 1)
+            self.assertEqual(new_config["update"]["payload"]["mode"], "git")
+            self.assertEqual(
+                (new_version / "App" / "payload.txt").read_text(encoding="utf-8"),
+                "two",
+            )
+            self.assertTrue((new_version / "App" / ".git").is_dir())
+            self.assertEqual(
+                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
+                "one",
+            )
 
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""

@@ -196,12 +196,20 @@ def _check_update(
             text=True,
             check=True,
         ).stdout.strip()
-        url = subprocess.run(
-            ["git", "-C", str(app), "remote", "get-url", check["remote"]],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+        origin = config.get("origin")
+        if origin is not None and origin.get("mode") == "git":
+            url = origin["url"]
+            if origin["ref"] != check["ref"]:
+                raise ConfigValidationError(
+                    "Git origin and update check must use the same ref"
+                )
+        else:
+            url = subprocess.run(
+                ["git", "-C", str(app), "remote", "get-url", check["remote"]],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
         remote = subprocess.run(
             ["git", "ls-remote", "--exit-code", url, check["ref"]],
             capture_output=True,
@@ -370,3 +378,64 @@ def _prepare_update(
     if not _app_contains_entries(stage_app):
         raise RuntimeError("Prepared update App directory is missing or empty")
     return new_identity
+
+
+def _refresh_git_app_inplace(
+    identity: PackageIdentity,
+    config: Dict[str, Any],
+    candidate: Dict[str, Any],
+) -> None:
+    """Fast-forward an in-place Git checkout to a checked candidate."""
+    check = config["update"]["check"]
+    app = (identity.version_path / check["appPath"]).resolve()
+    if not app.is_relative_to(identity.version_path.resolve()):
+        raise ConfigValidationError("Git appPath escapes the version directory")
+
+    # Preserve tracked local work instead of allowing an update to mix it with
+    # a different upstream revision. Untracked runtime files remain untouched.
+    status = subprocess.run(
+        ["git", "-C", str(app), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if status.strip():
+        raise RuntimeError(
+            "Git-inplace update refused because App has tracked local changes"
+        )
+
+    # Fetch only the configured ref and verify it still names the commit found
+    # by the preceding check before changing the checkout.
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(app),
+            "fetch",
+            "--no-tags",
+            candidate["url"],
+            check["ref"],
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    fetched = subprocess.run(
+        ["git", "-C", str(app), "rev-parse", "FETCH_HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if fetched != candidate["commit"]:
+        raise RuntimeError(
+            "Configured Git ref changed during the rolling update; retry the update"
+        )
+
+    # A fast-forward merge retains the checkout's branch or detached-HEAD
+    # state while refusing divergent local commits.
+    subprocess.run(
+        ["git", "-C", str(app), "merge", "--ff-only", candidate["commit"]],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
