@@ -23,9 +23,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-PKG_PY = SRC_ROOT / "pkg.py"
-LEGACY_CONVERTER = SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py"
-SHORTCUT_IMPORTER = SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py"
+PKG_PY = SRC_ROOT / "pkg" / "pkg.py"
+LEGACY_CONVERTER = SRC_ROOT / "pkg" / "legacy_to_pkg_toml.py"
+SHORTCUT_IMPORTER = SRC_ROOT / "pkg" / "shortcuts_to_pkg_toml.py"
 EXAMPLES_ROOT = ROOT / "tests" / "fixtures" / "legacy_examples"
 
 

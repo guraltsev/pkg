@@ -1,10 +1,10 @@
 # Development architecture
 
-`src/pkg.py` is the stable executable and public Python facade. It contains CLI
+`src/pkg/pkg.py` is the stable executable and public Python facade. It contains CLI
 dispatch and the high-level action workflows, so a maintainer can read an
 install or update from validation through its final result without following a
 generic pipeline. Significant implementation domains live directly in
-`src/pkg.modules/`.
+`src/pkg/`.
 
 The runtime package has one-way domain boundaries:
 
@@ -22,12 +22,12 @@ The facade imports only the names needed by its workflows. It does not provide
 compatibility re-exports, a provider framework, or a configurable install
 pipeline. New implementation code should be placed in the module that owns its
 state or side effect. Legacy format conversion remains implemented in
-`legacy_to_pkg_toml.py`; the `ConvertLegacy` action in `pkg.py` coordinates its
+`legacy_to_pkg_toml.py`; the `ConvertLegacy` action in `pkg/pkg.py` coordinates its
 public CLI result.
 
 ## Update coordinator
 
-The public update coordinator in `src/pkg.py` resolves the active package,
+The public update coordinator in `src/pkg/pkg.py` resolves the active package,
 validates its `[update]` table, acquires the package-root lock, checks for a
 candidate, asks the `updates` module to stage a complete version under
 `.pkg/work`, atomically commits it, and activates it through the normal install

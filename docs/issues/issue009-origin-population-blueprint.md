@@ -1,8 +1,8 @@
 # Blueprint: populate `App` from package origin
 
 > **Architecture note:** The single-file constraint in this blueprint has been
-> superseded. Origin behavior now lives in `src/pkg.modules/origin.py`, while
-> `src/pkg.py` retains the high-level action workflow.
+> superseded. Origin behavior now lives in `src/pkg/origin.py`, while
+> `src/pkg/pkg.py` retains the high-level action workflow.
 
 Date: 2026-07-08
 Priority: High
@@ -591,7 +591,7 @@ instead of top-level `downloadURL`.
 
 ## Implementation notes for an LLM developer
 
-Keep the implementation inside `src/pkg.py`. This repo intentionally keeps main
+Keep the implementation inside `src/pkg/pkg.py`. This repo intentionally keeps main
 runtime behavior in one Python file.
 
 Suggested local functions:

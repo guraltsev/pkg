@@ -31,7 +31,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-PKG_PY = SRC_ROOT / "pkg.py"
+PKG_PY = SRC_ROOT / "pkg" / "pkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
@@ -50,7 +50,7 @@ def load_pkg_module():
 def runtime_module(name: str) -> ModuleType:
     """Return one runtime module loaded by the ``pkg.py`` entrypoint."""
 
-    return sys.modules[f"_pkg_modules.{name}"]
+    return sys.modules[f"pkg.{name}"]
 
 
 @contextlib.contextmanager
@@ -780,6 +780,55 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
             updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
             self.assertIn("only_portable = false", updated)
+
+    def test_auto_scope_uses_admin_status_and_portability_policy(self) -> None:
+        """Automatic scope selects Machine only for permitted administrator installs."""
+        cases = (
+            ("admin-machine", True, False, "Machine"),
+            ("admin-portable-user", True, True, "User"),
+            ("nonadmin-user", False, False, "User"),
+        )
+
+        for case, is_admin, only_portable, expected_scope in cases:
+            with self.subTest(case=case):
+                module = load_pkg_module()
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    package_name = (
+                        f"AutoScope-{case}-portable"
+                        if only_portable
+                        else f"AutoScope-{case}"
+                    )
+                    version_dir = self.make_version_dir(
+                        tmpdir, package_name
+                    )
+                    self.write_config(
+                        version_dir,
+                        f"""
+                        name = "{package_name}"
+                        version = "1.0.0"
+                        localVersion = 1
+                        only_portable = {str(only_portable).lower()}
+                        """,
+                    )
+                    env = self.user_env(tmpdir) | self.machine_env(tmpdir)
+
+                    with mock.patch.dict(os.environ, env, clear=False):
+                        with mock.patch.object(
+                            module,
+                            "is_current_user_admin",
+                            return_value=is_admin,
+                        ):
+                            with mock.patch.object(
+                                module,
+                                "update_current_junction_if_needed",
+                                return_value=True,
+                            ):
+                                code, output = self.run_main(
+                                    module, [str(version_dir)]
+                                )
+
+                self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+                self.assertIn(f"Selected scope: {expected_scope}", output)
 
     def test_shortcut_creation_failure_makes_install_fail(self) -> None:
         """Shortcut creation failure makes install fail."""

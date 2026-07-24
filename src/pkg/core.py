@@ -49,11 +49,13 @@ class ConfigValidationError(ValueError):
 class Scope(Enum):
     """Installation scope supported by ``pkg``.
 
-    ``USER`` targets per-user configuration locations. ``MACHINE`` targets
-    machine-wide configuration locations and therefore usually requires
-    Administrator privileges.
+    ``AUTO`` selects machine scope for administrators when the package permits
+    it and user scope otherwise. ``USER`` targets per-user configuration
+    locations. ``MACHINE`` targets machine-wide configuration locations and
+    therefore usually requires Administrator privileges.
     """
 
+    AUTO = "Auto"
     USER = "User"
     MACHINE = "Machine"
 

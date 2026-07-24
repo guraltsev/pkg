@@ -48,34 +48,37 @@ v<upstream-version>.l<local-version>
 
 ## Commands
 
-Install in User scope from the current directory:
+Install from the current directory. Scope is selected automatically:
 
 ```bat
-python pkg.py
+pkg.cmd
 ```
+
+Administrators install machine-wide unless the package is portable-only.
+Non-administrators and portable-only packages install for the current user.
 
 Install a specific package:
 
 ```bat
-python pkg.py C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Install in Machine scope:
 
 ```bat
-python pkg.py --scope Machine C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --scope Machine C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Synchronize or create `pkg.toml` metadata only:
 
 ```bat
-python pkg.py --action UpdateConfig C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --action UpdateConfig C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Convert legacy package files into canonical `pkg.toml`:
 
 ```bat
-python pkg.py --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Use `--dry-run` to print the generated TOML, or `--output <path>` to select a
@@ -84,19 +87,18 @@ different destination.
 Repair mismatched top-level metadata during install:
 
 ```bat
-python pkg.py --fix-config C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --fix-config C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 Refresh `App/` from the package origin before reinstalling components:
 
 ```bat
-python pkg.py --refresh-app C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --refresh-app C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 The convenience wrappers call the same entry point:
 
 - `install.cmd`
-- `install-machine.cmd`
 - `update-config.cmd`
 - `health-check.cmd`
 - `check-update.cmd`
@@ -107,12 +109,12 @@ The convenience wrappers call the same entry point:
 - `legacy_to_pkg_toml.cmd`
 - `pkg.cmd`
 
-Run `python pkg.py --help` for the full CLI reference.
+Run `pkg.cmd --help` for the full CLI reference.
 
 Validate package metadata without installing:
 
 ```bat
-python pkg.py --action HealthCheck C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --action HealthCheck C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 ## Bootstrap interpreter selection
@@ -269,9 +271,9 @@ ordinary install path. `AutoUpdate` only applies candidates when the package
 opts in with `allow_automatic_update = true`.
 
 ```bat
-python pkg.py --action CheckUpdate C:\Packages\Tool
-python pkg.py --action Update C:\Packages\Tool
-python pkg.py --action AutoUpdate C:\Packages\Tool
+pkg.cmd --action CheckUpdate C:\Packages\Tool
+pkg.cmd --action Update C:\Packages\Tool
+pkg.cmd --action AutoUpdate C:\Packages\Tool
 ```
 
 A Git origin can check and prepare its configured ref directly:
@@ -371,7 +373,7 @@ continues.
 
 `ConvertLegacy` is the supported entry point for best-effort conversion from
 older package formats. Conversion details and the standalone migration module
-are documented in [`pkg.modules/`](src/pkg.modules/README.md).
+are documented in [`pkg/`](src/pkg/README.md).
 
 ## Development notes
 

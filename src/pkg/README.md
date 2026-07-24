@@ -1,7 +1,7 @@
 # Runtime modules and migration helpers
 
 The Python modules in this directory contain the supported implementation
-domains used by the stable `pkg.py` executable:
+domains used by the stable `pkg/pkg.py` executable:
 
 - `core.py`: shared result models, package identity, logging, expansion, and
   atomic file writes
@@ -11,10 +11,10 @@ domains used by the stable `pkg.py` executable:
 - `configuration.py`: canonical `pkg.toml` normalization and validation
 - `metadata.py`: structure-preserving metadata synchronization
 - `components.py`: shortcut, environment, `PATH`, and wrapper installation
-- `origin.py`: zip and script application population
+- `origin.py`: Git, zip, and script application population
 - `updates.py`: update state, hooks, candidate validation, and staging
 
-`pkg.py` remains the executable and public facade. It owns CLI dispatch and
+`pkg/pkg.py` remains the executable and public facade. It owns CLI dispatch and
 the high-level install, health-check, configuration, and update workflows.
 These runtime modules are internal implementation details and are not a
 separate public API. Legacy conversion remains implemented in
@@ -58,13 +58,13 @@ before installing the converted package.
 Supported `pkg` action:
 
 ```bat
-python pkg.py --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 The implementation also retains its standalone interface:
 
 ```bat
-python pkg.modules\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
+python pkg\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
 ```
 
 From the parent `src\` directory, the convenience launcher calls the supported
@@ -92,7 +92,7 @@ names. Other TOML sections are preserved.
 Example:
 
 ```bat
-python pkg.modules\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+python pkg\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 From the parent `src\` directory, the convenience launcher calls the same

@@ -3,7 +3,7 @@
 
 The module is the stable executable and Python facade for package actions. It
 coordinates configuration, origin population, component installation, and
-updates while focused implementation domains live beneath ``pkg.modules``.
+updates while focused implementation domains live in the ``pkg`` package.
 
 Usage and API
 -------------
@@ -22,7 +22,6 @@ Directory identity and result objects cross those boundaries explicitly.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import shutil
 import sys
@@ -31,29 +30,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
-# Load the sibling dotted directory under one conventional internal package
-# name. This preserves direct ``python pkg.py`` execution without putting
-# generic module names such as ``core`` or ``windows`` on ``sys.path``.
-_MODULES_ROOT = Path(__file__).resolve().with_name("pkg.modules")
-_MODULES_PACKAGE = "_pkg_modules"
-if _MODULES_PACKAGE not in sys.modules:
-    _modules_spec = importlib.util.spec_from_file_location(
-        _MODULES_PACKAGE,
-        _MODULES_ROOT / "__init__.py",
-        submodule_search_locations=[str(_MODULES_ROOT)],
-    )
-    if _modules_spec is None or _modules_spec.loader is None:
-        raise RuntimeError(f"Could not load runtime modules from {_MODULES_ROOT}")
-    _modules_package = importlib.util.module_from_spec(_modules_spec)
-    sys.modules[_MODULES_PACKAGE] = _modules_package
-    _modules_spec.loader.exec_module(_modules_package)
+# Direct script execution starts with ``src/pkg`` on sys.path. Add ``src`` so
+# the facade resolves this package by its canonical name without changing the
+# caller's working directory.
+_SRC_ROOT = Path(__file__).resolve().parent.parent
+_src_root_text = str(_SRC_ROOT)
+if _src_root_text in sys.path:
+    sys.path.remove(_src_root_text)
+sys.path.insert(0, _src_root_text)
 
-from _pkg_modules.components import install_components  # noqa: E402
-from _pkg_modules.configuration import (  # noqa: E402
+from pkg.components import install_components  # noqa: E402
+from pkg.configuration import (  # noqa: E402
     check_metadata_consistency,
     read_runtime_config,
 )
-from _pkg_modules.core import (  # noqa: E402
+from pkg.core import (  # noqa: E402
     Action,
     ActionResult,
     ConfigValidationError,
@@ -64,19 +55,19 @@ from _pkg_modules.core import (  # noqa: E402
     log_warning,
     write_text_atomic,
 )
-from _pkg_modules.layout import (  # noqa: E402
+from pkg.layout import (  # noqa: E402
     compute_scope_paths,
     resolve_input_path,
     update_current_junction_if_needed,
 )
-from _pkg_modules.legacy_to_pkg_toml import convert_legacy_directory  # noqa: E402
-from _pkg_modules.metadata import update_config_file  # noqa: E402
-from _pkg_modules.origin import (  # noqa: E402
+from pkg.legacy_to_pkg_toml import convert_legacy_directory  # noqa: E402
+from pkg.metadata import update_config_file  # noqa: E402
+from pkg.origin import (  # noqa: E402
     populate_app_from_origin,
     validate_origin_health,
     validate_update_health,
 )
-from _pkg_modules.updates import (  # noqa: E402
+from pkg.updates import (  # noqa: E402
     _check_update,
     _git_origin_candidate,
     _load_update_state,
@@ -87,7 +78,7 @@ from _pkg_modules.updates import (  # noqa: E402
     _update_paths,
     _write_update_state,
 )
-from _pkg_modules.windows import (  # noqa: E402
+from pkg.windows import (  # noqa: E402
     is_current_user_admin,
     wait_for_keypress,
 )
@@ -391,7 +382,7 @@ def check_package_update(package_path: Path) -> ActionResult:
 def update_package(
     package_path: Path,
     *,
-    scope: Scope = Scope.USER,
+    scope: Scope = Scope.AUTO,
     automatic: bool = False,
     no_checksum: bool = False,
 ) -> ActionResult:
@@ -402,7 +393,7 @@ def update_package(
     package_path : Path
         Package root or ``current`` junction whose active version should be
         updated, or a Git-backed ``v0-git`` bootstrap version.
-    scope : Scope, default=Scope.USER
+    scope : Scope, default=Scope.AUTO
         Installation scope used when activating the prepared version.
     automatic : bool, default=False
         Whether interval and automatic-activation policy should be enforced.
@@ -533,7 +524,7 @@ def update_package(
 def install_package(
     package_path: Path,
     *,
-    scope: Scope = Scope.USER,
+    scope: Scope = Scope.AUTO,
     fix_config: bool = False,
     use_defaults: bool = False,
     force: bool = False,
@@ -554,8 +545,9 @@ def install_package(
     package_path : Path
         User-supplied path to a version directory, package root, or
         ``current`` junction.
-    scope : Scope, default=Scope.USER
-        Installation scope to use for mutations.
+    scope : Scope, default=Scope.AUTO
+        Installation scope to use for mutations. Automatic selection uses
+        machine scope for administrators unless the package is portable-only.
     fix_config : bool, default=False
         Whether installs may synchronize mismatched metadata automatically.
     use_defaults : bool, default=False
@@ -586,10 +578,9 @@ def install_package(
     except ValueError as exc:
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
 
-    # Load runtime config and scope paths before any mutations so validation or
-    # filesystem failures stop the install cleanly.
+    # Load runtime config before any mutations so validation failures stop the
+    # install before automatic scope selection or filesystem work.
     try:
-        scope_paths = compute_scope_paths(scope)
         runtime_config, raw_config_data, load_warnings = read_runtime_config(
             identity, use_defaults=use_defaults
         )
@@ -690,8 +681,23 @@ def install_package(
     log_info(f"only_portable: {runtime_config['only_portable']}")
     log_info("")
 
-    # Reject scope combinations the package model cannot support before any
-    # junction or origin work begins.
+    # Resolve automatic scope only after reading the portability policy.
+    # Administrators use machine scope when permitted; every other automatic
+    # installation remains per-user.
+    scope_was_auto = scope == Scope.AUTO
+    auto_admin = False
+    if scope_was_auto:
+        auto_admin = is_current_user_admin()
+        scope = (
+            Scope.MACHINE
+            if auto_admin and not runtime_config["only_portable"]
+            else Scope.USER
+        )
+        log_info(f"Selected scope: {scope.value}")
+        log_info("")
+
+    # Reject explicit scope combinations the package model cannot support
+    # before any junction, origin, or scope-specific filesystem work begins.
     if runtime_config["only_portable"] and scope == Scope.MACHINE:
         return action_failure(
             "only_portable packages cannot be installed system-wide. Please use User scope.",
@@ -699,10 +705,19 @@ def install_package(
             warnings=warnings,
         )
 
-    if scope == Scope.MACHINE and not is_current_user_admin():
+    if scope == Scope.MACHINE and not (auto_admin or is_current_user_admin()):
         return action_failure(
             "Machine scope requires administrator privileges. Please run as administrator.",
             exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
+        )
+
+    try:
+        scope_paths = compute_scope_paths(scope)
+    except (RuntimeError, ValueError, OSError) as exc:
+        return action_failure(
+            f"Failed to resolve {scope.value} scope paths: {exc}",
+            exit_code=EXIT_MUTATION_ERROR,
             warnings=warnings,
         )
 
@@ -1067,7 +1082,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  %(prog)s                         # Install in User scope from current directory\n"
+            "  %(prog)s                         # Auto-select User or Machine installation scope\n"
             "  %(prog)s --scope Machine          # Install system-wide (requires admin)\n"
             "  %(prog)s --action UpdateConfig     # Sync configuration metadata only\n"
             "  %(prog)s --action ConvertLegacy    # Convert legacy files to canonical TOML\n"
@@ -1093,8 +1108,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--scope",
         choices=[scope.value for scope in Scope],
-        default=Scope.USER.value,
-        help="Installation scope: User (per-user) or Machine (system-wide)",
+        default=Scope.AUTO.value,
+        help="Installation scope (default: Auto; administrators use Machine unless portable-only)",
     )
 
     parser.add_argument(

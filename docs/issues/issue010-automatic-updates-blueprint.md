@@ -2,7 +2,7 @@
 
 > **Architecture note:** The single-file constraint in this blueprint has been
 > superseded. Update staging primitives now live in
-> `src/pkg.modules/updates.py`, while `src/pkg.py` retains the public update
+> `src/pkg/updates.py`, while `src/pkg/pkg.py` retains the public update
 > coordinator.
 
 Date: 2026-07-24
@@ -1141,23 +1141,27 @@ Pkg/
   v0.12.0.l1/
     pkg.toml
     App/
-      pkg.py
+      pkg/
+        pkg.py
       install.cmd
-      install-machine.cmd
       update-config.cmd
       ...
 ```
+
+`install.cmd` uses automatic scope selection: administrators install in
+Machine scope when the package permits it, while non-administrators and
+portable-only packages install in User scope.
 
 The stable launcher:
 
 1. resolves its own directory as `PKG_HOME`
 2. selects Python using the existing precedence rules
-3. invokes `%PKG_HOME%\current\App\pkg.py`
+3. invokes `%PKG_HOME%\current\App\pkg\pkg.py`
 4. forwards all arguments unchanged
 
 The self-package's application payload is the released `pkg` source bundle.
 This lets ordinary archive preparation populate staged `App/` and keeps the
-version root available for package metadata. `pkg.py` uses `PKG_HOME` only to
+version root available for package metadata. `pkg/pkg.py` uses `PKG_HOME` only to
 recognize a self-managed installation. A missing or inconsistent `PKG_HOME`
 makes `SelfUpdate` fail with guidance. A developer checkout must never update
 itself in place.
@@ -1186,11 +1190,11 @@ only when the release source used by the check module is trusted.
 pkg --action SelfUpdate
 ```
 
-1. resolve `PKG_HOME/current` and verify it matches the running `pkg.py`
+1. resolve `PKG_HOME/current` and verify it matches the running `pkg/pkg.py`
 2. load the local check module and perform an explicit release check
 3. reject an incompatible `minimumBootstrapVersion`
 4. prepare the new version with the ordinary staged update workflow
-5. run the staged `App/pkg.py --version`
+5. run the staged `App/pkg/pkg.py --version`
 6. run staged HealthCheck against its package config
 7. atomically move the version into `PKG_HOME`
 8. repoint `current`
@@ -1282,7 +1286,7 @@ succeeded but automatic update failed.
 
 ## Internal implementation shape
 
-Keep runtime behavior in `src/pkg.py`, consistent with the repository's current
+Keep runtime behavior in `src/pkg/pkg.py`, consistent with the repository's current
 single-file direction.
 
 Suggested high-level functions:
@@ -1607,5 +1611,5 @@ The feature is complete when:
 - New versions are never overwritten and old versions are not automatically
   deleted.
 - Self-update requires a stable launcher outside version directories.
-- The implementation stays concrete inside `src/pkg.py`; no provider framework
+- The implementation stays concrete inside `src/pkg/pkg.py`; no provider framework
   is introduced.

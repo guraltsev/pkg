@@ -2,7 +2,7 @@
 setlocal EnableExtensions DisableDelayedExpansion
 
 rem -----------------------------------------------------------------------------
-rem pkg.cmd - bootstrap launcher for pkg.py
+rem pkg.cmd - bootstrap launcher for pkg\pkg.py
 rem
 rem Interpreter selection priority:
 rem   1) Environment:  PKG_PYTHON
@@ -14,11 +14,11 @@ rem If an override source is provided but invalid, it fails loudly.
 rem -----------------------------------------------------------------------------
 
 set "SCRIPT_DIR=%~dp0"
-set "PKG_PY=%SCRIPT_DIR%pkg.py"
+set "PKG_PY=%SCRIPT_DIR%pkg\pkg.py"
 set "PKG_PYTHON_FILE=%SCRIPT_DIR%pkg.python"
 
 if not exist "%PKG_PY%" (
-  echo [pkg] ERROR: Missing pkg.py next to pkg.cmd: "%PKG_PY%"
+  echo [pkg] ERROR: Missing package facade: "%PKG_PY%"
   exit /b 2
 )
 

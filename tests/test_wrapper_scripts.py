@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 WRAPPER_SCRIPTS = [
     (SRC_ROOT / "install.cmd", ["--pause"]),
-    (SRC_ROOT / "install-machine.cmd", ["--scope", "Machine", "--pause"]),
     (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
     (SRC_ROOT / "health-check.cmd", ["--action", "HealthCheck", "--pause"]),
     (SRC_ROOT / "check-update.cmd", ["--action", "CheckUpdate", "--pause"]),
@@ -34,7 +33,7 @@ WRAPPER_SCRIPTS = [
 HELPER_WRAPPER_SCRIPTS = [
     (
         SRC_ROOT / "shortcuts_to_pkg_toml.cmd",
-        SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py",
+        SRC_ROOT / "pkg" / "shortcuts_to_pkg_toml.py",
     ),
 ]
 
@@ -77,7 +76,7 @@ exit /b 0
                     recorded_cwd = lines[0].removeprefix("cwd=")
                     recorded_args = lines[1].removeprefix("args=")
                     self.assertEqual(Path(recorded_cwd), version_dir)
-                    self.assertIn(str(SRC_ROOT / "pkg.py"), recorded_args)
+                    self.assertIn(str(SRC_ROOT / "pkg" / "pkg.py"), recorded_args)
                     for arg in forwarded_args:
                         self.assertIn(arg, recorded_args)
 
