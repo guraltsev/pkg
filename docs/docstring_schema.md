@@ -21,18 +21,54 @@ tours.
 
 ## Module docstrings
 
-Module docstrings describe the module's public responsibility and intended use.
-They may name public entrypoints, but only to explain how users interact with
-the module.
+Module docstrings describe the module's public responsibility, intended use,
+and general implementation approach. They may name public entrypoints, but
+only to explain how users interact with the module.
 
-Use this order:
+For substantive public modules, use this order:
 
 1. Summary: one sentence describing the module's capability.
-2. Extended summary: optional short paragraph describing important behavior,
+2. Extended summary: one paragraph describing important behavior, scope,
    inputs and outputs, side effects, generated files, safety checks, or
    limitations.
-3. See Also: optional, only when another public module or function is essential
+3. Usage and API: one paragraph describing the public entrypoints (Python module import, command line, etc.).
+4. Implementation Approach: a descrition of the high-level strategy
+   used to provide the module's behavior.
+5. See Also: (optional) when another public module or function is essential
    context.
+
+Trivial wrapper modules, package ``__init__.py`` files, and small internal
+modules may use a summary alone or reference the main package when the additional parts would not convey meaningful information.
+
+The `Usage and API` paragraph identifies public entrypoints and their intended
+roles. 
+
+`Implementation Approach` is an architectural overview, not a source-code
+tour. Describe concepts such as the parsing or traversal model, transformation
+boundaries, preservation rules, shared infrastructure, safety model, or the
+steps that establish the module's key guarantees. Do not describe definition
+order, direct readers to a location in the file, enumerate private helpers, or
+narrate private call chains.
+
+Use this template:
+
+```python
+"""Brief declarative description of the module's capability.
+
+Describe the module's observable behavior, scope, important guarantees, and
+limitations.
+
+Usage and API
+-------------
+Call ``public_function(...)`` from Python. The command-line interface delegates
+to ``main(...)`` for file, clipboard, or standard-stream workflows.
+
+Implementation Approach
+-----------------------
+Describe the high-level representation, selection, transformation, and
+preservation strategy that makes the public behavior reliable.
+"""
+```
 
 Do not include `Parameters`, `Returns`, or `Raises` sections in ordinary module
 docstrings.
@@ -40,22 +76,34 @@ docstrings.
 Bad:
 
 ```python
-"""Copy files into the build directory.
+"""Copy declared pipeline inputs into a managed build directory.
 
-Start with ``run`` for the library workflow and ``main`` for the CLI wrapper.
-The support helpers below them expand inputs and resolve output paths.
+Start with ``run(...)`` for the library workflow and ``main(...)`` for the CLI
+wrapper. The support helpers below expand inputs, resolve output paths, and
+perform the copies.
 """
 ```
 
 Good:
 
 ```python
-"""Copy declared pipeline inputs into a managed build directory.
+"""Convert Unicode Greek letters in LaTeX math to LaTeX macros.
 
-Call ``run(...)`` from Python code to copy explicit paths or glob-matched
-inputs into the selected build directory. The command-line interface delegates
-to ``main(...)`` for use in pipeline scripts. Unsafe output paths are rejected
-before files are written.
+Only recognized Greek letters in parsed math delimiters and supported math
+environments are converted; prose, preambles, and unsupported regions remain
+unchanged.
+
+Usage and API
+-------------
+Call ``transform_text(...)`` to transform a LaTeX fragment or document from
+Python. The command-line interface delegates to ``main(...)`` for file,
+clipboard, and standard-stream workflows.
+
+Implementation Approach
+-----------------------
+The module parses the source, selects supported math regions, replaces each
+recognized glyph through a shared mapping, and reconstructs every other region
+without modification.
 """
 ```
 
@@ -71,6 +119,13 @@ Avoid source-navigation language, especially:
 - "support helpers below"
 - "low-level details below"
 
+Architectural language is encouraged when it explains the module's strategy
+without becoming source navigation:
+
+- "The module parses supported math regions before applying replacements."
+- "Inputs are validated before outputs are created to avoid partial results."
+- "A shared mapping preserves distinct spellings for visually similar glyphs."
+
 Usage-oriented entrypoint mentions are fine:
 
 - "Call ``run(...)`` to copy inputs into the build directory."
@@ -85,8 +140,7 @@ Use this section order:
 1. Summary, required.
 2. Extended summary, optional.
 3. Parameters, required when the callable accepts public parameters.
-4. Returns, required when the callable returns a public value or when `None` is
-   part of the contract.
+4. Returns, required when the callable returns a public value.
 5. Raises, required for intentional exceptions raised by the callable.
 6. Notes, optional.
 7. Examples, required for substantive public APIs and optional for trivial
@@ -159,8 +213,6 @@ type
     Description of the returned value.
 ```
 
-Use `None` only when the no-value return is part of the public contract or the
-schema requires an explicit return section.
 
 ### Methods
 

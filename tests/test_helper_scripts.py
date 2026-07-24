@@ -181,6 +181,83 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertTrue(parsed["only_portable"])
             self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\tool.exe")
 
+    def test_converter_moves_legacy_download_url_to_single_origin_table(self) -> None:
+        """The converter emits a single origin table for legacy downloadURL metadata."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "OriginApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.json").write_text(
+                json.dumps({"downloadURL": "https://example.invalid/origin-app.zip"}),
+                encoding="utf-8",
+            )
+
+            result = self.run_converter("--dir", str(version_dir), "--dry-run")
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("[origin]", result.stdout)
+            self.assertNotIn("[[origin]]", result.stdout)
+            self.assertEqual(
+                tomllib.loads(result.stdout)["origin"]["url"],
+                "https://example.invalid/origin-app.zip",
+            )
+
+    def test_converter_preserves_existing_origin_configuration(self) -> None:
+        """The converter retains canonical origin settings when it rewrites pkg.toml."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "OriginApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.toml").write_text(
+                """
+                name = "OriginApp"
+                version = "1.0.0"
+
+                [origin]
+                url = "https://example.invalid/current.zip"
+                checksum = "sha256:current"
+                extractSubdir = "current"
+
+                [[origin.versions]]
+                version = "0.9.0"
+                script = "scripts/populate-old.cmd"
+                """.lstrip(),
+                encoding="utf-8",
+            )
+
+            result = self.run_converter("--dir", str(version_dir), "--dry-run")
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            origin = tomllib.loads(result.stdout)["origin"]
+            self.assertEqual(origin["url"], "https://example.invalid/current.zip")
+            self.assertEqual(origin["checksum"], "sha256:current")
+            self.assertEqual(origin["extractSubdir"], "current")
+            self.assertEqual(origin["versions"], [{"version": "0.9.0", "script": "scripts/populate-old.cmd"}])
+
+    def test_converter_preserves_existing_backups_before_replacing_output(self) -> None:
+        """The converter creates a numbered backup without replacing an older backup."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "BackupApp" / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            (version_dir / "pkg.json").write_text(
+                json.dumps({"name": "BackupApp", "version": "1.0.0"}),
+                encoding="utf-8",
+            )
+            pkg_toml = Path(tmpdir) / "pkg.toml"
+            original = '# Retain this migration result.\nname = "Previous App"\n'
+            pkg_toml.write_text(original, encoding="utf-8")
+            first_backup = Path(str(pkg_toml) + ".bak")
+            first_backup.write_text("# Older backup.\n", encoding="utf-8")
+
+            result = self.run_converter("--dir", str(version_dir), "--output", str(pkg_toml))
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertEqual(first_backup.read_text(encoding="utf-8"), "# Older backup.\n")
+            self.assertEqual(Path(str(pkg_toml) + ".bak.1").read_text(encoding="utf-8"), original)
+            self.assertEqual(tomllib.loads(pkg_toml.read_text(encoding="utf-8"))["name"], "BackupApp")
+            self.assertIn(f"Backed up {pkg_toml} to {pkg_toml}.bak.1", result.stdout)
+
     def test_converter_rewrites_legacy_pkg_toml_aliases_to_canonical_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "AliasApp" / "v3.4.5.l2"

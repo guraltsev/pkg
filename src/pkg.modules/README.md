@@ -25,6 +25,7 @@ The converter is intentionally best-effort:
 - missing metadata may be inferred from the directory name
 - legacy variable spellings are rewritten toward current package variables
 - legacy `downloadURL` or `download_url` values are emitted as `[origin].url`
+- existing canonical `[origin]` settings and `[[origin.versions]]` history are retained
 - output is always the current top-level metadata plus optional `[origin]`,
   `[[shortcut]]`, `[[environment]]`, `[[path]]`, and `[[bin]]`
 
@@ -44,7 +45,10 @@ script:
 legacy_to_pkg_toml.cmd --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
 ```
 
-Use `--dry-run` to print the generated TOML instead of writing it.
+Use `--dry-run` to print the generated TOML instead of writing it. When the
+output file already exists, the converter saves it as `pkg.toml.bak` before
+writing the regenerated TOML. Existing backups are preserved with incrementing
+suffixes such as `pkg.toml.bak.1`.
 
 ## `shortcuts_to_pkg_toml.py`
 

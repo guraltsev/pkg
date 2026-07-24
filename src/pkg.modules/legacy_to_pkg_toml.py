@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
@@ -336,9 +337,17 @@ def apply_top_level_metadata(output: dict[str, Any], source: dict[str, Any], *, 
             continue
         output[canon] = str(value)
 
+    origin_values = get_matching_values(source, ["origin"])
+    if origin_values and isinstance(origin_values[-1], dict):
+        output["origin"] = dict(origin_values[-1])
+
     download_values = get_matching_values(source, ["downloadURL", "download_url"])
     if download_values and download_values[-1] not in (None, ""):
-        output["origin"] = {"url": str(download_values[-1])}
+        # Retain canonical origin options while moving a legacy URL into the
+        # current source field.
+        origin = output.get("origin")
+        output["origin"] = dict(origin) if isinstance(origin, dict) else {}
+        output["origin"]["url"] = str(download_values[-1])
 
     local_values = get_matching_values(source, ["localVersion", "local_version"])
     if local_values:
@@ -530,10 +539,25 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
         lines.append("")
 
     origin = cfg.get("origin")
-    if isinstance(origin, dict) and origin.get("url") not in (None, ""):
-        lines.extend(["[origin]", f"url = {to_toml_scalar(origin['url'])}"])
-        if origin.get("version") not in (None, ""):
-            lines.append(f"version = {to_toml_scalar(origin['version'])}")
+    if isinstance(origin, dict):
+        # Copy supported current-source settings before preserving versioned
+        # history entries as their canonical repeated TOML tables.
+        origin_fields = ["url", "checksum", "extractSubdir", "script"]
+        version_entries = origin.get("versions")
+        if any(origin.get(key) not in (None, "") for key in origin_fields) or isinstance(version_entries, list):
+            lines.append("[origin]")
+            for key in origin_fields:
+                if origin.get(key) not in (None, ""):
+                    lines.append(f"{key} = {to_toml_scalar(origin[key])}")
+            if isinstance(version_entries, list):
+                for entry in version_entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    lines.append("")
+                    lines.append("[[origin.versions]]")
+                    for key in ["version", "url", "checksum", "extractSubdir", "script"]:
+                        if entry.get(key) not in (None, ""):
+                            lines.append(f"{key} = {to_toml_scalar(entry[key])}")
         lines.append("")
 
     lines.extend(toml_path_lines(cfg.get("path", [])))
@@ -583,7 +607,11 @@ def main() -> int:
     parser.add_argument("--dir", default=".", help="Directory that contains legacy JSON files (default: current directory)")
     parser.add_argument("--output", default="pkg.toml", help="Output TOML path (default: ./pkg.toml)")
     parser.add_argument("--dry-run", action="store_true", help="Print resulting TOML to stdout instead of writing")
-    parser.add_argument("--force", action="store_true", help="Overwrite output file if it already exists")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Deprecated compatibility option; existing output is backed up and replaced by default",
+    )
     args = parser.parse_args()
 
     base_dir = Path(args.dir).resolve()
@@ -597,13 +625,17 @@ def main() -> int:
         print(render_pkg_toml(cfg), end="")
         return 0
 
-    if out_path.exists() and not args.force:
-        print(
-            f"Error: {out_path} already exists. "
-            "Refusing to overwrite existing TOML to avoid data loss. "
-            "Use --force to overwrite."
-        )
-        return 1
+    # Preserve the prior generated config so migration can proceed without
+    # requiring a manual overwrite flag or discarding the previous reviewable
+    # result.
+    if out_path.exists():
+        backup_path = out_path.with_name(out_path.name + ".bak")
+        backup_number = 1
+        while backup_path.exists():
+            backup_path = out_path.with_name(out_path.name + f".bak.{backup_number}")
+            backup_number += 1
+        shutil.copy2(out_path, backup_path)
+        print(f"Backed up {out_path} to {backup_path}")
 
     write_pkg_toml(out_path, cfg)
     print(f"Wrote {out_path}")
