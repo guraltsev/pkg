@@ -62,12 +62,14 @@ class Action(Enum):
     """CLI actions supported by the tool.
 
     ``INSTALL`` applies the package to the selected scope. ``UPDATE_CONFIG``
-    only synchronizes configuration metadata back to ``pkg.toml``.
-    ``HEALTH_CHECK`` validates package metadata without mutating state.
+    synchronizes configuration metadata, ``CONVERT_LEGACY`` converts older
+    package files into canonical TOML, and ``HEALTH_CHECK`` validates package
+    metadata without mutating state.
     """
 
     INSTALL = "Install"
     UPDATE_CONFIG = "UpdateConfig"
+    CONVERT_LEGACY = "ConvertLegacy"
     HEALTH_CHECK = "HealthCheck"
     CHECK_UPDATE = "CheckUpdate"
     UPDATE = "Update"

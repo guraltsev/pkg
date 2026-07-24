@@ -17,13 +17,13 @@ domains used by the stable `pkg.py` executable:
 `pkg.py` remains the executable and public facade. It owns CLI dispatch and
 the high-level install, health-check, configuration, and update workflows.
 These runtime modules are internal implementation details and are not a
-separate public API. The migration scripts documented below are independent of
-the runtime and retain compatibility conversion logic deliberately excluded
-from `pkg.py`.
+separate public API. Legacy conversion remains implemented in
+`legacy_to_pkg_toml.py` and is coordinated by the public `ConvertLegacy`
+action.
 
 ## Migration helpers
 
-The scripts in this directory are best-effort migration helpers.
+The scripts in this directory provide best-effort migration behavior.
 
 They are meant to help move older package directories toward the current
 `pkg.toml` schema, but they are **not** part of the supported runtime surface.
@@ -52,26 +52,32 @@ The converter is intentionally best-effort:
 - output is always the current top-level metadata plus optional `[origin]`,
   `[[shortcut]]`, `[[environment]]`, `[[path]]`, and `[[bin]]`
 
-It does **not** preserve every old config shape, and it does not define a
-compatibility promise for the main tool.
+It does **not** preserve every old config shape. Review the canonical output
+before installing the converted package.
 
-Example:
+Supported `pkg` action:
+
+```bat
+python pkg.py --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+The implementation also retains its standalone interface:
 
 ```bat
 python pkg.modules\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
 ```
 
-From the parent `src\` directory, the convenience launcher calls the same
-script:
+From the parent `src\` directory, the convenience launcher calls the supported
+action:
 
 ```bat
-legacy_to_pkg_toml.cmd --dir C:\Packages\Ripgrep\v14.1.0.l1 --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml
+legacy_to_pkg_toml.cmd C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
-Use `--dry-run` to print the generated TOML instead of writing it. When the
-output file already exists, the converter saves it as `pkg.toml.bak` before
-writing the regenerated TOML. Existing backups are preserved with incrementing
-suffixes such as `pkg.toml.bak.1`.
+Use `--dry-run` to print the generated TOML or `--output <path>` to choose the
+destination. When the output file already exists, the converter saves it as
+`pkg.toml.bak` before writing the regenerated TOML. Existing backups are
+preserved with incrementing suffixes such as `pkg.toml.bak.1`.
 
 ## `shortcuts_to_pkg_toml.py`
 

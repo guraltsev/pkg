@@ -21,8 +21,9 @@ The runtime package has one-way domain boundaries:
 The facade imports only the names needed by its workflows. It does not provide
 compatibility re-exports, a provider framework, or a configurable install
 pipeline. New implementation code should be placed in the module that owns its
-state or side effect. Legacy format conversion remains isolated in
-`legacy_to_pkg_toml.py`.
+state or side effect. Legacy format conversion remains implemented in
+`legacy_to_pkg_toml.py`; the `ConvertLegacy` action in `pkg.py` coordinates its
+public CLI result.
 
 ## Update coordinator
 

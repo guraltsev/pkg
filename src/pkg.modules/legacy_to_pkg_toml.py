@@ -682,6 +682,59 @@ def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
     path.write_text(render_pkg_toml(cfg), encoding="utf-8")
 
 
+def convert_legacy_directory(
+    base_dir: Path,
+    output_path: Path,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Convert legacy package files into one canonical TOML document.
+
+    Parameters
+    ----------
+    base_dir : Path
+        Directory containing the legacy package files to inspect.
+    output_path : Path
+        Destination for the generated canonical TOML document.
+    dry_run : bool, default=False
+        Whether to print generated TOML instead of writing the destination.
+
+    Returns
+    -------
+    bool
+        ``True`` when the destination was written and ``False`` for a dry run.
+
+    Notes
+    -----
+    An existing destination is copied to the next available ``.bak`` path
+    before replacement.
+    """
+
+    # Build the complete canonical representation before touching an existing
+    # destination, so malformed inputs cannot leave partial output.
+    cfg = build_config(base_dir)
+    if dry_run:
+        print(render_pkg_toml(cfg), end="")
+        return False
+
+    # Preserve every previous conversion result under a numbered backup rather
+    # than overwriting the reviewable result from an earlier migration.
+    if output_path.exists():
+        backup_path = output_path.with_name(output_path.name + ".bak")
+        backup_number = 1
+        while backup_path.exists():
+            backup_path = output_path.with_name(
+                output_path.name + f".bak.{backup_number}"
+            )
+            backup_number += 1
+        shutil.copy2(output_path, backup_path)
+        print(f"Backed up {output_path} to {backup_path}")
+
+    write_pkg_toml(output_path, cfg)
+    print(f"Wrote {output_path}")
+    return True
+
+
 def main() -> int:
     """Run the legacy-to-TOML converter CLI.
 
@@ -715,30 +768,11 @@ def main() -> int:
     args = parser.parse_args()
 
     base_dir = Path(args.dir).resolve()
-    cfg = build_config(base_dir)
-
     out_path = Path(args.output)
     if not out_path.is_absolute():
         out_path = (Path.cwd() / out_path).resolve()
 
-    if args.dry_run:
-        print(render_pkg_toml(cfg), end="")
-        return 0
-
-    # Preserve the prior generated config so migration can proceed without
-    # requiring a manual overwrite flag or discarding the previous reviewable
-    # result.
-    if out_path.exists():
-        backup_path = out_path.with_name(out_path.name + ".bak")
-        backup_number = 1
-        while backup_path.exists():
-            backup_path = out_path.with_name(out_path.name + f".bak.{backup_number}")
-            backup_number += 1
-        shutil.copy2(out_path, backup_path)
-        print(f"Backed up {out_path} to {backup_path}")
-
-    write_pkg_toml(out_path, cfg)
-    print(f"Wrote {out_path}")
+    convert_legacy_directory(base_dir, out_path, dry_run=args.dry_run)
     return 0
 
 

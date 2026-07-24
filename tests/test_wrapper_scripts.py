@@ -20,12 +20,12 @@ WRAPPER_SCRIPTS = [
     (SRC_ROOT / "install.cmd", ["--pause"]),
     (SRC_ROOT / "install-machine.cmd", ["--scope", "Machine", "--pause"]),
     (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
-]
-HELPER_WRAPPER_SCRIPTS = [
     (
         SRC_ROOT / "legacy_to_pkg_toml.cmd",
-        SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py",
+        ["--action", "ConvertLegacy"],
     ),
+]
+HELPER_WRAPPER_SCRIPTS = [
     (
         SRC_ROOT / "shortcuts_to_pkg_toml.cmd",
         SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py",

@@ -72,6 +72,15 @@ Synchronize or create `pkg.toml` metadata only:
 python pkg.py --action UpdateConfig C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
+Convert legacy package files into canonical `pkg.toml`:
+
+```bat
+python pkg.py --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+```
+
+Use `--dry-run` to print the generated TOML, or `--output <path>` to select a
+different destination.
+
 Repair mismatched top-level metadata during install:
 
 ```bat
@@ -89,6 +98,7 @@ The convenience wrappers call the same entry point:
 - `install.cmd`
 - `install-machine.cmd`
 - `update-config.cmd`
+- `legacy_to_pkg_toml.cmd`
 - `pkg.cmd`
 
 Run `python pkg.py --help` for the full CLI reference.
@@ -321,11 +331,11 @@ outside the default root, install prints a warning but still creates the output.
 `Install` does not create `pkg.toml` when it is missing. It uses defaults and
 continues.
 
-## Helper scripts
+## Migration tools
 
-Best-effort migration helpers live in [`pkg.modules/`](src/pkg.modules/README.md).
-They are for manual transitions from older formats and are not part of the
-supported runtime surface.
+`ConvertLegacy` is the supported entry point for best-effort conversion from
+older package formats. Conversion details and the standalone migration module
+are documented in [`pkg.modules/`](src/pkg.modules/README.md).
 
 ## Development notes
 

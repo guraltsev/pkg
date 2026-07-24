@@ -207,6 +207,71 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 local_version=1,
             )
 
+    def test_convert_legacy_action_writes_canonical_toml(self) -> None:
+        """ConvertLegacy writes canonical TOML through the main pkg CLI."""
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "LegacyApp" / "v2.3.4.l5"
+            version_dir.mkdir(parents=True)
+            (version_dir / "opt_pkg.json").write_text(
+                json.dumps(
+                    {
+                        "name": "LegacyApp",
+                        "version": "2.3.4",
+                        "local_version": 5,
+                        "portable": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code, output = self.run_main(
+                module,
+                ["--action", "ConvertLegacy", str(version_dir)],
+            )
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            parsed = tomllib.loads(
+                (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(parsed["name"], "LegacyApp")
+            self.assertEqual(parsed["version"], "2.3.4")
+            self.assertEqual(parsed["localVersion"], 5)
+            self.assertFalse(parsed["only_portable"])
+
+    def test_convert_legacy_dry_run_emits_only_parseable_toml(self) -> None:
+        """ConvertLegacy dry-run emits parseable TOML without writing output."""
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = Path(tmpdir) / "DryLegacy" / "v1.0.0.l2"
+            version_dir.mkdir(parents=True)
+            (version_dir / "opt_pkg.json").write_text(
+                json.dumps(
+                    {
+                        "name": "DryLegacy",
+                        "version": "1.0.0",
+                        "local_version": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code, output = self.run_main(
+                module,
+                [
+                    "--action",
+                    "ConvertLegacy",
+                    "--dry-run",
+                    str(version_dir),
+                ],
+            )
+
+            self.assertEqual(code, module.EXIT_SUCCESS)
+            parsed = tomllib.loads(output)
+            self.assertEqual(parsed["name"], "DryLegacy")
+            self.assertEqual(parsed["localVersion"], 2)
+            self.assertFalse((version_dir / "pkg.toml").exists())
+
     def test_update_config_default_path_uses_caller_current_directory(self) -> None:
         """Update config default path uses caller current directory."""
         module = load_pkg_module()

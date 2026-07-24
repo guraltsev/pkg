@@ -9,8 +9,8 @@ Usage and API
 -------------
 Call ``main(...)`` for command-line execution. Embedders may call
 ``install_package(...)``, ``update_package_config(...)``,
-``health_check_package(...)``, ``check_package_update(...)``, or
-``update_package(...)`` directly.
+``convert_legacy_config(...)``, ``health_check_package(...)``,
+``check_package_update(...)``, or ``update_package(...)`` directly.
 
 Implementation Approach
 -----------------------
@@ -68,6 +68,7 @@ from _pkg_modules.layout import (  # noqa: E402
     resolve_input_path,
     update_current_junction_if_needed,
 )
+from _pkg_modules.legacy_to_pkg_toml import convert_legacy_directory  # noqa: E402
 from _pkg_modules.metadata import update_config_file  # noqa: E402
 from _pkg_modules.origin import (  # noqa: E402
     populate_app_from_origin,
@@ -115,6 +116,7 @@ Notes:
   - ``SelfUpdate`` requires a stable ``PKG_HOME`` launcher installation.
   - ``UpdateConfig`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``UpdateConfig`` syncs only canonical top-level metadata keys in an existing file.
+  - ``ConvertLegacy`` builds canonical ``pkg.toml`` from legacy package files.
   - Contributor notes live in ``docs/development_guide.md``.
 
 Run the tool from inside a *version directory*:
@@ -804,6 +806,61 @@ def update_package_config(
     )
 
 
+def convert_legacy_config(
+    package_path: Path,
+    *,
+    output_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> ActionResult:
+    """Convert legacy package files into canonical ``pkg.toml``.
+
+    Parameters
+    ----------
+    package_path : Path
+        Directory containing legacy package files.
+    output_path : Path | None, default=None
+        Destination TOML path. The default is ``pkg.toml`` inside the legacy
+        package directory.
+    dry_run : bool, default=False
+        Whether to print canonical TOML without writing or backing up files.
+
+    Returns
+    -------
+    ActionResult
+        Conversion outcome and recommended process exit code.
+    """
+
+    # Legacy source directories may predate the version-directory layout, so
+    # validate them independently of normal package identity resolution.
+    base_dir = Path(package_path).resolve()
+    if not base_dir.exists() or not base_dir.is_dir():
+        return action_failure(
+            f"Legacy package directory does not exist: {base_dir}",
+            exit_code=EXIT_USER_ERROR,
+        )
+
+    # Default output belongs to the converted directory. Explicit relative
+    # paths remain relative to the caller's working directory.
+    destination = (
+        base_dir / "pkg.toml"
+        if output_path is None
+        else Path(output_path).expanduser().resolve()
+    )
+
+    try:
+        changed = convert_legacy_directory(
+            base_dir,
+            destination,
+            dry_run=dry_run,
+        )
+    except (TypeError, ValueError) as exc:
+        return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
+    except OSError as exc:
+        return action_failure(str(exc), exit_code=EXIT_MUTATION_ERROR)
+
+    return ActionResult(ok=True, changed=changed, exit_code=EXIT_SUCCESS)
+
+
 def health_check_package(
     package_path: Path, *, scope: Scope = Scope.USER
 ) -> ActionResult:
@@ -952,6 +1009,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "  %(prog)s                         # Install in User scope from current directory\n"
             "  %(prog)s --scope Machine          # Install system-wide (requires admin)\n"
             "  %(prog)s --action UpdateConfig     # Sync configuration metadata only\n"
+            "  %(prog)s --action ConvertLegacy    # Convert legacy files to canonical TOML\n"
             "  %(prog)s --action HealthCheck      # Validate package metadata only\n"
             "  %(prog)s --fix-config             # Install and sync config metadata if it mismatches\n"
             "  %(prog)s --pause                  # Pause for a keypress before exit\n"
@@ -1027,6 +1085,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
+        "--output",
+        default=None,
+        help="Output path for ConvertLegacy (default: <path>/pkg.toml)",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print ConvertLegacy TOML without writing files",
+    )
+
+    parser.add_argument(
         "--toml",
         action="store_true",
         default=False,
@@ -1037,7 +1108,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "path",
         nargs="?",
         default=".",
-        help="Path to a version directory, current junction, or package root (default: current directory)",
+        help="Package path, or legacy source directory for ConvertLegacy (default: current directory)",
     )
 
     args = parser.parse_args(argv)
@@ -1060,6 +1131,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         elif action == Action.UPDATE_CONFIG:
             result = update_package_config(package_path, scope=scope)
+        elif action == Action.CONVERT_LEGACY:
+            output_path = Path(args.output).expanduser() if args.output else None
+            result = convert_legacy_config(
+                package_path,
+                output_path=output_path,
+                dry_run=args.dry_run,
+            )
         elif action == Action.HEALTH_CHECK:
             result = health_check_package(package_path, scope=scope)
         elif action == Action.CHECK_UPDATE:
@@ -1092,6 +1170,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         message = f"Unexpected internal error: {exc}"
         log_error(message)
         result = ActionResult(ok=False, errors=[message], exit_code=EXIT_INTERNAL_ERROR)
+
+    # Dry-run conversion is designed for redirection and TOML parsing, so keep
+    # stdout free of the normal action footer and pause prompt.
+    if action == Action.CONVERT_LEGACY and args.dry_run:
+        return result.exit_code
 
     if args.pause:
         log_info("")
