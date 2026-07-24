@@ -16,17 +16,21 @@ from __future__ import annotations
 # Section: Shared models and pure helpers
 #------------------------------------------
 import hashlib
+import importlib.util
 import json
 import logging
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import tomllib
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -75,6 +79,10 @@ class Action(Enum):
     INSTALL = "Install"
     UPDATE_CONFIG = "UpdateConfig"
     HEALTH_CHECK = "HealthCheck"
+    CHECK_UPDATE = "CheckUpdate"
+    UPDATE = "Update"
+    AUTO_UPDATE = "AutoUpdate"
+    SELF_UPDATE = "SelfUpdate"
 
 
 @dataclass
@@ -1992,6 +2000,10 @@ Notes:
   - ``pkg --help`` and ``pkg --version`` do not write files.
   - ``Install`` does not auto-create ``pkg.toml``.
   - ``HealthCheck`` validates ``pkg.toml`` and origin script references without writing files.
+  - ``CheckUpdate`` discovers an update without downloading it.
+  - ``Update`` checks, stages, and activates an available update.
+  - ``AutoUpdate`` performs a due check and applies only when ``[update]`` opts in.
+  - ``SelfUpdate`` requires a stable ``PKG_HOME`` launcher installation.
   - ``UpdateConfig`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``UpdateConfig`` syncs only canonical top-level metadata keys in an existing file.
   - Contributor notes live in ``docs/development.md``.
@@ -2425,6 +2437,79 @@ def normalize_origin_config(raw_origin: Any, package_version: str) -> Optional[D
     raise ConfigValidationError("[origin] must declare exactly one of 'url' or 'script'")
 
 
+def _validate_package_local_path(identity: PackageIdentity, value: str, *, context: str) -> str:
+    """Validate a Python hook path beneath a version's ``pkg.local`` directory."""
+
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts or candidate.suffix.lower() != ".py":
+        raise ConfigValidationError(f"[{context}].module must be a relative .py path below pkg.local")
+    local_root = (identity.version_path / "pkg.local").resolve()
+    resolved = (identity.version_path / candidate).resolve()
+    if not resolved.is_relative_to(local_root):
+        raise ConfigValidationError(f"[{context}].module must resolve below pkg.local")
+    return candidate.as_posix()
+
+
+def normalize_update_config(raw_update: Any, identity: PackageIdentity) -> Optional[Dict[str, Any]]:
+    """Normalize the optional update policy and its check and payload modes."""
+
+    if raw_update is None:
+        return None
+    if not isinstance(raw_update, dict):
+        raise ConfigValidationError("'update' must be a table")
+    _validate_exact_keys(raw_update, allowed={"allow_automatic_update", "check", "payload"}, context="update",
+                         ordered_allowed=["allow_automatic_update", "check", "payload"])
+    automatic = raw_update.get("allow_automatic_update", False)
+    if not isinstance(automatic, bool):
+        raise ConfigValidationError("'update.allow_automatic_update' must be a boolean")
+    check = raw_update.get("check")
+    payload = raw_update.get("payload")
+    if not isinstance(check, dict) or not isinstance(payload, dict):
+        raise ConfigValidationError("[update.check] and [update.payload] are required tables")
+    mode = check.get("mode")
+    if mode == "git":
+        _validate_exact_keys(check, allowed={"mode", "appPath", "remote", "ref"}, context="update.check",
+                             ordered_allowed=["mode", "appPath", "remote", "ref"])
+        app_path = check.get("appPath", "App")
+        ref = check.get("ref")
+        if not isinstance(app_path, str) or Path(app_path).is_absolute() or ".." in Path(app_path).parts:
+            raise ConfigValidationError("[update.check].appPath must be a safe relative path")
+        if not isinstance(ref, str) or not ref.startswith("refs/"):
+            raise ConfigValidationError("[update.check].ref must be a full refs/... string")
+        normalized_check = {"mode": "git", "appPath": app_path, "remote": check.get("remote", "origin"), "ref": ref}
+    elif mode == "module":
+        _validate_exact_keys(check, allowed={"mode", "module", "channel"}, context="update.check",
+                             ordered_allowed=["mode", "module", "channel"])
+        module = check.get("module", "pkg.local/check_update.py")
+        if not isinstance(module, str):
+            raise ConfigValidationError("[update.check].module must be a string")
+        normalized_check = {"mode": "module", "module": _validate_package_local_path(identity, module, context="update.check"),
+                            "channel": check.get("channel", "stable")}
+    else:
+        raise ConfigValidationError("[update.check].mode must be 'git' or 'module'")
+    payload_mode = payload.get("mode")
+    if payload_mode not in {"git", "zip", "module"}:
+        raise ConfigValidationError("[update.payload].mode must be 'git', 'zip', or 'module'")
+    allowed_payload = {"mode", "extractSubdir", "ignore_checksum", "module", "maxSizeMB"}
+    _validate_exact_keys(payload, allowed=allowed_payload, context="update.payload", ordered_allowed=list(allowed_payload))
+    if payload_mode == "git" and mode != "git":
+        raise ConfigValidationError("[update.payload].mode = 'git' requires a git update check")
+    normalized_payload: Dict[str, Any] = {"mode": payload_mode, "ignore_checksum": payload.get("ignore_checksum", False)}
+    if not isinstance(normalized_payload["ignore_checksum"], bool):
+        raise ConfigValidationError("[update.payload].ignore_checksum must be a boolean")
+    extract_subdir = payload.get("extractSubdir")
+    if extract_subdir is not None:
+        if not isinstance(extract_subdir, str) or Path(extract_subdir).is_absolute() or ".." in Path(extract_subdir).parts:
+            raise ConfigValidationError("[update.payload].extractSubdir must be a safe relative path")
+        normalized_payload["extractSubdir"] = extract_subdir
+    if payload_mode == "module":
+        module = payload.get("module", "pkg.local/unpack_app.py")
+        if not isinstance(module, str):
+            raise ConfigValidationError("[update.payload].module must be a string")
+        normalized_payload["module"] = _validate_package_local_path(identity, module, context="update.payload")
+    return {"allow_automatic_update": automatic, "check": normalized_check, "payload": normalized_payload}
+
+
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
@@ -2459,6 +2544,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         "description",
         "homepage",
         "origin",
+        "update",
         "only_portable",
         "environment",
         "shortcut",
@@ -2495,6 +2581,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         else _normalize_only_portable_value(only_portable_value, field_name="only_portable")
     )
     normalized_origin = normalize_origin_config(raw.get("origin"), identity.version)
+    normalized_update = normalize_update_config(raw.get("update"), identity)
 
     environment_entries: List[Dict[str, str]] = []
     raw_environment = raw.get("environment")
@@ -2633,6 +2720,7 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         "description": _normalize_optional_string(raw.get("description"), field_name="description"),
         "homepage": _normalize_optional_string(raw.get("homepage"), field_name="homepage"),
         "origin": normalized_origin,
+        "update": normalized_update,
         "only_portable": normalized_only_portable,
         "environment": environment_entries,
         "shortcut": shortcut_entries,
@@ -2986,6 +3074,7 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
         "description",
         "homepage",
         "origin",
+        "update",
         "only_portable",
         "environment",
         "shortcut",
@@ -3173,6 +3262,35 @@ def create_starter_config(identity: PackageIdentity) -> str:
         "# [[origin.versions]]",
         f"# version = {_to_toml_scalar(metadata['version'])}",
         "# url = \"https://example.invalid/tool-current.zip\"",
+        "",
+        "# Update examples:",
+        "# Update checks run after a root/current Install when due. Set this to true",
+        "# only when an available update may be downloaded and activated without prompting.",
+        "# [update]",
+        "# allow_automatic_update = false",
+        "#",
+        "# Git checkout workflow (App is a Git work tree):",
+        "# [update.check]",
+        "# mode = \"git\"",
+        "# appPath = \"App\"",
+        "# remote = \"origin\"",
+        "# ref = \"refs/heads/main\"",
+        "#",
+        "# [update.payload]",
+        "# mode = \"git\"",
+        "#",
+        "# Downloaded zip workflow (pkg.local/check_update.py finds releases):",
+        "# [update.check]",
+        "# mode = \"module\"",
+        "# channel = \"stable\"",
+        "#",
+        "# [update.payload]",
+        "# mode = \"zip\"",
+        "# extractSubdir = \"tool-portable\"",
+        "# ignore_checksum = false",
+        "#",
+        "# For another archive layout, use payload.mode = \"module\" and provide",
+        "# pkg.local/unpack_app.py. Package-local update modules are trusted in-process code.",
         "",
         "# Variable expansion reference:",
         "#   $App, $Icons, $Shortcuts -> package directories under <package>/current/",
@@ -3540,6 +3658,22 @@ def validate_origin_health(identity: PackageIdentity, origin: Optional[Dict[str,
     return errors
 
 
+def validate_update_health(identity: PackageIdentity, update: Optional[Dict[str, Any]]) -> List[str]:
+    """Return update-hook reference errors without contacting an update source."""
+
+    if update is None:
+        return []
+    references = [update["check"]] if update["check"]["mode"] == "module" else []
+    if update["payload"]["mode"] == "module":
+        references.append(update["payload"])
+    errors: List[str] = []
+    for item in references:
+        path = identity.version_path / item["module"]
+        if not path.exists() or not path.is_file():
+            errors.append(f"Update module does not exist: {item['module']}")
+    return errors
+
+
 def install_components(
     identity: PackageIdentity,
     scope: Scope,
@@ -3627,6 +3761,239 @@ def install_components(
     return combined
 
 
+def _update_paths(root: Path) -> Dict[str, Path]:
+    """Return the manager-owned paths used by package update operations."""
+
+    base = root / ".pkg"
+    return {"base": base, "work": base / "work", "locks": base / "locks", "state": base / "state" / "update.toml", "receipts": base / "receipts"}
+
+
+def _toml_value(value: Any) -> str:
+    """Render the limited scalar values persisted by update state."""
+
+    if isinstance(value, bool): return "true" if value else "false"
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _load_update_state(path: Path) -> Dict[str, Any]:
+    """Load advisory update state, preserving a corrupt file for diagnosis."""
+
+    if not path.exists(): return {"assignedVersion": []}
+    try:
+        return read_toml_file(path)
+    except Exception:
+        backup = path.with_name(f"update.corrupt-{datetime.now(timezone.utc):%Y%m%d%H%M%S}.toml")
+        path.replace(backup)
+        log_warning(f"Corrupt update state was moved to {backup}")
+        return {"assignedVersion": []}
+
+
+def _write_update_state(path: Path, state: Dict[str, Any]) -> None:
+    """Atomically persist the small TOML update coordination document."""
+
+    lines = ["schemaVersion = 1"]
+    for key in ("lastAttemptedCheck", "lastSuccessfulCheck", "lastStatus", "lastCandidateId", "lastError"):
+        if state.get(key) is not None: lines.append(f"{key} = {_toml_value(state[key])}")
+    for item in state.get("assignedVersion", [])[-100:]:
+        lines.extend(["", "[[assignedVersion]]", f"candidateId = {_toml_value(item['candidateId'])}", f"version = {_toml_value(item['version'])}"])
+    write_text_atomic(path, "\n".join(lines) + "\n")
+
+
+def _load_package_module(identity: PackageIdentity, reference: str, pycache: Path):
+    """Load one trusted package-local module without retaining its namespace."""
+
+    path = (identity.version_path / reference).resolve()
+    local_root = (identity.version_path / "pkg.local").resolve()
+    if not path.exists(): raise ConfigValidationError(f"Package-local module does not exist: {reference}")
+    name = f"_pkg_local_{hashlib.sha256((str(path) + str(path.stat().st_mtime_ns)).encode()).hexdigest()[:16]}"
+    spec = importlib.util.spec_from_file_location(name, path, submodule_search_locations=[str(local_root)])
+    if spec is None or spec.loader is None: raise ConfigValidationError(f"Cannot load package-local module: {reference}")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.modules[name] = module
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+        # Remove this module family only; package-local relative imports use the
+        # same unique prefix and must not leak state into later update actions.
+        for imported_name in list(sys.modules):
+            if imported_name == name or imported_name.startswith(name + "."):
+                sys.modules.pop(imported_name, None)
+    if getattr(module, "PKG_MODULE_API", None) != 1: raise ConfigValidationError(f"{reference} must declare PKG_MODULE_API = 1")
+    return module
+
+
+def _candidate_version(state: Dict[str, Any], candidate_id: str) -> str:
+    """Reuse the UTC version assigned to a Git candidate."""
+
+    for assigned in state.get("assignedVersion", []):
+        if assigned.get("candidateId") == candidate_id: return assigned["version"]
+    version = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-git")
+    state.setdefault("assignedVersion", []).append({"candidateId": candidate_id, "version": version})
+    return version
+
+
+def _normalize_update_candidate(raw: Dict[str, Any], identity: PackageIdentity, state: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """Validate a discovered update before it is allowed to reach staging."""
+
+    if not isinstance(raw, dict): raise ConfigValidationError("Update check must return a mapping or None")
+    required = {"candidateId", "version"} | ({"url"} if mode == "module" else set())
+    if not required <= set(raw): raise ConfigValidationError(f"Update candidate is missing: {', '.join(sorted(required - set(raw)))}")
+    candidate_id, version = raw["candidateId"], raw["version"]
+    if not isinstance(candidate_id, str) or not candidate_id.strip() or not isinstance(version, str) or not version.strip(): raise ConfigValidationError("Update candidate ID and version must be non-empty strings")
+    if "/" in version or "\\" in version or ".." in version or not is_version_directory_name(f"v{version}.l1"):
+        raise ConfigValidationError("Update candidate version is unsafe for a version directory")
+    comparison = compare_package_versions(version, identity.version)
+    if comparison < 0: raise ConfigValidationError("Update candidate is older than the active version")
+    if comparison == 0 and candidate_id != state.get("lastCandidateId"): raise ConfigValidationError("A different candidate cannot republish the active version")
+    result = dict(raw); result["candidateId"] = candidate_id; result["version"] = version
+    return result
+
+
+def _check_update(identity: PackageIdentity, config: Dict[str, Any], state: Dict[str, Any], work: Path) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Discover the current or next upstream state without changing App."""
+
+    update = config["update"]; check = update["check"]
+    if check["mode"] == "git":
+        app = (identity.version_path / check["appPath"]).resolve()
+        if not app.is_relative_to(identity.version_path.resolve()): raise ConfigValidationError("Git appPath escapes the version directory")
+        local = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        url = subprocess.run(["git", "-C", str(app), "remote", "get-url", check["remote"]], capture_output=True, text=True, check=True).stdout.strip()
+        remote = subprocess.run(["git", "ls-remote", "--exit-code", url, check["ref"]], capture_output=True, text=True, check=True).stdout.split()[0]
+        if local == remote: return "current", None
+        candidate_id = f"git:{remote}"; version = _candidate_version(state, candidate_id)
+        return "available", {"candidateId": candidate_id, "version": version, "url": url, "ref": check["ref"], "commit": remote}
+    module = _load_package_module(identity, check["module"], work / "pycache")
+    callback = getattr(module, "check_update", None)
+    if not callable(callback): raise ConfigValidationError("Update check module must define check_update(context)")
+    context = {"apiVersion": 1, "channel": check["channel"], "current": {"name": identity.name, "version": identity.version, "localVersion": identity.local_version, "versionString": identity.version_string, "candidateId": state.get("lastCandidateId")}, "paths": {"packageRoot": identity.package_root, "versionRoot": identity.version_path, "app": identity.version_path / "App"}, "state": dict(state)}
+    raw = callback(context)
+    if raw is None: return "current", None
+    return "available", _normalize_update_candidate(raw, identity, state, "module")
+
+
+def _next_version_identity(identity: PackageIdentity, candidate: Dict[str, Any]) -> PackageIdentity:
+    """Assign the first unused local revision for a prepared candidate."""
+
+    revision = 1
+    while (identity.package_root / f"v{candidate['version']}.l{revision}").exists(): revision += 1
+    path = identity.package_root / f"v{candidate['version']}.l{revision}"
+    return PackageIdentity.from_version_path(identity.package_root, path, is_current=False)
+
+
+def _prepare_update(identity: PackageIdentity, config: Dict[str, Any], candidate: Dict[str, Any], work: Path, *, no_checksum: bool) -> PackageIdentity:
+    """Build a complete new version under work before a single final rename."""
+
+    new_identity = _next_version_identity(identity, candidate)
+    stage = work / "version"; stage.mkdir(parents=True)
+    shutil.copytree(identity.version_path, stage, dirs_exist_ok=True, ignore=shutil.ignore_patterns("App", "__pycache__", "*.pyc"))
+    staged_identity = PackageIdentity.from_version_path(identity.package_root, stage.with_name(new_identity.version_string), is_current=False)
+    text = (stage / "pkg.toml").read_text(encoding="utf-8")
+    rendered, _ = sync_config_metadata_text(text, staged_identity)
+    write_text_atomic(stage / "pkg.toml", rendered)
+    stage_app = stage / "App"; payload = config["update"]["payload"]
+    if payload["mode"] == "git":
+        subprocess.run(["git", "clone", "--no-checkout", candidate["url"], str(stage_app)], check=True)
+        subprocess.run(["git", "-C", str(stage_app), "checkout", "--detach", candidate["commit"]], check=True)
+    else:
+        url = candidate["url"]; parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password: raise ConfigValidationError("Update URL must be credential-free HTTP(S)")
+        download = work / "download"; download.mkdir(); artifact = download / "payload.part"
+        with urllib.request.urlopen(url, timeout=60) as response, open(artifact, "wb") as handle: shutil.copyfileobj(response, handle)
+        checksum = candidate.get("sha256"); bypass = "cli-bypass" if no_checksum else ("version-ignore" if payload["ignore_checksum"] else None)
+        if not bypass:
+            if not isinstance(checksum, str) or re.fullmatch(r"[0-9a-fA-F]{64}", checksum) is None: raise ConfigValidationError("Update candidate requires a sha256 checksum")
+            if hashlib.sha256(artifact.read_bytes()).hexdigest().lower() != checksum.lower(): raise RuntimeError("Update checksum did not match downloaded file")
+        else: log_warning(f"Checksum verification bypassed for {candidate['version']} ({bypass})")
+        if payload["mode"] == "zip":
+            extract = work / "extract"; extract.mkdir(); safe_extract_zip(artifact, extract)
+            source = extract / candidate.get("extractSubdir", payload.get("extractSubdir", ""))
+            if not source.exists(): source = extract
+            if not source.is_dir() or not source.resolve().is_relative_to(extract.resolve()): raise RuntimeError("Update extractSubdir was not found safely")
+            stage_app.mkdir(); _copy_directory_contents(source, stage_app)
+        else:
+            module = _load_package_module(identity, payload["module"], work / "pycache"); callback = getattr(module, "unpack_app", None)
+            if not callable(callback): raise ConfigValidationError("Update unpack module must define unpack_app(context)")
+            callback({"apiVersion": 1, "candidate": dict(candidate), "paths": {"artifact": artifact, "stageRoot": stage, "stageApp": stage_app}})
+    if not _app_contains_entries(stage_app): raise RuntimeError("Prepared update App directory is missing or empty")
+    return new_identity
+
+
+def check_package_update(package_path: Path, *, ignore_interval: bool = True) -> ActionResult:
+    """Check one package's configured source and persist its result."""
+
+    identity, from_current = resolve_input_path(package_path)
+    if not from_current: return ActionResult(False, errors=["Update actions require a package root or current junction"], exit_code=EXIT_USER_ERROR)
+    config, _, warnings = read_runtime_config(identity, use_defaults=False)
+    if config.get("update") is None: return ActionResult(True, warnings=warnings + ["Updates are not configured for this package"])
+    paths = _update_paths(identity.package_root); paths["locks"].mkdir(parents=True, exist_ok=True); lock = paths["locks"] / "update.toml"
+    try:
+        with open(lock, "x", encoding="utf-8") as handle: handle.write(f"pid = {os.getpid()}\n")
+    except FileExistsError:
+        return ActionResult(False, errors=[f"An update operation is already active: {lock}"], exit_code=EXIT_MUTATION_ERROR)
+    work = paths["work"] / str(uuid.uuid4()); work.mkdir(parents=True); (work / "pycache").mkdir()
+    try:
+        state = _load_update_state(paths["state"]); state["lastAttemptedCheck"] = datetime.now(timezone.utc).isoformat()
+        status, candidate = _check_update(identity, config, state, work)
+        state.update({"lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(), "lastStatus": status, "lastCandidateId": candidate["candidateId"] if candidate else state.get("lastCandidateId"), "lastError": None})
+        _write_update_state(paths["state"], state)
+        if candidate: log_info(f"Available: v{candidate['version']} ({candidate['candidateId']})")
+        else: log_info(f"Current: {identity.version_string}")
+        return ActionResult(True, warnings=warnings, changed=False)
+    except (ConfigValidationError, ValueError) as exc:
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+    except Exception as exc:
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+    finally:
+        shutil.rmtree(work, ignore_errors=True); lock.unlink(missing_ok=True)
+
+
+def update_package(package_path: Path, *, scope: Scope = Scope.USER, automatic: bool = False, no_checksum: bool = False) -> ActionResult:
+    """Check, stage, commit, and activate an available package update."""
+
+    identity, from_current = resolve_input_path(package_path)
+    if not from_current: return ActionResult(False, errors=["Update actions require a package root or current junction"], exit_code=EXIT_USER_ERROR)
+    config, _, warnings = read_runtime_config(identity, use_defaults=False); update = config.get("update")
+    if update is None: return ActionResult(True, warnings=warnings + ["Updates are not configured for this package"])
+    paths = _update_paths(identity.package_root); paths["locks"].mkdir(parents=True, exist_ok=True); lock = paths["locks"] / "update.toml"
+    try: lock.open("x").close()
+    except FileExistsError: return ActionResult(False, errors=[f"An update operation is already active: {lock}"], exit_code=EXIT_MUTATION_ERROR)
+    work = paths["work"] / str(uuid.uuid4()); work.mkdir(parents=True); (work / "pycache").mkdir()
+    try:
+        state = _load_update_state(paths["state"])
+        if automatic and state.get("lastSuccessfulCheck"):
+            try:
+                previous = datetime.fromisoformat(state["lastSuccessfulCheck"])
+                if previous.tzinfo is None: previous = previous.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - previous < timedelta(hours=24):
+                    log_info("Automatic update check is not due yet")
+                    return ActionResult(True, warnings=warnings)
+            except ValueError:
+                log_warning("Ignoring an invalid lastSuccessfulCheck value")
+        status, candidate = _check_update(identity, config, state, work)
+        state.update({"lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(), "lastStatus": status,
+                      "lastCandidateId": candidate["candidateId"] if candidate else state.get("lastCandidateId")})
+        _write_update_state(paths["state"], state)
+        if status == "current" or candidate is None: return ActionResult(True, warnings=warnings)
+        if automatic and not update["allow_automatic_update"]:
+            log_info("Update is available but automatic activation is disabled")
+            return ActionResult(True, warnings=warnings)
+        new_identity = _next_version_identity(identity, candidate)
+        receipt = paths["receipts"] / f"{new_identity.version_string}.toml"
+        if new_identity.version_path.exists(): return install_package(new_identity.version_path, scope=scope)
+        staged = _prepare_update(identity, config, candidate, work, no_checksum=no_checksum)
+        os.replace(work / "version", staged.version_path); paths["receipts"].mkdir(parents=True, exist_ok=True)
+        write_text_atomic(receipt, f"schemaVersion = 1\ncandidateId = {_toml_value(candidate['candidateId'])}\nversion = {_toml_value(staged.version)}\nlocalVersion = {staged.local_version}\n")
+        result = install_package(staged.version_path, scope=scope, _skip_update_check=True)
+        result.warnings = warnings + result.warnings
+        return result
+    except (ConfigValidationError, ValueError) as exc: return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+    except Exception as exc: return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+    finally: shutil.rmtree(work, ignore_errors=True); lock.unlink(missing_ok=True)
+
+
 def install_package(
     package_path: Path,
     *,
@@ -3636,6 +4003,7 @@ def install_package(
     force: bool = False,
     refresh_app: bool = False,
     no_checksum: bool = False,
+    _skip_update_check: bool = False,
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -3843,12 +4211,22 @@ def install_package(
             exit_code=EXIT_MUTATION_ERROR,
         )
 
-    return ActionResult(
+    result = ActionResult(
         ok=True,
         changed=junction_changed or config_sync_changed or origin_result.changed or component_result.changed,
         warnings=warnings,
         exit_code=EXIT_SUCCESS,
     )
+    # Root and current installs may check after repair, preserving the repair
+    # contract when an update source is unavailable.
+    if installing_from_current and not _skip_update_check and runtime_config.get("update") is not None:
+        update_result = update_package(identity.package_root, scope=scope, automatic=True, no_checksum=no_checksum)
+        if not update_result.ok:
+            result.warnings.append(f"Automatic update failed: {'; '.join(update_result.errors)}")
+        else:
+            result.changed = result.changed or update_result.changed
+            result.warnings.extend(update_result.warnings)
+    return result
 
 
 def update_package_config(package_path: Path, *, scope: Scope = Scope.USER) -> ActionResult:
@@ -3928,6 +4306,7 @@ def health_check_package(package_path: Path, *, scope: Scope = Scope.USER) -> Ac
 
     errors = check_metadata_consistency(identity, raw_config_data)
     errors.extend(validate_origin_health(identity, runtime_config.get("origin")))
+    errors.extend(validate_update_health(identity, runtime_config.get("update")))
     if errors:
         log_error("Health check failed:")
         for error in errors:
@@ -4053,7 +4432,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser.add_argument(
         "--action",
-        choices=[Action.INSTALL.value, Action.UPDATE_CONFIG.value, Action.HEALTH_CHECK.value],
+        choices=[action.value for action in Action],
         default=Action.INSTALL.value,
         help="Action to perform",
     )
@@ -4100,6 +4479,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
+        "--toml",
+        action="store_true",
+        default=False,
+        help="Emit a machine-readable summary for update actions",
+    )
+
+    parser.add_argument(
         "path",
         nargs="?",
         default=".",
@@ -4128,6 +4514,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = update_package_config(package_path, scope=scope)
         elif action == Action.HEALTH_CHECK:
             result = health_check_package(package_path, scope=scope)
+        elif action == Action.CHECK_UPDATE:
+            result = check_package_update(package_path)
+        elif action == Action.UPDATE:
+            result = update_package(package_path, scope=scope, no_checksum=args.no_checksum)
+        elif action == Action.AUTO_UPDATE:
+            result = update_package(package_path, scope=scope, automatic=True, no_checksum=args.no_checksum)
+        elif action == Action.SELF_UPDATE:
+            pkg_home = os.environ.get("PKG_HOME")
+            if not pkg_home:
+                result = ActionResult(False, errors=["SelfUpdate requires the stable PKG_HOME launcher layout"], exit_code=EXIT_USER_ERROR)
+            else:
+                result = update_package(Path(pkg_home), scope=scope, no_checksum=args.no_checksum)
         else:
             message = f"Unknown action: {action}"
             log_error(message)
@@ -4142,6 +4540,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_info("Press any key to continue...")
         wait_for_keypress()
 
+    if args.toml:
+        print(f"ok = {'true' if result.ok else 'false'}")
+        print(f"changed = {'true' if result.changed else 'false'}")
+        print(f"status = {_toml_value('updated' if result.changed else ('failed' if not result.ok else 'current'))}")
     log_info("")
     log_info("-" * 60)
     if result.ok and result.changed:

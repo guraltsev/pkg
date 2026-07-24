@@ -122,6 +122,7 @@ Top-level metadata owned by `pkg`:
 Runtime tables:
 
 - `[origin]`
+- `[update]`
 - `[[shortcut]]`
 - `[[environment]]`
 - `[[path]]`
@@ -228,6 +229,57 @@ or `.exe`. The script receives JSON on stdin, including `PkgVars.App`,
 `--refresh-app` explicitly repopulates an already populated `App/`. Zip origin
 prepares the new payload before replacing the directory. Script origin clears
 `App/` first, then runs the script.
+
+## Updates
+
+Updates use an explicit `check -> prepare -> activate` workflow. `CheckUpdate`
+only discovers a candidate; `Update` downloads into package-root `.pkg/work/`,
+creates a new immutable version directory, and then activates it through the
+ordinary install path. `AutoUpdate` only applies candidates when the package
+opts in with `allow_automatic_update = true`.
+
+```bat
+python pkg.py --action CheckUpdate C:\Packages\Tool
+python pkg.py --action Update C:\Packages\Tool
+python pkg.py --action AutoUpdate C:\Packages\Tool
+```
+
+A Git checkout can check and prepare the configured remote ref directly:
+
+```toml
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "git"
+ref = "refs/heads/main"
+
+[update.payload]
+mode = "git"
+```
+
+Downloaded releases use a trusted local Python module to find the release and
+the built-in verified zip extractor to populate `App/`:
+
+```toml
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "zip"
+extractSubdir = "tool-portable"
+```
+
+The default check hook is `pkg.local/check_update.py`; it must declare
+`PKG_MODULE_API = 1` and implement `check_update(context)`. Packages with a
+non-zip layout may set `payload.mode = "module"` and provide
+`pkg.local/unpack_app.py` with `unpack_app(context)`. These modules run inside
+the `pkg` process and are trusted extension code, not sandboxed plugins.
+
+Manager state, locks, receipts, and disposable downloads live under
+`<package-root>/.pkg/`; add `/.pkg/` to a package repository's `.gitignore`.
+`SelfUpdate` is reserved for a bootstrapped installation with `PKG_HOME`, a
+stable launcher outside the version directories, and a `current` junction.
 
 ## Variable rules
 
