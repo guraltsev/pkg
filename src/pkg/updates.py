@@ -168,9 +168,13 @@ def _normalize_update_candidate(
             "Update candidate version is unsafe for a version directory"
         )
     comparison = compare_package_versions(version, identity.version)
-    if comparison < 0:
+    if identity.version != "bootstrap" and comparison < 0:
         raise ConfigValidationError("Update candidate is older than the active version")
-    if comparison == 0 and candidate_id != state.get("lastCandidateId"):
+    if (
+        identity.version != "bootstrap"
+        and comparison == 0
+        and candidate_id != state.get("lastCandidateId")
+    ):
         raise ConfigValidationError(
             "A different candidate cannot republish the active version"
         )

@@ -274,13 +274,13 @@ def action_failure(
     )
 
 
-def _is_git_bootstrap(
+def _is_update_bootstrap(
     identity: PackageIdentity, config: dict
 ) -> bool:
-    """Return whether a v0-git template should stage an immutable Git version."""
+    """Return whether a template should stage its first immutable version."""
     origin = config.get("origin")
     update = config.get("update")
-    return bool(
+    git_bootstrap = (
         identity.version == "0-git"
         and origin is not None
         and origin.get("mode") == "git"
@@ -288,6 +288,13 @@ def _is_git_bootstrap(
         and update["check"]["mode"] == "git"
         and update["payload"]["mode"] == "git"
     )
+    module_bootstrap = (
+        identity.version == "bootstrap"
+        and update is not None
+        and update["check"]["mode"] == "module"
+        and update["payload"]["mode"] in {"zip", "module"}
+    )
+    return bool(git_bootstrap or module_bootstrap)
 
 
 def check_package_update(package_path: Path) -> ActionResult:
@@ -297,7 +304,7 @@ def check_package_update(package_path: Path) -> ActionResult:
     ----------
     package_path : Path
         Package root or ``current`` junction whose update source should be
-        checked, or a Git-backed ``v0-git`` bootstrap version.
+        checked, or a supported bootstrap template version.
 
     Returns
     -------
@@ -313,13 +320,13 @@ def check_package_update(package_path: Path) -> ActionResult:
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
-    bootstrap = not from_current and _is_git_bootstrap(identity, config)
+    bootstrap = not from_current and _is_update_bootstrap(identity, config)
     if not from_current and not bootstrap:
         return ActionResult(
             False,
             errors=[
                 "Update actions require a package root or current junction, "
-                "except for a Git-backed v0-git bootstrap"
+                "except for a supported bootstrap template"
             ],
             exit_code=EXIT_USER_ERROR,
         )
@@ -349,7 +356,7 @@ def check_package_update(package_path: Path) -> ActionResult:
         # returns a normalized result.
         state = _load_update_state(paths["state"])
         state["lastAttemptedCheck"] = datetime.now(timezone.utc).isoformat()
-        if bootstrap:
+        if bootstrap and config["update"]["check"]["mode"] == "git":
             status = "available"
             candidate = _git_origin_candidate(identity, config, state)
         else:
@@ -392,7 +399,7 @@ def update_package(
     ----------
     package_path : Path
         Package root or ``current`` junction whose active version should be
-        updated, or a Git-backed ``v0-git`` bootstrap version.
+        updated, or a supported bootstrap template version.
     scope : Scope, default=Scope.AUTO
         Installation scope used when activating the prepared version.
     automatic : bool, default=False
@@ -414,13 +421,13 @@ def update_package(
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
-    bootstrap = not from_current and _is_git_bootstrap(identity, config)
+    bootstrap = not from_current and _is_update_bootstrap(identity, config)
     if not from_current and not bootstrap:
         return ActionResult(
             False,
             errors=[
                 "Update actions require a package root or current junction, "
-                "except for a Git-backed v0-git bootstrap"
+                "except for a supported bootstrap template"
             ],
             exit_code=EXIT_USER_ERROR,
         )
@@ -459,7 +466,7 @@ def update_package(
 
         # Record successful discovery before deciding whether policy permits
         # activation of the returned candidate.
-        if bootstrap:
+        if bootstrap and update["check"]["mode"] == "git":
             status = "available"
             candidate = _git_origin_candidate(identity, config, state)
         else:
@@ -721,11 +728,11 @@ def install_package(
             warnings=warnings,
         )
 
-    # A normal Git-backed v0-git directory is a bootstrap template, never an
-    # installed version. Resolve its origin commit and stage the immutable
-    # timestamped version through the update coordinator.
-    if _is_git_bootstrap(identity, runtime_config):
-        log_info("Promoting Git bootstrap into an immutable timestamped version...")
+    # Bootstrap directories are templates, never installed versions. Let their
+    # generic Git or package-local module check stage the first immutable
+    # version before junction, origin, or component work begins.
+    if _is_update_bootstrap(identity, runtime_config):
+        log_info("Promoting bootstrap into an immutable package version...")
         result = update_package(
             identity.version_path,
             scope=scope,

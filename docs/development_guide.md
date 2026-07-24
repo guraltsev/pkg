@@ -46,6 +46,10 @@ before origin population or junction management. The resolved commit is staged
 directly into the timestamped version, so `v0-git` never becomes an installed
 payload.
 
+The same coordinator accepts a `vbootstrap.l1` template backed by a trusted
+module check and ZIP or module payload. Release discovery remains
+package-specific while bootstrap staging stays generic.
+
 A Git origin defaults to `refs/heads/main` and supplies the default Git update
 check, so package metadata needs only one source URL and ref. Explicit update
 checks remain available for checkout-path or remote-name customization.

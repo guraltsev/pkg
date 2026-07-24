@@ -299,6 +299,11 @@ candidate into a new immutable `vYYYYMMDD-HHMMSS-git.l1` directory, synchronize
 that directory's `pkg.toml`, and activate it through ordinary installation.
 The bootstrap template's own `App/` is not populated or activated.
 
+A `vbootstrap.l1` template can use a package-local module check with a ZIP or
+module payload in the same way. Installing the template runs the trusted check,
+stages the returned release as its real version, and leaves the bootstrap
+directory without an `App/`.
+
 Use `payload.mode = "git-inplace"` only when the package should retain its
 current version directory and fast-forward the existing `App/` checkout.
 Tracked local changes and divergent commits stop an in-place update; untracked

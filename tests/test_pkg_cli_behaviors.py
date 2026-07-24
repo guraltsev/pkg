@@ -374,6 +374,82 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
 
+    def test_module_zip_bootstrap_creates_populated_release_version(self) -> None:
+        """Installing a module bootstrap stages and extracts its ZIP release."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "ModuleBootstrap"
+            version_dir = package_root / "vbootstrap.l1"
+            local_dir = version_dir / "pkg.local"
+            local_dir.mkdir(parents=True)
+            self.write_config(
+                version_dir,
+                """
+                name = "ModuleBootstrap"
+                version = "bootstrap"
+                localVersion = 1
+
+                [update]
+                allow_automatic_update = true
+
+                [update.check]
+                mode = "module"
+
+                [update.payload]
+                mode = "zip"
+                ignore_checksum = true
+                """,
+            )
+            local_dir.joinpath("check_update.py").write_text(
+                textwrap.dedent(
+                    """
+                    PKG_MODULE_API = 1
+
+                    def check_update(context):
+                        return {
+                            "candidateId": "release:2.0.0",
+                            "version": "2.0.0",
+                            "url": "https://example.invalid/tool.zip",
+                        }
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            archive = self.zip_bytes({"tool.exe": "release payload"})
+
+            # Keep HTTP and Windows junction boundaries controlled while
+            # exercising module loading, staging, extraction, and metadata.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "is_current_user_admin", return_value=False
+                ):
+                    with mock.patch.object(
+                        module,
+                        "update_current_junction_if_needed",
+                        return_value=True,
+                    ):
+                        with mock.patch.object(
+                            runtime_module("updates").urllib.request,
+                            "urlopen",
+                            return_value=io.BytesIO(archive),
+                        ):
+                            result = module.install_package(version_dir)
+
+            release_dir = package_root / "v2.0.0.l1"
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertTrue(result.changed)
+            self.assertEqual(
+                (release_dir / "App" / "tool.exe").read_text(encoding="utf-8"),
+                "release payload",
+            )
+            release_config = tomllib.loads(
+                (release_dir / "pkg.toml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(release_config["version"], "2.0.0")
+            self.assertEqual(release_config["localVersion"], 1)
+            self.assertFalse((version_dir / "App").exists())
+
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""
         module = load_pkg_module()

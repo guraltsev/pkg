@@ -1,17 +1,24 @@
-# Auto-generated from legacy config files.
-# Please review and edit as needed.
-
-name = "VSCode"
-version = ".1.125.1"
+name = "vscode"
+version = "bootstrap"
 localVersion = 1
 only_portable = false
-description = "Visual Studio Code is a streamlined code editor with support for development operations like debugging, task running, and version control. It aims to provide just the tools a developer needs for a quick code-build-debug cycle."
+
+description = "Visual Studio Code editor with debugging, tasks, and version-control integration."
 homepage = "https://code.visualstudio.com/"
 
-[origin]
-url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/912bb683695358a54ae0c670461738984cbb5b95/VSCode-win32-x64-1.95.0.zip"
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "module"
+module = "pkg.local/check_update.py"
+channel = "stable"
+
+[update.payload]
+mode = "zip"
+ignore_checksum = true
 
 [[shortcut]]
 name = "VSCode"
 targetPath = "$App\\Code.exe"
-description = "integrated development environment (IDE)"
+description = "Visual Studio Code"
