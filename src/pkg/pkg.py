@@ -321,14 +321,12 @@ def check_package_update(package_path: Path) -> ActionResult:
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
     bootstrap = not from_current and _is_update_bootstrap(identity, config)
-    if not from_current and not bootstrap:
-        return ActionResult(
-            False,
-            errors=[
-                "Update actions require a package root or current junction, "
-                "except for a supported bootstrap template"
-            ],
+    if not from_current and not identity.is_current and not bootstrap:
+        return action_failure(
+            "Update actions require the active version, package root, or "
+            "current junction, except for a supported bootstrap template",
             exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
         )
 
     # Acquire the package-root update lock before creating work files so
@@ -340,10 +338,10 @@ def check_package_update(package_path: Path) -> ActionResult:
         with open(lock, "x", encoding="utf-8") as handle:
             handle.write(f"pid = {os.getpid()}\n")
     except FileExistsError:
-        return ActionResult(
-            False,
-            errors=[f"An update operation is already active: {lock}"],
+        return action_failure(
+            f"An update operation is already active: {lock}",
             exit_code=EXIT_MUTATION_ERROR,
+            warnings=warnings,
         )
 
     # Give hooks an isolated work directory and always remove both work and
@@ -378,9 +376,13 @@ def check_package_update(package_path: Path) -> ActionResult:
             log_info(f"Current: {identity.version_string}")
         return ActionResult(True, warnings=warnings, changed=False)
     except (ConfigValidationError, ValueError) as exc:
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+        return action_failure(
+            str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
+        )
     except Exception as exc:
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+        return action_failure(
+            str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
         lock.unlink(missing_ok=True)
@@ -422,14 +424,12 @@ def update_package(
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
     bootstrap = not from_current and _is_update_bootstrap(identity, config)
-    if not from_current and not bootstrap:
-        return ActionResult(
-            False,
-            errors=[
-                "Update actions require a package root or current junction, "
-                "except for a supported bootstrap template"
-            ],
+    if not from_current and not identity.is_current and not bootstrap:
+        return action_failure(
+            "Update actions require the active version, package root, or "
+            "current junction, except for a supported bootstrap template",
             exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
         )
 
     # Serialize check, staging, and activation beneath one package-root lock.
@@ -439,10 +439,10 @@ def update_package(
     try:
         lock.open("x").close()
     except FileExistsError:
-        return ActionResult(
-            False,
-            errors=[f"An update operation is already active: {lock}"],
+        return action_failure(
+            f"An update operation is already active: {lock}",
             exit_code=EXIT_MUTATION_ERROR,
+            warnings=warnings,
         )
 
     # Keep downloads, hook caches, and staged trees in disposable work.
@@ -520,9 +520,13 @@ def update_package(
         result.warnings = warnings + result.warnings
         return result
     except (ConfigValidationError, ValueError) as exc:
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+        return action_failure(
+            str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
+        )
     except Exception as exc:
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+        return action_failure(
+            str(exc), exit_code=EXIT_MUTATION_ERROR, warnings=warnings
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
         lock.unlink(missing_ok=True)

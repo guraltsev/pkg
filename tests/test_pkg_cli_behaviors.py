@@ -197,6 +197,41 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertIn("Operation: Install", output)
         self.assertIn("Install failed.", output)
 
+    def test_update_rejects_historical_version_with_visible_error(self) -> None:
+        """Update rejects a non-current concrete version and prints the cause."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "HistoricalApp"
+            version_dir = package_root / "v1.0.0.l1"
+            version_dir.mkdir(parents=True)
+            self.write_config(
+                version_dir,
+                """
+                name = "HistoricalApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                mode = "git"
+                url = "https://example.invalid/tool.git"
+
+                [update]
+                allow_automatic_update = true
+
+                [update.payload]
+                mode = "git"
+                """,
+            )
+
+            code, output = self.run_main(
+                module,
+                ["--action", "Update", str(version_dir)],
+            )
+
+        self.assertEqual(code, module.EXIT_USER_ERROR)
+        self.assertIn("Update actions require the active version", output)
+
     def test_git_inplace_automatic_update_fast_forwards_existing_checkout(
         self,
     ) -> None:
@@ -373,6 +408,41 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
+
+            # A wrapper launched inside the active concrete version defaults
+            # its path to ".". Accept that active version while retaining the
+            # historical-version safety rule.
+            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "update")
+            current = package_root / "current"
+            current.mkdir()
+            layout = runtime_module("layout")
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(layout, "is_junction", return_value=True):
+                    with mock.patch.object(
+                        layout, "get_junction_target", return_value=new_version
+                    ):
+                        with mock.patch.object(
+                            module,
+                            "update_current_junction_if_needed",
+                            return_value=True,
+                        ):
+                            update_result = module.update_package(new_version)
+
+            updated_versions = [
+                path
+                for path in package_root.glob("v*.l*")
+                if path not in {version_dir, new_version}
+            ]
+            self.assertTrue(update_result.ok, msg=update_result.errors)
+            self.assertEqual(len(updated_versions), 1)
+            self.assertEqual(
+                (updated_versions[0] / "App" / "payload.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "two",
+            )
 
     def test_module_zip_bootstrap_creates_populated_release_version(self) -> None:
         """Installing a module bootstrap stages and extracts its ZIP release."""
