@@ -1,3 +1,10 @@
+"""Cover user-visible output from package migration helper scripts.
+
+Checked-in legacy fixtures and temporary TOML files are real. Windows shortcut
+inspection and subprocess boundaries are mocked where required. Exact helper
+call graphs and internal normalization structures are out of scope.
+"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -35,7 +42,9 @@ def load_pkg_module():
 
 
 def load_shortcut_importer_module():
-    spec = importlib.util.spec_from_file_location("shortcuts_to_pkg_toml_under_test", SHORTCUT_IMPORTER)
+    spec = importlib.util.spec_from_file_location(
+        "shortcuts_to_pkg_toml_under_test", SHORTCUT_IMPORTER
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -47,7 +56,9 @@ def load_shortcut_importer_module():
 
 
 class LegacyConverterTests(unittest.TestCase):
-    def run_converter(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    def run_converter(
+        self, *args: str, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(LEGACY_CONVERTER), *args],
             cwd=str(cwd or ROOT),
@@ -69,6 +80,7 @@ class LegacyConverterTests(unittest.TestCase):
         return code, stdout.getvalue()
 
     def test_converter_writes_canonical_toml_that_pkg_accepts(self) -> None:
+        """Converter writes canonical toml that pkg accepts."""
         module = load_pkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,7 +110,7 @@ class LegacyConverterTests(unittest.TestCase):
                         "bin": [
                             {
                                 "name": "good.cmd",
-                                "content": "@echo off\r\n\"$AppPath\\App\\good.exe\" %*\r\n",
+                                "content": '@echo off\r\n"$AppPath\\App\\good.exe" %*\r\n',
                             }
                         ],
                     },
@@ -108,7 +120,9 @@ class LegacyConverterTests(unittest.TestCase):
             )
 
             pkg_toml = version_dir / "pkg.toml"
-            result = self.run_converter("--dir", str(version_dir), "--output", str(pkg_toml))
+            result = self.run_converter(
+                "--dir", str(version_dir), "--output", str(pkg_toml)
+            )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             self.assertTrue(pkg_toml.exists())
@@ -119,12 +133,16 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertEqual(parsed["localVersion"], 1)
             self.assertFalse(parsed["only_portable"])
             self.assertIn("[[environment]]", rendered)
-            self.assertIn("Name = \"GOODAPP_HOME\"", rendered)
-            self.assertIn("targetPath = \"$App\\\\good.exe\"", rendered)
+            self.assertIn('Name = "GOODAPP_HOME"', rendered)
+            self.assertIn('targetPath = "$App\\\\good.exe"', rendered)
             self.assertEqual(parsed["description"], "Good test package")
             self.assertEqual(parsed["homepage"], "https://example.invalid/goodapp")
-            self.assertEqual(parsed["origin"]["url"], "https://example.invalid/goodapp.zip")
-            self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
+            self.assertEqual(
+                parsed["origin"]["url"], "https://example.invalid/goodapp.zip"
+            )
+            self.assertEqual(
+                [entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"]
+            )
             self.assertEqual(parsed["environment"][0]["Name"], "GOODAPP_HOME")
             self.assertEqual(parsed["environment"][0]["Value"], "$App")
             self.assertEqual(parsed["shortcut"][0]["name"], "Good App")
@@ -140,11 +158,15 @@ class LegacyConverterTests(unittest.TestCase):
             (version_dir / "App").mkdir()
             (version_dir / "App" / "good.exe").write_text("", encoding="utf-8")
             with mock.patch.dict(os.environ, env, clear=False):
-                with mock.patch.object(module, "update_current_junction_if_needed", return_value=True):
+                with mock.patch.object(
+                    module, "update_current_junction_if_needed", return_value=True
+                ):
                     with mock.patch.object(
                         module,
                         "install_components",
-                        return_value=module.StepResult(ok=True, changed=False),
+                        return_value=mock.Mock(
+                            ok=True, changed=False, warnings=[], errors=[]
+                        ),
                     ) as install_components_mock:
                         code, output = self.run_main(module, [str(version_dir)])
 
@@ -152,6 +174,7 @@ class LegacyConverterTests(unittest.TestCase):
             install_components_mock.assert_called_once()
 
     def test_converter_can_infer_metadata_from_directory_name(self) -> None:
+        """Converter can infer metadata from directory name."""
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "Tool-portable" / "v2.0.1.l7"
             version_dir.mkdir(parents=True)
@@ -232,7 +255,10 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertEqual(origin["url"], "https://example.invalid/current.zip")
             self.assertEqual(origin["checksum"], "sha256:current")
             self.assertEqual(origin["extractSubdir"], "current")
-            self.assertEqual(origin["versions"], [{"version": "0.9.0", "script": "scripts/populate-old.cmd"}])
+            self.assertEqual(
+                origin["versions"],
+                [{"version": "0.9.0", "script": "scripts/populate-old.cmd"}],
+            )
 
     def test_converter_preserves_existing_backups_before_replacing_output(self) -> None:
         """The converter creates a numbered backup without replacing an older backup."""
@@ -250,15 +276,26 @@ class LegacyConverterTests(unittest.TestCase):
             first_backup = Path(str(pkg_toml) + ".bak")
             first_backup.write_text("# Older backup.\n", encoding="utf-8")
 
-            result = self.run_converter("--dir", str(version_dir), "--output", str(pkg_toml))
+            result = self.run_converter(
+                "--dir", str(version_dir), "--output", str(pkg_toml)
+            )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-            self.assertEqual(first_backup.read_text(encoding="utf-8"), "# Older backup.\n")
-            self.assertEqual(Path(str(pkg_toml) + ".bak.1").read_text(encoding="utf-8"), original)
-            self.assertEqual(tomllib.loads(pkg_toml.read_text(encoding="utf-8"))["name"], "BackupApp")
+            self.assertEqual(
+                first_backup.read_text(encoding="utf-8"), "# Older backup.\n"
+            )
+            self.assertEqual(
+                Path(str(pkg_toml) + ".bak.1").read_text(encoding="utf-8"), original
+            )
+            self.assertEqual(
+                tomllib.loads(pkg_toml.read_text(encoding="utf-8"))["name"], "BackupApp"
+            )
             self.assertIn(f"Backed up {pkg_toml} to {pkg_toml}.bak.1", result.stdout)
 
-    def test_converter_rewrites_legacy_pkg_toml_aliases_to_canonical_schema(self) -> None:
+    def test_converter_rewrites_legacy_pkg_toml_aliases_to_canonical_schema(
+        self,
+    ) -> None:
+        """Converter rewrites legacy pkg toml aliases to canonical schema."""
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "AliasApp" / "v3.4.5.l2"
             version_dir.mkdir(parents=True)
@@ -286,7 +323,9 @@ class LegacyConverterTests(unittest.TestCase):
             )
 
             converted = version_dir / "converted.toml"
-            result = self.run_converter("--dir", str(version_dir), "--output", str(converted))
+            result = self.run_converter(
+                "--dir", str(version_dir), "--output", str(converted)
+            )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             parsed = tomllib.loads(converted.read_text(encoding="utf-8"))
@@ -296,8 +335,12 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertTrue(parsed["only_portable"])
             self.assertEqual(parsed["description"], "Legacy alias config")
             self.assertEqual(parsed["homepage"], "https://example.invalid/alias")
-            self.assertEqual(parsed["origin"]["url"], "https://example.invalid/alias.zip")
-            self.assertEqual([entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"])
+            self.assertEqual(
+                parsed["origin"]["url"], "https://example.invalid/alias.zip"
+            )
+            self.assertEqual(
+                [entry["value"] for entry in parsed["path"]], ["$App", "$App\\Tools"]
+            )
             self.assertEqual(parsed["environment"][0]["Name"], "ALIASAPP_HOME")
             self.assertEqual(parsed["environment"][0]["Value"], "$App")
             self.assertEqual(parsed["shortcut"][0]["name"], "Alias App")
@@ -309,6 +352,7 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertIn("$App\\alias.exe", parsed["bin"][0]["content"])
 
     def test_converter_accepts_list_root_legacy_sidecar_files(self) -> None:
+        """Converter accepts list root legacy sidecar files."""
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "ListRootApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
@@ -325,7 +369,10 @@ class LegacyConverterTests(unittest.TestCase):
                 json.dumps(
                     {
                         "shortcuts": [
-                            {"name": "ListRoot", "target_path": "$AppPath\\App\\listroot.exe"},
+                            {
+                                "name": "ListRoot",
+                                "target_path": "$AppPath\\App\\listroot.exe",
+                            },
                         ]
                     },
                     indent=2,
@@ -342,6 +389,7 @@ class LegacyConverterTests(unittest.TestCase):
             self.assertEqual(parsed["shortcut"][0]["targetPath"], "$App\\listroot.exe")
 
     def test_converter_reads_all_checked_in_legacy_examples(self) -> None:
+        """Converter reads all checked in legacy examples."""
         cases = [
             (
                 "1",
@@ -403,8 +451,12 @@ class LegacyConverterTests(unittest.TestCase):
 
         for example_name, expected in cases:
             with self.subTest(example=example_name):
-                result = self.run_converter("--dir", str(EXAMPLES_ROOT / example_name), "--dry-run")
-                self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+                result = self.run_converter(
+                    "--dir", str(EXAMPLES_ROOT / example_name), "--dry-run"
+                )
+                self.assertEqual(
+                    result.returncode, 0, msg=result.stderr or result.stdout
+                )
 
                 parsed = tomllib.loads(result.stdout)
                 self.assertEqual(parsed["name"], expected["name"])
@@ -414,17 +466,28 @@ class LegacyConverterTests(unittest.TestCase):
                 if "only_portable" in expected:
                     self.assertEqual(parsed["only_portable"], expected["only_portable"])
                 if "shortcut_count" in expected:
-                    self.assertEqual(len(parsed.get("shortcut", [])), expected["shortcut_count"])
+                    self.assertEqual(
+                        len(parsed.get("shortcut", [])), expected["shortcut_count"]
+                    )
                 if "bin_count" in expected:
                     self.assertEqual(len(parsed.get("bin", [])), expected["bin_count"])
                 if "path_values" in expected:
-                    self.assertEqual([entry["value"] for entry in parsed.get("path", [])], expected["path_values"])
+                    self.assertEqual(
+                        [entry["value"] for entry in parsed.get("path", [])],
+                        expected["path_values"],
+                    )
                 if "shortcut_name" in expected:
-                    self.assertEqual(parsed["shortcut"][0]["name"], expected["shortcut_name"])
+                    self.assertEqual(
+                        parsed["shortcut"][0]["name"], expected["shortcut_name"]
+                    )
                 if "first_shortcut" in expected:
-                    self.assertEqual(parsed["shortcut"][0]["name"], expected["first_shortcut"])
+                    self.assertEqual(
+                        parsed["shortcut"][0]["name"], expected["first_shortcut"]
+                    )
                 if "shortcut_target" in expected:
-                    self.assertEqual(parsed["shortcut"][0]["targetPath"], expected["shortcut_target"])
+                    self.assertEqual(
+                        parsed["shortcut"][0]["targetPath"], expected["shortcut_target"]
+                    )
 
 
 class ShortcutImporterTests(unittest.TestCase):
@@ -432,7 +495,9 @@ class ShortcutImporterTests(unittest.TestCase):
         """The reader passes shortcut paths with spaces through stdin JSON."""
 
         importer = load_shortcut_importer_module()
-        shortcut_path = Path(r"C:\games\CommanderKeen\v1.4_42493.l1\_shortcuts\Commander Keen.lnk")
+        shortcut_path = Path(
+            r"C:\games\CommanderKeen\v1.4_42493.l1\_shortcuts\Commander Keen.lnk"
+        )
         payload = {
             "TargetPath": r"C:\games\CommanderKeen\v1.4_42493.l1\App\keen.exe",
             "Arguments": "",
@@ -448,16 +513,25 @@ class ShortcutImporterTests(unittest.TestCase):
         )
 
         with mock.patch.object(importer.os, "name", "nt"):
-            with mock.patch.object(importer.subprocess, "run", return_value=completed) as run_mock:
+            with mock.patch.object(
+                importer.subprocess, "run", return_value=completed
+            ) as run_mock:
                 self.assertEqual(importer.read_windows_shortcut(shortcut_path), payload)
 
         command = run_mock.call_args.args[0]
         self.assertIn("[Console]::In.ReadToEnd() | ConvertFrom-Json", command[5])
-        self.assertIn("$shell.CreateShortcut([string]$inputObject.ShortcutPath)", command[5])
+        self.assertIn(
+            "$shell.CreateShortcut([string]$inputObject.ShortcutPath)", command[5]
+        )
         self.assertNotIn("$args[0]", command[5])
-        self.assertEqual(json.loads(run_mock.call_args.kwargs["input"]), {"ShortcutPath": str(shortcut_path)})
+        self.assertEqual(
+            json.loads(run_mock.call_args.kwargs["input"]),
+            {"ShortcutPath": str(shortcut_path)},
+        )
 
-    def test_importer_overwrites_matching_shortcuts_and_preserves_other_config(self) -> None:
+    def test_importer_overwrites_matching_shortcuts_and_preserves_other_config(
+        self,
+    ) -> None:
         """The importer replaces same-name shortcut tables without regenerating unrelated TOML."""
 
         importer = load_shortcut_importer_module()
@@ -501,7 +575,9 @@ targetPath = "$App\\tools\\keep.exe"
                 "IconLocation": f"{icons_dir / 'game.ico'},0",
                 "Description": "Launch Game",
             }
-            with mock.patch.object(importer, "read_windows_shortcut", return_value=shortcut_payload):
+            with mock.patch.object(
+                importer, "read_windows_shortcut", return_value=shortcut_payload
+            ):
                 rendered, shortcuts = importer.import_shortcuts(version_dir)
 
             parsed = tomllib.loads(rendered)
@@ -509,18 +585,26 @@ targetPath = "$App\\tools\\keep.exe"
             self.assertEqual(parsed["environment"][0]["Name"], "GAME_HOME")
             self.assertEqual(len(parsed["shortcut"]), 2)
 
-            imported = next(item for item in parsed["shortcut"] if item["name"] == "Games\\Launch Game")
+            imported = next(
+                item
+                for item in parsed["shortcut"]
+                if item["name"] == "Games\\Launch Game"
+            )
             self.assertEqual(imported["targetPath"], "$App\\game.exe")
             self.assertEqual(imported["arguments"], "--fullscreen")
             self.assertEqual(imported["workingDirectory"], "$App")
             self.assertEqual(imported["iconLocation"], "$Icons\\game.ico,0")
             self.assertEqual(imported["description"], "Launch Game")
 
-            preserved = next(item for item in parsed["shortcut"] if item["name"] == "Tools\\Keep Me")
+            preserved = next(
+                item for item in parsed["shortcut"] if item["name"] == "Tools\\Keep Me"
+            )
             self.assertEqual(preserved["targetPath"], "$App\\tools\\keep.exe")
             self.assertNotIn("old.exe", rendered)
 
-    def test_importer_appends_new_shortcuts_from_nested_shortcut_directory(self) -> None:
+    def test_importer_appends_new_shortcuts_from_nested_shortcut_directory(
+        self,
+    ) -> None:
         """Nested files under ``_shortcuts`` become nested shortcut names in TOML."""
 
         importer = load_shortcut_importer_module()
@@ -549,7 +633,9 @@ localVersion = 3
                 "IconLocation": "",
                 "Description": "",
             }
-            with mock.patch.object(importer, "read_windows_shortcut", return_value=shortcut_payload):
+            with mock.patch.object(
+                importer, "read_windows_shortcut", return_value=shortcut_payload
+            ):
                 rendered, _ = importer.import_shortcuts(version_dir)
 
             parsed = tomllib.loads(rendered)

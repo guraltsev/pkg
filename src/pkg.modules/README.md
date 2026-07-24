@@ -1,4 +1,27 @@
-# Helper scripts
+# Runtime modules and migration helpers
+
+The Python modules in this directory contain the supported implementation
+domains used by the stable `pkg.py` executable:
+
+- `core.py`: shared result models, package identity, logging, expansion, and
+  atomic file writes
+- `windows.py`: shortcuts, junctions, registry access, elevation, and console
+  integration
+- `layout.py`: package-path resolution and `current` activation
+- `configuration.py`: canonical `pkg.toml` normalization and validation
+- `metadata.py`: structure-preserving metadata synchronization
+- `components.py`: shortcut, environment, `PATH`, and wrapper installation
+- `origin.py`: zip and script application population
+- `updates.py`: update state, hooks, candidate validation, and staging
+
+`pkg.py` remains the executable and public facade. It owns CLI dispatch and
+the high-level install, health-check, configuration, and update workflows.
+These runtime modules are internal implementation details and are not a
+separate public API. The migration scripts documented below are independent of
+the runtime and retain compatibility conversion logic deliberately excluded
+from `pkg.py`.
+
+## Migration helpers
 
 The scripts in this directory are best-effort migration helpers.
 

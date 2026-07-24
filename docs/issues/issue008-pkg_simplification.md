@@ -1,5 +1,10 @@
 # Blueprint: simplify `pkg.py` by removing internal representation layers
 
+> **Architecture note:** The single-file constraint in this blueprint has been
+> superseded. Runtime domains now live directly in `src/pkg.modules/`; see
+> `docs/development_guide.md`. The behavioral simplification goals remain
+> useful historical context.
+
 Date: 2026-04-28
 Priority: High
 Change type: Targeted structural simplification

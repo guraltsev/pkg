@@ -1,12 +1,14 @@
 # Test Policy
 
-`tests/` contains high-value tests of meaningful observable behavior.
+`tests/` contains the project's test suites. Permanent unit tests currently
+live under `tests/unit/`, and broader suites such as `tests/integration/` or
+`tests/e2e/` can live alongside them as needed.
 
 A test belongs only if its failure would describe a real functional regression. 
 
 Do not add tests that preserve implementation details, refactoring choices, file layout, or documentation artifacts.
 
-Before adding or changing a test, state the behavior it protects. If the behavior is not observable, do not add the test. If the behavior is very important but not observable, document it instead.
+Before adding or changing a test, state the behavior it protects. If the behavior is not observable but important, document it instead.
 
 ## What to Test
 
@@ -38,9 +40,12 @@ Use documentation instead of tests for non-observable design constraints:
 Organize permanent tests by feature area.
 
 * `tests/fixtures/`: fixture projects
-* `tests/devel/`: temporary refactor tests
+* `tests/*/` permanent unit tests grouped by module or functionality area
+* `tests/integration/`, `tests/e2e/`: optional broader suites when cross-feature
+  or end-to-end coverage becomes necessary
+* `tests/_devel/`: temporary refactor tests
 
-The default pytest configuration excludes `tests/devel/`. Run those tests only by explicit path during the refactor that needs them. Mark them clearly as temporary and remove them when no longer needed.
+The default pytest configuration excludes `tests/_devel/`. Run those tests only by explicit path during the refactor that needs them. Mark them clearly as temporary and remove them when no longer needed.
 
 ## Test Modules
 
@@ -54,7 +59,7 @@ Every permanent test module starts with a docstring stating:
 
 Test names should read like behavior statements.
 
-Each test function must have a docstring that briefly states the behavior being tested. The docstring should describe the observable contract, not the implementation path. The docstring must start with a one-sentence summary paragraph. It is followed by an optional paragraph providing mored details.
+Each test function must have a docstring that briefly states the behavior being tested. The docstring should describe the observable contract, not the implementation path. The docstring must start with a one-sentence summary paragraph. It is followed by an optional paragraph providing more details.
 
 Prefer plain test functions. Use classes only when they make a behavior family easier to read.
 
@@ -90,5 +95,20 @@ When using an LLM to write or revise tests:
 * do not add tests only to increase coverage
 * do not preserve accidental behavior unless it is intentionally user-visible
 * prefer fewer clear tests over many narrow tests that lock down code shape
+
+
+## Development tests
+
+`tests/` is the default pytest target. Keep stable unit coverage under
+`tests/`. Add `tests/integration/` or `tests/e2e/` only for broader workflows
+that should be part of default discovery.
+`tests/_devel/` can contain temporary refactor scaffolding. It is excluded from
+default pytest discovery and should be run only by explicit path during the
+refactor that needs it. `tests/_devel/` is available for procedural
+deep-analysis tests that report useful facts without becoming CI or regression
+tests. Use dedicated subdirectories and put a local `README.md` in that
+subdirectory, run those tests explicitly with `-s`, and keep their assertions
+limited to light sanity checks that let the report complete.
+
 
 # Project-Specific Guidelines

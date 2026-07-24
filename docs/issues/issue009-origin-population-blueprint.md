@@ -1,5 +1,9 @@
 # Blueprint: populate `App` from package origin
 
+> **Architecture note:** The single-file constraint in this blueprint has been
+> superseded. Origin behavior now lives in `src/pkg.modules/origin.py`, while
+> `src/pkg.py` retains the high-level action workflow.
+
 Date: 2026-07-08
 Priority: High
 Change type: Feature design
@@ -634,4 +638,3 @@ The feature is complete when:
 - Checksums use `sha256:<hex>` syntax.
 - Script origin supports `.ps1`, `.cmd`, `.bat`, and `.exe` initially.
 - Script JSON includes a top-level `PkgVars` dictionary.
-

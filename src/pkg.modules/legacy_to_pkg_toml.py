@@ -77,11 +77,13 @@ def toml_path_lines(path_entries: list[str]) -> list[str]:
 
     lines: list[str] = []
     for entry in path_entries:
-        lines.extend([
-            "[[path]]",
-            f"value = {to_toml_scalar(entry)}",
-            "",
-        ])
+        lines.extend(
+            [
+                "[[path]]",
+                f"value = {to_toml_scalar(entry)}",
+                "",
+            ]
+        )
     return lines
 
 
@@ -144,7 +146,9 @@ def pick_all_matching(base_dir: Path, prefix: str) -> list[Path]:
         if lower == f"{prefix}.json" or lower == f"{prefix}.toml":
             files.append(candidate)
             continue
-        if lower.startswith(prefix) and (lower.endswith(".json") or lower.endswith(".toml")):
+        if lower.startswith(prefix) and (
+            lower.endswith(".json") or lower.endswith(".toml")
+        ):
             files.append(candidate)
     return files
 
@@ -163,14 +167,20 @@ def pick_legacy_metadata_files(base_dir: Path) -> list[Path]:
     return found
 
 
-def extract_legacy_rows(source: Any, source_keys: list[str], *, source_name: str) -> list[dict[str, Any]]:
+def extract_legacy_rows(
+    source: Any, source_keys: list[str], *, source_name: str
+) -> list[dict[str, Any]]:
     """Extract list-style legacy rows from a mapping or list payload."""
 
     candidate_lists: list[Any] = []
     if isinstance(source, list):
         candidate_lists.append(source)
     elif isinstance(source, dict):
-        candidate_lists.extend(value for value in get_matching_values(source, source_keys) if value is not None)
+        candidate_lists.extend(
+            value
+            for value in get_matching_values(source, source_keys)
+            if value is not None
+        )
     else:
         print(f"Warning: {source_name} is not an object or list; ignoring")
         return []
@@ -179,7 +189,9 @@ def extract_legacy_rows(source: Any, source_keys: list[str], *, source_name: str
     for candidate in candidate_lists:
         if not isinstance(candidate, list):
             joined_keys = ", ".join(source_keys)
-            print(f"Warning: {source_name}: expected one of [{joined_keys}] to be a list")
+            print(
+                f"Warning: {source_name}: expected one of [{joined_keys}] to be a list"
+            )
             continue
         for row in candidate:
             if isinstance(row, dict):
@@ -197,7 +209,10 @@ def normalize_legacy_variable_path(value: str) -> str:
         (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
         (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
         (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
-        (r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)", "$Shortcuts"),
+        (
+            r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
+            "$Shortcuts",
+        ),
         (r"\$AppPath(?=[\\/]+|$)", "$App"),
     ]
     for pattern, replacement in component_patterns:
@@ -211,7 +226,9 @@ def _normalize_optional_int(value: Any, *, label: str, source_name: str) -> int 
     if value is None or value == "":
         return None
     if isinstance(value, bool):
-        print(f"Warning: {source_name}: '{label}' should be an integer; ignoring {value!r}")
+        print(
+            f"Warning: {source_name}: '{label}' should be an integer; ignoring {value!r}"
+        )
         return None
     if isinstance(value, int):
         return value
@@ -222,7 +239,9 @@ def _normalize_optional_int(value: Any, *, label: str, source_name: str) -> int 
     return None
 
 
-def _normalize_optional_bool(value: Any, *, label: str, source_name: str) -> bool | None:
+def _normalize_optional_bool(
+    value: Any, *, label: str, source_name: str
+) -> bool | None:
     """Normalize a best-effort boolean metadata value."""
 
     if value is None or value == "":
@@ -322,7 +341,9 @@ def extend_normalized_list(
             output[dest_key].append(normalized)
 
 
-def apply_top_level_metadata(output: dict[str, Any], source: dict[str, Any], *, source_name: str) -> None:
+def apply_top_level_metadata(
+    output: dict[str, Any], source: dict[str, Any], *, source_name: str
+) -> None:
     """Copy best-effort top-level metadata from one legacy mapping."""
 
     top_map = {
@@ -357,7 +378,9 @@ def apply_top_level_metadata(output: dict[str, Any], source: dict[str, Any], *, 
             source_name=source_name,
         )
 
-    portable_values = get_matching_values(source, ["only_portable", "onlyportable", "portable"])
+    portable_values = get_matching_values(
+        source, ["only_portable", "onlyportable", "portable"]
+    )
     if portable_values:
         output["only_portable"] = _normalize_optional_bool(
             portable_values[-1],
@@ -390,7 +413,9 @@ def normalize_path_entries(raw_entries: Any, *, source_name: str) -> list[str]:
     return normalized
 
 
-def extract_metadata_sources(source: dict[str, Any], *, source_name: str) -> list[dict[str, Any]]:
+def extract_metadata_sources(
+    source: dict[str, Any], *, source_name: str
+) -> list[dict[str, Any]]:
     """Return top-level and legacy ``main`` metadata mappings from one payload."""
 
     metadata_sources = [source]
@@ -401,7 +426,9 @@ def extract_metadata_sources(source: dict[str, Any], *, source_name: str) -> lis
         if isinstance(main_value, list):
             dict_rows = [row for row in main_value if isinstance(row, dict)]
             if len(dict_rows) > 1:
-                print(f"Warning: {source_name}: found multiple 'main' tables; using the last one")
+                print(
+                    f"Warning: {source_name}: found multiple 'main' tables; using the last one"
+                )
             if dict_rows:
                 metadata_sources.append(dict_rows[-1])
             continue
@@ -409,7 +436,9 @@ def extract_metadata_sources(source: dict[str, Any], *, source_name: str) -> lis
     return metadata_sources
 
 
-def merge_legacy_source(output: dict[str, Any], source: Any, *, source_name: str) -> None:
+def merge_legacy_source(
+    output: dict[str, Any], source: Any, *, source_name: str
+) -> None:
     """Merge one legacy JSON or TOML payload into the canonical config."""
 
     list_sources = [source]
@@ -423,11 +452,29 @@ def merge_legacy_source(output: dict[str, Any], source: Any, *, source_name: str
         if isinstance(list_source, dict):
             path_values = get_matching_values(list_source, ["path"])
             if path_values:
-                output["path"] = normalize_path_entries(path_values[-1], source_name=source_name)
+                output["path"] = normalize_path_entries(
+                    path_values[-1], source_name=source_name
+                )
 
-        extend_normalized_list(output, list_source, ["environment", "env"], "environment", normalize_environment, source_name)
-        extend_normalized_list(output, list_source, ["shortcut", "shortcuts"], "shortcut", normalize_shortcut, source_name)
-        extend_normalized_list(output, list_source, ["bin"], "bin", normalize_bin, source_name)
+        extend_normalized_list(
+            output,
+            list_source,
+            ["environment", "env"],
+            "environment",
+            normalize_environment,
+            source_name,
+        )
+        extend_normalized_list(
+            output,
+            list_source,
+            ["shortcut", "shortcuts"],
+            "shortcut",
+            normalize_shortcut,
+            source_name,
+        )
+        extend_normalized_list(
+            output, list_source, ["bin"], "bin", normalize_bin, source_name
+        )
 
 
 def infer_metadata_from_directory(base_dir: Path) -> dict[str, Any]:
@@ -482,11 +529,21 @@ def build_config(base_dir: Path) -> dict[str, Any]:
     # Legacy repos often split repeated tables into dedicated files. Extend the
     # canonical lists in discovery order so later review sees every recovered
     # declaration in one config.
-    for env_file in [*pick_all_matching(base_dir, "environment"), *pick_all_matching(base_dir, "env")]:
+    for env_file in [
+        *pick_all_matching(base_dir, "environment"),
+        *pick_all_matching(base_dir, "env"),
+    ]:
         data = read_legacy_data(env_file)
         if data is None:
             continue
-        extend_normalized_list(out, data, ["environment", "env"], "environment", normalize_environment, env_file.name)
+        extend_normalized_list(
+            out,
+            data,
+            ["environment", "env"],
+            "environment",
+            normalize_environment,
+            env_file.name,
+        )
 
     for path_file in pick_all_matching(base_dir, "path"):
         data = read_legacy_data(path_file)
@@ -495,15 +552,27 @@ def build_config(base_dir: Path) -> dict[str, Any]:
         if isinstance(data, dict):
             path_values = get_matching_values(data, ["path"])
             if path_values:
-                out["path"].extend(normalize_path_entries(path_values[-1], source_name=path_file.name))
+                out["path"].extend(
+                    normalize_path_entries(path_values[-1], source_name=path_file.name)
+                )
         else:
             out["path"].extend(normalize_path_entries(data, source_name=path_file.name))
 
-    for shortcut_file in [*pick_all_matching(base_dir, "shortcut"), *pick_all_matching(base_dir, "shortcuts")]:
+    for shortcut_file in [
+        *pick_all_matching(base_dir, "shortcut"),
+        *pick_all_matching(base_dir, "shortcuts"),
+    ]:
         data = read_legacy_data(shortcut_file)
         if data is None:
             continue
-        extend_normalized_list(out, data, ["shortcut", "shortcuts"], "shortcut", normalize_shortcut, shortcut_file.name)
+        extend_normalized_list(
+            out,
+            data,
+            ["shortcut", "shortcuts"],
+            "shortcut",
+            normalize_shortcut,
+            shortcut_file.name,
+        )
 
     for bin_file in pick_all_matching(base_dir, "bin"):
         data = read_legacy_data(bin_file)
@@ -544,7 +613,9 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
         # history entries as their canonical repeated TOML tables.
         origin_fields = ["url", "checksum", "extractSubdir", "script"]
         version_entries = origin.get("versions")
-        if any(origin.get(key) not in (None, "") for key in origin_fields) or isinstance(version_entries, list):
+        if any(
+            origin.get(key) not in (None, "") for key in origin_fields
+        ) or isinstance(version_entries, list):
             lines.append("[origin]")
             for key in origin_fields:
                 if origin.get(key) not in (None, ""):
@@ -555,7 +626,13 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
                         continue
                     lines.append("")
                     lines.append("[[origin.versions]]")
-                    for key in ["version", "url", "checksum", "extractSubdir", "script"]:
+                    for key in [
+                        "version",
+                        "url",
+                        "checksum",
+                        "extractSubdir",
+                        "script",
+                    ]:
                         if entry.get(key) not in (None, ""):
                             lines.append(f"{key} = {to_toml_scalar(entry[key])}")
         lines.append("")
@@ -563,27 +640,38 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
     lines.extend(toml_path_lines(cfg.get("path", [])))
 
     for entry in cfg.get("environment", []):
-        lines.extend([
-            "[[environment]]",
-            f"Name = {to_toml_scalar(entry.get('Name', ''))}",
-            f"Value = {to_toml_scalar(entry.get('Value', ''))}",
-            "",
-        ])
+        lines.extend(
+            [
+                "[[environment]]",
+                f"Name = {to_toml_scalar(entry.get('Name', ''))}",
+                f"Value = {to_toml_scalar(entry.get('Value', ''))}",
+                "",
+            ]
+        )
 
     for entry in cfg.get("shortcut", []):
         lines.append("[[shortcut]]")
-        for key in ["name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description"]:
+        for key in [
+            "name",
+            "targetPath",
+            "arguments",
+            "workingDirectory",
+            "iconLocation",
+            "description",
+        ]:
             if key in entry and entry.get(key) not in (None, ""):
                 lines.append(f"{key} = {to_toml_scalar(entry[key])}")
         lines.append("")
 
     for entry in cfg.get("bin", []):
-        lines.extend([
-            "[[bin]]",
-            f"name = {to_toml_scalar(entry.get('name', ''))}",
-            f"content = {to_toml_scalar(entry.get('content', ''))}",
-            "",
-        ])
+        lines.extend(
+            [
+                "[[bin]]",
+                f"name = {to_toml_scalar(entry.get('name', ''))}",
+                f"content = {to_toml_scalar(entry.get('content', ''))}",
+                "",
+            ]
+        )
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -603,10 +691,22 @@ def main() -> int:
         Process exit code.
     """
 
-    parser = argparse.ArgumentParser(description="Construct canonical pkg.toml from legacy files in one directory")
-    parser.add_argument("--dir", default=".", help="Directory that contains legacy JSON files (default: current directory)")
-    parser.add_argument("--output", default="pkg.toml", help="Output TOML path (default: ./pkg.toml)")
-    parser.add_argument("--dry-run", action="store_true", help="Print resulting TOML to stdout instead of writing")
+    parser = argparse.ArgumentParser(
+        description="Construct canonical pkg.toml from legacy files in one directory"
+    )
+    parser.add_argument(
+        "--dir",
+        default=".",
+        help="Directory that contains legacy JSON files (default: current directory)",
+    )
+    parser.add_argument(
+        "--output", default="pkg.toml", help="Output TOML path (default: ./pkg.toml)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print resulting TOML to stdout instead of writing",
+    )
     parser.add_argument(
         "--force",
         action="store_true",

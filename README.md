@@ -103,10 +103,9 @@ python pkg.py --action HealthCheck C:\Packages\Ripgrep\v14.1.0.l1
 
 `pkg.cmd` chooses Python in this order:
 
-1. `--python <exe-or-command>`
-2. `PKG_PYTHON`
-3. `pkg.python` next to `pkg.cmd`
-4. `python` from `PATH`
+1. `PKG_PYTHON`
+2. `pkg.python` next to `pkg.cmd`
+3. `python` from `PATH`
 
 ## `pkg.toml`
 
@@ -330,4 +329,5 @@ supported runtime surface.
 
 ## Development notes
 
-Contributor notes live in [`docs/development.md`](docs/development.md).
+Contributor notes live in
+[`docs/development_guide.md`](docs/development_guide.md).

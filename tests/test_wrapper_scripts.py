@@ -1,3 +1,10 @@
+"""Cover Windows wrapper forwarding and helper-script target resolution.
+
+Windows ``cmd`` execution is real while temporary command shims replace the
+selected Python interpreter. Package installation behavior and batch-file
+implementation details beyond forwarded paths and arguments are out of scope.
+"""
+
 from __future__ import annotations
 
 import os
@@ -15,14 +22,21 @@ WRAPPER_SCRIPTS = [
     (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
 ]
 HELPER_WRAPPER_SCRIPTS = [
-    (SRC_ROOT / "legacy_to_pkg_toml.cmd", SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py"),
-    (SRC_ROOT / "shortcuts_to_pkg_toml.cmd", SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py"),
+    (
+        SRC_ROOT / "legacy_to_pkg_toml.cmd",
+        SRC_ROOT / "pkg.modules" / "legacy_to_pkg_toml.py",
+    ),
+    (
+        SRC_ROOT / "shortcuts_to_pkg_toml.cmd",
+        SRC_ROOT / "pkg.modules" / "shortcuts_to_pkg_toml.py",
+    ),
 ]
 
 
 class WrapperScriptTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_wrapper_scripts_preserve_caller_working_directory(self) -> None:
+        """Wrapper scripts preserve caller working directory."""
         for script, forwarded_args in WRAPPER_SCRIPTS:
             with self.subTest(script=script.name):
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -50,7 +64,9 @@ exit /b 0
                         check=False,
                     )
 
-                    self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+                    self.assertEqual(
+                        result.returncode, 0, msg=result.stderr or result.stdout
+                    )
                     lines = log_file.read_text(encoding="utf-8").splitlines()
                     recorded_cwd = lines[0].removeprefix("cwd=")
                     recorded_args = lines[1].removeprefix("args=")
@@ -61,6 +77,7 @@ exit /b 0
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_helper_wrappers_resolve_python_scripts_in_helper_subdir(self) -> None:
+        """Helper wrappers resolve python scripts in helper subdir."""
         for script, expected_target in HELPER_WRAPPER_SCRIPTS:
             with self.subTest(script=script.name):
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -87,7 +104,9 @@ exit /b 0
                         check=False,
                     )
 
-                    self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+                    self.assertEqual(
+                        result.returncode, 0, msg=result.stderr or result.stdout
+                    )
                     lines = log_file.read_text(encoding="utf-8").splitlines()
                     recorded_args = lines[1].removeprefix("args=")
                     self.assertIn(str(expected_target), recorded_args)

@@ -1,12 +1,9 @@
 # Manual smoke checklist
 
-This snapshot uses a single-file implementation in `pkg.py`, with the code
-organized into explicit sections:
-
-- `Shared models and pure helpers`
-- `Windows integration boundary`
-- `Package-management logic and CLI`
-- `Script entry point`
+This snapshot uses `pkg.py` as the stable executable and action facade.
+Implementation domains live directly under `pkg.modules/`, covering shared
+utilities, Windows integration, package layout, configuration, metadata
+editing, components, origins, and update staging.
 
 Suggested manual checks on a Windows machine:
 

@@ -1,0 +1,142 @@
+# Generated automatically by `pkg`.
+
+# UpdateConfig will keep these fields aligned with the package folder name.
+name = "latex-toolkit"
+version = "0-git"
+localVersion = 1
+# Set only_portable = true when the package stores user config in its folder
+# and therefore must only be installed portably.
+only_portable = false
+
+# description = ""
+# homepage = "https://"
+[origin]
+url = "git@github.com:guraltsev/latex-toolkit.git"
+# checksum = "sha256:<64 hex characters>"
+# extractSubdir = "tool-portable"
+#
+# Or replace url/checksum/extractSubdir with a package-local script:
+# script = "scripts/populate-app.ps1"
+#
+# Multiple origin versions:
+#   Use repeated [[origin.versions]] tables to keep older upstream
+#   payload locations in the same pkg.toml. Each entry must have a
+#   unique version. url/script can be filled in later, but installing
+#   from that version requires one of them.
+#
+# Current origin can stay inline above, while old versions live here:
+# [[origin.versions]]
+# version = "1.0.0"
+# url = "https://example.invalid/tool-1.0.0.zip"
+# checksum = "sha256:<64 hex characters>"
+# extractSubdir = "tool-1.0.0"
+#
+# [[origin.versions]]
+# version = "0.9.0"
+# url = "https://example.invalid/tool-0.9.0.zip"
+# extractSubdir = "tool-0.9.0"
+#
+# Or use the package top-level version to select the current origin:
+#   1. omit top-level url/script above
+#   2. define a [[origin.versions]] entry whose version matches
+#      the top-level package version above
+# [origin]
+#
+# [[origin.versions]]
+# version = "0-git"
+# url = "https://example.invalid/tool-current.zip"
+
+# Variable expansion reference:
+#   $App, $Icons, $Shortcuts -> package directories under <package>/current/
+#   ${VAR} -> environment variable expansion and must resolve
+#   plain non-package $NAME -> unresolved in regular fields, literal in [[bin]] content
+#   $$ -> literal $
+
+# Examples:
+# [[shortcut]]
+# name = "latex-toolkit"
+# targetPath = "$App\\latex-toolkit.exe"
+# arguments = "--example"
+# workingDirectory = "$App"
+# iconLocation = "$Icons\\latex-toolkit.ico,0"
+# description = "latex-toolkit"
+
+# Example environment variable available after installation.
+# [[environment]]
+# Name = "LATEX_TOOLKIT_HOME"
+# Value = "${USERPROFILE}\\latex-toolkit"
+
+# Example PATH entry.
+# [[path]]
+# value = "$App"
+
+# Example wrapper script placed in the scope bin directory.
+# [[bin]]
+# name = "latex-toolkit.cmd"
+# content = '''
+# @echo off
+# "$App\latex-toolkit.exe" %*
+# '''
+
+[[bin]]
+name = "lt_brace_args.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_brace_args.cmd" %*
+'''
+
+[[bin]]
+name = "lt_full_normalize.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_full_normalize.cmd" %*
+'''
+
+[[bin]]
+name = "lt_greek_latex2unicode.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_greek_latex2unicode.cmd" %*
+'''
+
+[[bin]]
+name = "lt_greek_unicode2latex.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_greek_unicode2latex.cmd" %*
+'''
+
+[[bin]]
+name = "lt_math_dollar2latex.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_math_dollar2latex.cmd" %*
+'''
+
+[[bin]]
+name = "lt_math_latex2dollar.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_math_latex2dollar.cmd" %*
+'''
+
+[[bin]]
+name = "lt_sentence-per-line.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_sentence-per-line.cmd" %*
+'''
+
+[[bin]]
+name = "lt_syntax_regularizer.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_syntax_regularizer.cmd" %*
+'''
+
+[[bin]]
+name = "lt_template.cmd"
+content = '''
+@echo off
+call "$App\latex-toolkit\src\lt_template.cmd" %*
+'''

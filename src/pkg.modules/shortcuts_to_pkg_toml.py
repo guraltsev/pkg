@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any
 
 
-#------------------------------------------
+# ------------------------------------------
 # Section: Command workflow
-#------------------------------------------
+# ------------------------------------------
 #
 # The public command stays small: resolve package paths, read shortcuts, rewrite
 # matching TOML tables, and either print or persist the result.
@@ -107,7 +107,9 @@ def import_shortcuts(
     try:
         parsed = tomllib.loads(original_text)
     except tomllib.TOMLDecodeError as exc:
-        raise RuntimeError(f"pkg.toml is invalid and cannot be updated safely: {exc}") from exc
+        raise RuntimeError(
+            f"pkg.toml is invalid and cannot be updated safely: {exc}"
+        ) from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("pkg.toml must contain a top-level TOML table.")
 
@@ -131,12 +133,30 @@ def main() -> int:
         Process exit code.
     """
 
-    parser = argparse.ArgumentParser(description="Import .lnk files from _shortcuts into pkg.toml")
-    parser.add_argument("--dir", default=".", help="Package version directory (default: current directory)")
-    parser.add_argument("--shortcuts-dir", default="_shortcuts", help="Shortcut directory (default: ./_shortcuts)")
-    parser.add_argument("--config", default="pkg.toml", help="TOML config path (default: ./pkg.toml)")
-    parser.add_argument("--dry-run", action="store_true", help="Print updated TOML instead of writing")
-    parser.add_argument("--no-backup", action="store_true", help="Do not write pkg.toml.bak before replacing pkg.toml")
+    parser = argparse.ArgumentParser(
+        description="Import .lnk files from _shortcuts into pkg.toml"
+    )
+    parser.add_argument(
+        "--dir",
+        default=".",
+        help="Package version directory (default: current directory)",
+    )
+    parser.add_argument(
+        "--shortcuts-dir",
+        default="_shortcuts",
+        help="Shortcut directory (default: ./_shortcuts)",
+    )
+    parser.add_argument(
+        "--config", default="pkg.toml", help="TOML config path (default: ./pkg.toml)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print updated TOML instead of writing"
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Do not write pkg.toml.bak before replacing pkg.toml",
+    )
     args = parser.parse_args()
 
     try:
@@ -168,18 +188,22 @@ def main() -> int:
     return 0
 
 
-#------------------------------------------
+# ------------------------------------------
 # Section: Shortcut reading
-#------------------------------------------
+# ------------------------------------------
 #
 # Python's standard library cannot parse Shell Link files. On Windows, WScript
 # exposes the fields that ``pkg`` needs and keeps this helper dependency-free.
 
 
-def read_shortcut_directory(shortcuts_dir: Path, path_context: list[tuple[Path, str]]) -> list[ShortcutEntry]:
+def read_shortcut_directory(
+    shortcuts_dir: Path, path_context: list[tuple[Path, str]]
+) -> list[ShortcutEntry]:
     """Read every ``.lnk`` file below a shortcut directory."""
 
-    shortcut_files = sorted(path for path in shortcuts_dir.rglob("*.lnk") if path.is_file())
+    shortcut_files = sorted(
+        path for path in shortcuts_dir.rglob("*.lnk") if path.is_file()
+    )
     entries: list[ShortcutEntry] = []
     for shortcut_file in shortcut_files:
         raw = read_windows_shortcut(shortcut_file)
@@ -192,10 +216,16 @@ def read_shortcut_directory(shortcuts_dir: Path, path_context: list[tuple[Path, 
         entries.append(
             ShortcutEntry(
                 name=name,
-                targetPath=normalize_package_path(str(raw.get("TargetPath", "")), path_context),
+                targetPath=normalize_package_path(
+                    str(raw.get("TargetPath", "")), path_context
+                ),
                 arguments=str(raw.get("Arguments", "")),
-                workingDirectory=normalize_package_path(str(raw.get("WorkingDirectory", "")), path_context),
-                iconLocation=normalize_icon_location(str(raw.get("IconLocation", "")), path_context),
+                workingDirectory=normalize_package_path(
+                    str(raw.get("WorkingDirectory", "")), path_context
+                ),
+                iconLocation=normalize_icon_location(
+                    str(raw.get("IconLocation", "")), path_context
+                ),
                 description=str(raw.get("Description", "")),
             )
         )
@@ -229,14 +259,16 @@ $shortcut = $shell.CreateShortcut([string]$inputObject.ShortcutPath)
         check=False,
     )
     if result.returncode != 0:
-        error_text = (result.stderr or result.stdout or "unknown PowerShell shortcut error").strip()
+        error_text = (
+            result.stderr or result.stdout or "unknown PowerShell shortcut error"
+        ).strip()
         raise RuntimeError(f"failed to read {shortcut_path}: {error_text}")
     return json.loads(result.stdout)
 
 
-#------------------------------------------
+# ------------------------------------------
 # Section: Path normalization
-#------------------------------------------
+# ------------------------------------------
 #
 # The importer sees fully expanded absolute paths, current-junction paths, and
 # known package-variable spellings. Convert only package-owned paths back to
@@ -284,7 +316,9 @@ def normalize_icon_location(value: str, path_context: list[tuple[Path, str]]) ->
     match = re.match(r"^(?P<path>[A-Za-z]:[\\/][^,]*)(?P<suffix>,.*)?$", value)
     if match is None:
         return normalize_package_path(value, path_context)
-    return normalize_package_path(match.group("path"), path_context) + (match.group("suffix") or "")
+    return normalize_package_path(match.group("path"), path_context) + (
+        match.group("suffix") or ""
+    )
 
 
 def replace_path_prefix(value: str, prefix: Path, variable: str) -> str:
@@ -297,7 +331,7 @@ def replace_path_prefix(value: str, prefix: Path, variable: str) -> str:
     if value_norm.lower() == prefix_norm.lower():
         return variable
     if value_norm.lower().startswith(prefix_norm.lower() + "\\"):
-        return variable + value_norm[len(prefix_norm):]
+        return variable + value_norm[len(prefix_norm) :]
     return value
 
 
@@ -311,7 +345,10 @@ def normalize_known_package_variables(value: str) -> str:
         (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
         (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
         (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
-        (r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)", "$Shortcuts"),
+        (
+            r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
+            "$Shortcuts",
+        ),
         (r"\$AppPath(?=[\\/]+|$)", "$App"),
     ]
     for pattern, replacement in component_patterns:
@@ -319,9 +356,9 @@ def normalize_known_package_variables(value: str) -> str:
     return normalized
 
 
-#------------------------------------------
+# ------------------------------------------
 # Section: TOML rendering
-#------------------------------------------
+# ------------------------------------------
 #
 # Existing TOML is parsed for safety, then edited textually so unrelated
 # comments and sections survive. Matching shortcut tables are removed by name
@@ -344,7 +381,9 @@ def replace_shortcut_tables(text: str, shortcuts: list[ShortcutEntry]) -> str:
         kept_blocks.append(block)
 
     body = "".join(kept_blocks).rstrip()
-    rendered_shortcuts = "\n\n".join(render_shortcut_table(shortcut).rstrip() for shortcut in shortcuts)
+    rendered_shortcuts = "\n\n".join(
+        render_shortcut_table(shortcut).rstrip() for shortcut in shortcuts
+    )
     if body:
         body += "\n\n"
     body += rendered_shortcuts
@@ -355,7 +394,9 @@ def replace_shortcut_tables(text: str, shortcuts: list[ShortcutEntry]) -> str:
     try:
         tomllib.loads(body)
     except tomllib.TOMLDecodeError as exc:
-        raise RuntimeError(f"shortcut import produced invalid TOML and was aborted: {exc}") from exc
+        raise RuntimeError(
+            f"shortcut import produced invalid TOML and was aborted: {exc}"
+        ) from exc
 
     return body
 

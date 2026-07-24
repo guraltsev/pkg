@@ -5,10 +5,9 @@ rem ----------------------------------------------------------------------------
 rem pkg.cmd - bootstrap launcher for pkg.py
 rem
 rem Interpreter selection priority:
-rem   1) Command line: --python <PYTHON_EXE>
-rem   2) Environment:  PKG_PYTHON
-rem   3) File:         <this script dir>\pkg.python  (first non-empty line)
-rem   4) Fallback:     python  (from PATH)
+rem   1) Environment:  PKG_PYTHON
+rem   2) File:         <this script dir>\pkg.python  (first non-empty line)
+rem   3) Fallback:     python  (from PATH)
 rem
 rem This launcher intentionally does NOT parse pkg.toml.
 rem If an override source is provided but invalid, it fails loudly.
@@ -26,23 +25,19 @@ if not exist "%PKG_PY%" (
 set "PYTHON_EXE="
 set "PYTHON_SOURCE="
 
-rem 1) --python <...> (scan args; pkg.py accepts --python so we can forward %*)
-call :ParsePythonArg %*
-if errorlevel 1 exit /b %ERRORLEVEL%
-
-rem 2) ENV: PKG_PYTHON
+rem 1) ENV: PKG_PYTHON
 if not defined PYTHON_EXE if defined PKG_PYTHON (
   set "PYTHON_EXE=%PKG_PYTHON%"
   set "PYTHON_SOURCE=PKG_PYTHON"
 )
 
-rem 3) File: pkg.python next to this script
+rem 2) File: pkg.python next to this script
 if not defined PYTHON_EXE if exist "%PKG_PYTHON_FILE%" (
   call :LoadPythonFromFile "%PKG_PYTHON_FILE%"
   if errorlevel 1 exit /b %ERRORLEVEL%
 )
 
-rem 4) Fallback
+rem 3) Fallback
 if not defined PYTHON_EXE (
   set "PYTHON_EXE=python"
   set "PYTHON_SOURCE=PATH"
@@ -56,37 +51,6 @@ echo [pkg] Using Python [source=%PYTHON_SOURCE%]: "%PYTHON_EXE%"
 
 "%PYTHON_EXE%" "%PKG_PY%" %*
 exit /b %ERRORLEVEL%
-
-
-:ParsePythonArg
-rem Parse --python <exe> or --python=<exe>. Last one wins.
-:PPA_LOOP
-if "%~1"=="" exit /b 0
-
-if /I "%~1"=="--python" (
-  if "%~2"=="" (
-    echo [pkg] ERROR: --python requires a value.
-    exit /b 2
-  )
-  set "PYTHON_EXE=%~2"
-  set "PYTHON_SOURCE=--python"
-  shift
-  shift
-  goto :PPA_LOOP
-)
-
-set "ARG=%~1"
-if /I "%ARG:~0,9%"=="--python=" (
-  if "%ARG:~9%"=="" (
-    echo [pkg] ERROR: --python= requires a value.
-    exit /b 2
-  )
-  set "PYTHON_EXE=%ARG:~9%"
-  set "PYTHON_SOURCE=--python"
-)
-
-shift
-goto :PPA_LOOP
 
 
 :LoadPythonFromFile
@@ -144,14 +108,14 @@ if "%IS_PATHLIKE%"=="1" (
   )
   if exist "%CAND%" exit /b 0
   echo [pkg] ERROR: Python interpreter not found: "%CAND%" [source=%PYTHON_SOURCE%]
-  echo [pkg]        Fix: pass --python "C:\\Path\\to\\python.exe" or set PKG_PYTHON, or create "%PKG_PYTHON_FILE%".
+  echo [pkg]        Fix: set PKG_PYTHON or create "%PKG_PYTHON_FILE%".
   exit /b 2
 )
 
 where "%CAND%" >nul 2>nul
 if errorlevel 1 (
   echo [pkg] ERROR: Python command not found on PATH: "%CAND%" [source=%PYTHON_SOURCE%]
-  echo [pkg]        Fix: install Python or use --python, PKG_PYTHON, or "%PKG_PYTHON_FILE%".
+  echo [pkg]        Fix: install Python or use PKG_PYTHON or "%PKG_PYTHON_FILE%".
   exit /b 2
 )
 

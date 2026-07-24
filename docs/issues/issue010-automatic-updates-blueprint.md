@@ -1,5 +1,10 @@
 # Blueprint: automatic package updates and safe self-update
 
+> **Architecture note:** The single-file constraint in this blueprint has been
+> superseded. Update staging primitives now live in
+> `src/pkg.modules/updates.py`, while `src/pkg.py` retains the public update
+> coordinator.
+
 Date: 2026-07-24
 Priority: High
 Change type: Feature design
