@@ -1,0 +1,24 @@
+name = "backrest"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Web UI and orchestrator for restic backup."
+homepage = "https://github.com/garethgeorge/backrest"
+
+[origin]
+url = "https://github.com/garethgeorge/backrest"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "backrest_Windows_x86_64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[shortcut]]
+name = "BackRest"
+targetPath = "$App\\backrest.exe"
+iconLocation = "$Icons\\backrest.ico"

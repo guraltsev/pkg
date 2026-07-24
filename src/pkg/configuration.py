@@ -582,6 +582,27 @@ def normalize_update_config(
             "remote": check.get("remote", "origin"),
             "ref": ref,
         }
+    elif mode == "github":
+        _validate_exact_keys(
+            check,
+            allowed={"mode", "assetName"},
+            context="update.check",
+            ordered_allowed=["mode", "assetName"],
+        )
+        asset_name = check.get("assetName")
+        if origin is None or not isinstance(origin.get("url"), str):
+            raise ConfigValidationError(
+                "GitHub update checks require [origin].url"
+            )
+        if not isinstance(asset_name, str) or not asset_name:
+            raise ConfigValidationError(
+                "[update.check].assetName must be a non-empty string"
+            )
+        normalized_check = {
+            "mode": "github",
+            "url": origin["url"],
+            "assetName": asset_name,
+        }
     elif mode == "module":
         _validate_exact_keys(
             check,
@@ -600,7 +621,9 @@ def normalize_update_config(
             "channel": check.get("channel", "stable"),
         }
     else:
-        raise ConfigValidationError("[update.check].mode must be 'git' or 'module'")
+        raise ConfigValidationError(
+            "[update.check].mode must be 'git', 'github', or 'module'"
+        )
     payload_mode = payload.get("mode")
     if payload_mode not in {"git", "git-inplace", "zip", "module"}:
         raise ConfigValidationError(

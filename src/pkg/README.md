@@ -13,6 +13,7 @@ domains used by the stable `pkg/pkg.py` executable:
 - `components.py`: shortcut, environment, `PATH`, and wrapper installation
 - `origin.py`: Git, zip, and script application population
 - `updates.py`: update state, hooks, candidate validation, and staging
+- `github_releases.py`: built-in latest-release discovery for GitHub assets
 
 `pkg/pkg.py` remains the executable and public facade. It owns CLI dispatch and
 the high-level install, health-check, configuration, and update workflows.

@@ -35,6 +35,7 @@ from .core import (
 )
 from .metadata import sync_config_metadata_text
 from .origin import _app_contains_entries, _copy_directory_contents, safe_extract_zip
+from .github_releases import check_update as check_github_release
 
 
 def _update_paths(root: Path) -> Dict[str, Path]:
@@ -143,7 +144,9 @@ def _normalize_update_candidate(
     """Validate a discovered update before it is allowed to reach staging."""
     if not isinstance(raw, dict):
         raise ConfigValidationError("Update check must return a mapping or None")
-    required = {"candidateId", "version"} | ({"url"} if mode == "module" else set())
+    required = {"candidateId", "version"} | (
+        {"url"} if mode in {"github", "module"} else set()
+    )
     if not required <= set(raw):
         raise ConfigValidationError(
             f"Update candidate is missing: {', '.join(sorted(required - set(raw)))}"
@@ -230,15 +233,8 @@ def _check_update(
             "ref": check["ref"],
             "commit": remote,
         }
-    module = _load_package_module(identity, check["module"], work / "pycache")
-    callback = getattr(module, "check_update", None)
-    if not callable(callback):
-        raise ConfigValidationError(
-            "Update check module must define check_update(context)"
-        )
     context = {
         "apiVersion": 1,
-        "channel": check["channel"],
         "current": {
             "name": identity.name,
             "version": identity.version,
@@ -253,10 +249,28 @@ def _check_update(
         },
         "state": dict(state),
     }
+    if check["mode"] == "github":
+        context.update(
+            {
+                "url": check["url"],
+                "assetName": check["assetName"],
+            }
+        )
+        callback = check_github_release
+    else:
+        module = _load_package_module(identity, check["module"], work / "pycache")
+        callback = getattr(module, "check_update", None)
+        if not callable(callback):
+            raise ConfigValidationError(
+                "Update check module must define check_update(context)"
+            )
+        context["channel"] = check["channel"]
     raw = callback(context)
     if raw is None:
         return "current", None
-    return "available", _normalize_update_candidate(raw, identity, state, "module")
+    return "available", _normalize_update_candidate(
+        raw, identity, state, check["mode"]
+    )
 
 
 def _git_origin_candidate(

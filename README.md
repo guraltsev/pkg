@@ -328,6 +328,30 @@ non-zip layout may set `payload.mode = "module"` and provide
 `pkg.local/unpack_app.py` with `unpack_app(context)`. These modules run inside
 the `pkg` process and are trusted extension code, not sandboxed plugins.
 
+GitHub releases use the built-in REST API checker. Put the normal repository
+page URL in `[origin].url` and name exactly one uploaded release asset:
+
+```toml
+[origin]
+url = "https://github.com/garethgeorge/backrest"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "backrest_Windows_x86_64.zip"
+
+[update.payload]
+mode = "zip"
+```
+
+The checker derives
+`https://api.github.com/repos/{owner}/{repo}/releases/latest`, removes a
+conventional leading `v` from the release tag, and selects only the uploaded
+asset whose name exactly equals `assetName`. When GitHub supplies a
+`sha256:<digest>` asset digest, the existing payload verifier uses it.
+
 Manager state, locks, receipts, and disposable downloads live under
 `<package-root>/.pkg/`; add `/.pkg/` to a package repository's `.gitignore`.
 `SelfUpdate` is reserved for a bootstrapped installation with `PKG_HOME`, a
