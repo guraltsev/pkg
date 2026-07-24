@@ -57,6 +57,7 @@ from _pkg_modules.core import (  # noqa: E402
     Action,
     ActionResult,
     ConfigValidationError,
+    PackageIdentity,
     Scope,
     log_error,
     log_info,
@@ -77,6 +78,7 @@ from _pkg_modules.origin import (  # noqa: E402
 )
 from _pkg_modules.updates import (  # noqa: E402
     _check_update,
+    _git_origin_candidate,
     _load_update_state,
     _next_version_identity,
     _prepare_update,
@@ -281,6 +283,22 @@ def action_failure(
     )
 
 
+def _is_git_bootstrap(
+    identity: PackageIdentity, config: dict
+) -> bool:
+    """Return whether a v0-git template should stage an immutable Git version."""
+    origin = config.get("origin")
+    update = config.get("update")
+    return bool(
+        identity.version == "0-git"
+        and origin is not None
+        and origin.get("mode") == "git"
+        and update is not None
+        and update["check"]["mode"] == "git"
+        and update["payload"]["mode"] == "git"
+    )
+
+
 def check_package_update(package_path: Path) -> ActionResult:
     """Check one package's configured source and persist its result.
 
@@ -288,7 +306,7 @@ def check_package_update(package_path: Path) -> ActionResult:
     ----------
     package_path : Path
         Package root or ``current`` junction whose update source should be
-        checked.
+        checked, or a Git-backed ``v0-git`` bootstrap version.
 
     Returns
     -------
@@ -299,16 +317,20 @@ def check_package_update(package_path: Path) -> ActionResult:
     # Update actions require the active package view because update state is
     # owned by the package root, not by an arbitrary historical version.
     identity, from_current = resolve_input_path(package_path)
-    if not from_current:
-        return ActionResult(
-            False,
-            errors=["Update actions require a package root or current junction"],
-            exit_code=EXIT_USER_ERROR,
-        )
     config, _, warnings = read_runtime_config(identity, use_defaults=False)
     if config.get("update") is None:
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
+        )
+    bootstrap = not from_current and _is_git_bootstrap(identity, config)
+    if not from_current and not bootstrap:
+        return ActionResult(
+            False,
+            errors=[
+                "Update actions require a package root or current junction, "
+                "except for a Git-backed v0-git bootstrap"
+            ],
+            exit_code=EXIT_USER_ERROR,
         )
 
     # Acquire the package-root update lock before creating work files so
@@ -336,7 +358,11 @@ def check_package_update(package_path: Path) -> ActionResult:
         # returns a normalized result.
         state = _load_update_state(paths["state"])
         state["lastAttemptedCheck"] = datetime.now(timezone.utc).isoformat()
-        status, candidate = _check_update(identity, config, state, work)
+        if bootstrap:
+            status = "available"
+            candidate = _git_origin_candidate(identity, config, state)
+        else:
+            status, candidate = _check_update(identity, config, state, work)
         state.update(
             {
                 "lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(),
@@ -375,7 +401,7 @@ def update_package(
     ----------
     package_path : Path
         Package root or ``current`` junction whose active version should be
-        updated.
+        updated, or a Git-backed ``v0-git`` bootstrap version.
     scope : Scope, default=Scope.USER
         Installation scope used when activating the prepared version.
     automatic : bool, default=False
@@ -391,17 +417,21 @@ def update_package(
 
     # Resolve update ownership and policy before creating manager state.
     identity, from_current = resolve_input_path(package_path)
-    if not from_current:
-        return ActionResult(
-            False,
-            errors=["Update actions require a package root or current junction"],
-            exit_code=EXIT_USER_ERROR,
-        )
     config, _, warnings = read_runtime_config(identity, use_defaults=False)
     update = config.get("update")
     if update is None:
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
+        )
+    bootstrap = not from_current and _is_git_bootstrap(identity, config)
+    if not from_current and not bootstrap:
+        return ActionResult(
+            False,
+            errors=[
+                "Update actions require a package root or current junction, "
+                "except for a Git-backed v0-git bootstrap"
+            ],
+            exit_code=EXIT_USER_ERROR,
         )
 
     # Serialize check, staging, and activation beneath one package-root lock.
@@ -438,7 +468,11 @@ def update_package(
 
         # Record successful discovery before deciding whether policy permits
         # activation of the returned candidate.
-        status, candidate = _check_update(identity, config, state, work)
+        if bootstrap:
+            status = "available"
+            candidate = _git_origin_candidate(identity, config, state)
+        else:
+            status, candidate = _check_update(identity, config, state, work)
         state.update(
             {
                 "lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(),
@@ -671,6 +705,20 @@ def install_package(
             exit_code=EXIT_USER_ERROR,
             warnings=warnings,
         )
+
+    # A normal Git-backed v0-git directory is a bootstrap template, never an
+    # installed version. Resolve its origin commit and stage the immutable
+    # timestamped version through the update coordinator.
+    if _is_git_bootstrap(identity, runtime_config):
+        log_info("Promoting Git bootstrap into an immutable timestamped version...")
+        result = update_package(
+            identity.version_path,
+            scope=scope,
+            no_checksum=no_checksum,
+        )
+        result.changed = result.changed or config_sync_changed
+        result.warnings = warnings + result.warnings
+        return result
 
     # Update the package-root ``current`` junction unless the caller already
     # targeted it directly. Older installed versions are left intact unless the

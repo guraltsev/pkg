@@ -20,6 +20,12 @@ WRAPPER_SCRIPTS = [
     (SRC_ROOT / "install.cmd", ["--pause"]),
     (SRC_ROOT / "install-machine.cmd", ["--scope", "Machine", "--pause"]),
     (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
+    (SRC_ROOT / "health-check.cmd", ["--action", "HealthCheck", "--pause"]),
+    (SRC_ROOT / "check-update.cmd", ["--action", "CheckUpdate", "--pause"]),
+    (SRC_ROOT / "update.cmd", ["--action", "Update", "--pause"]),
+    (SRC_ROOT / "auto-update.cmd", ["--action", "AutoUpdate", "--pause"]),
+    (SRC_ROOT / "self-update.cmd", ["--action", "SelfUpdate", "--pause"]),
+    (SRC_ROOT / "refresh-app.cmd", ["--refresh-app", "--pause"]),
     (
         SRC_ROOT / "legacy_to_pkg_toml.cmd",
         ["--action", "ConvertLegacy"],

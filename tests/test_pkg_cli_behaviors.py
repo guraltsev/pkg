@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -285,18 +286,17 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 ["v0-git.l1"],
             )
 
-    def test_v0_git_update_creates_populated_timestamped_version(self) -> None:
-        """Ordinary Git update promotes v0-git into a populated new version."""
+    def test_v0_git_install_creates_populated_timestamped_version(self) -> None:
+        """Installing v0-git promotes its origin into a new immutable version."""
         module = load_pkg_module()
-        layout = runtime_module("layout")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             upstream = root / "upstream"
             upstream.mkdir()
 
-            # Build the bootstrap commit and install it as the v0-git App
-            # checkout before publishing the candidate commit.
+            # Build one upstream commit for the bootstrap template to resolve
+            # without first populating the template's own App directory.
             self.run_git(upstream, "init")
             self.run_git(upstream, "checkout", "-b", "main")
             self.run_git(upstream, "config", "user.name", "Pkg Tests")
@@ -329,40 +329,20 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 """,
             )
 
-            # The first install bootstraps App solely from the configured Git
-            # origin, without requiring a pre-existing checkout or remote.
+            # CheckUpdate can inspect a bootstrap template directly without
+            # populating App or requiring a current junction.
+            check_result = module.check_package_update(version_dir)
+            self.assertTrue(check_result.ok, msg=check_result.errors)
+            self.assertFalse(check_result.changed)
+            self.assertFalse((version_dir / "App").exists())
+
+            # Installing the bootstrap template must stage and install a new
+            # immutable version rather than activating v0-git itself.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
                 ):
-                    initial_result = module.install_package(version_dir)
-            self.assertTrue(initial_result.ok, msg=initial_result.errors)
-            self.assertEqual(
-                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
-                "one",
-            )
-
-            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
-            self.run_git(upstream, "add", "payload.txt")
-            self.run_git(upstream, "commit", "-m", "update")
-
-            # Simulate current-junction operations while exercising real Git
-            # discovery, cloning, metadata synchronization, and staging.
-            current = package_root / "current"
-            current.mkdir()
-            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                with mock.patch.object(layout, "is_junction", return_value=True):
-                    with mock.patch.object(
-                        layout, "get_junction_target", return_value=version_dir
-                    ):
-                        with mock.patch.object(
-                            module,
-                            "update_current_junction_if_needed",
-                            return_value=True,
-                        ):
-                            result = module.update_package(
-                                package_root, automatic=True
-                            )
+                    result = module.install_package(version_dir)
 
             new_versions = [
                 path
@@ -374,6 +354,10 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(len(new_versions), 1)
 
             new_version = new_versions[0]
+            self.assertRegex(
+                new_version.name,
+                re.compile(r"^v\d{8}-\d{6}-git\.l1$"),
+            )
             new_config = tomllib.loads(
                 (new_version / "pkg.toml").read_text(encoding="utf-8")
             )
@@ -385,13 +369,10 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(new_config["update"]["payload"]["mode"], "git")
             self.assertEqual(
                 (new_version / "App" / "payload.txt").read_text(encoding="utf-8"),
-                "two",
-            )
-            self.assertTrue((new_version / "App" / ".git").is_dir())
-            self.assertEqual(
-                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
                 "one",
             )
+            self.assertTrue((new_version / "App" / ".git").is_dir())
+            self.assertFalse((version_dir / "App").exists())
 
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""

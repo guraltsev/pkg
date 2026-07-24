@@ -98,6 +98,12 @@ The convenience wrappers call the same entry point:
 - `install.cmd`
 - `install-machine.cmd`
 - `update-config.cmd`
+- `health-check.cmd`
+- `check-update.cmd`
+- `update.cmd`
+- `auto-update.cmd`
+- `refresh-app.cmd`
+- `self-update.cmd`
 - `legacy_to_pkg_toml.cmd`
 - `pkg.cmd`
 
@@ -286,8 +292,10 @@ The omitted origin ref and update check both default to Git on
 `refs/heads/main`. Declare `origin.ref` once for a different branch.
 
 An initial `v0-git` package using `payload.mode = "git"` is a bootstrap
-checkout. `Update` clones the candidate into a new immutable timestamped
-version directory and activates it through ordinary installation.
+template. Both `Install` and `Update` resolve its Git origin, clone the
+candidate into a new immutable `vYYYYMMDD-HHMMSS-git.l1` directory, synchronize
+that directory's `pkg.toml`, and activate it through ordinary installation.
+The bootstrap template's own `App/` is not populated or activated.
 
 Use `payload.mode = "git-inplace"` only when the package should retain its
 current version directory and fast-forward the existing `App/` checkout.

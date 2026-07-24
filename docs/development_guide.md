@@ -41,6 +41,11 @@ reruns ordinary installation to repair package components. Ordinary `git`
 payloads, including bootstrap `v0-git` packages, create and activate a new
 timestamped version directory.
 
+Installing a normal Git-backed `v0-git` template enters the update coordinator
+before origin population or junction management. The resolved commit is staged
+directly into the timestamped version, so `v0-git` never becomes an installed
+payload.
+
 A Git origin defaults to `refs/heads/main` and supplies the default Git update
 check, so package metadata needs only one source URL and ref. Explicit update
 checks remain available for checkout-path or remote-name customization.

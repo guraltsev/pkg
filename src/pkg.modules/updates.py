@@ -198,11 +198,10 @@ def _check_update(
         ).stdout.strip()
         origin = config.get("origin")
         if origin is not None and origin.get("mode") == "git":
-            url = origin["url"]
-            if origin["ref"] != check["ref"]:
-                raise ConfigValidationError(
-                    "Git origin and update check must use the same ref"
-                )
+            candidate = _git_origin_candidate(identity, config, state)
+            if local == candidate["commit"]:
+                return "current", None
+            return "available", candidate
         else:
             url = subprocess.run(
                 ["git", "-C", str(app), "remote", "get-url", check["remote"]],
@@ -254,6 +253,35 @@ def _check_update(
     if raw is None:
         return "current", None
     return "available", _normalize_update_candidate(raw, identity, state, "module")
+
+
+def _git_origin_candidate(
+    identity: PackageIdentity,
+    config: Dict[str, Any],
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve the exact candidate declared by a configured Git origin."""
+    origin = config.get("origin")
+    check = config["update"]["check"]
+    if origin is None or origin.get("mode") != "git":
+        raise ConfigValidationError("Git bootstrap requires a configured Git origin")
+    if origin["ref"] != check["ref"]:
+        raise ConfigValidationError("Git origin and update check must use the same ref")
+
+    remote = subprocess.run(
+        ["git", "ls-remote", "--exit-code", origin["url"], origin["ref"]],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()[0]
+    candidate_id = f"git:{remote}"
+    return {
+        "candidateId": candidate_id,
+        "version": _candidate_version(state, candidate_id),
+        "url": origin["url"],
+        "ref": origin["ref"],
+        "commit": remote,
+    }
 
 
 def _next_version_identity(
