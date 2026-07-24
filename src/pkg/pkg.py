@@ -288,13 +288,13 @@ def _is_update_bootstrap(
         and update["check"]["mode"] == "git"
         and update["payload"]["mode"] == "git"
     )
-    module_bootstrap = (
+    release_bootstrap = (
         identity.version == "bootstrap"
         and update is not None
-        and update["check"]["mode"] == "module"
+        and update["check"]["mode"] in {"github", "module"}
         and update["payload"]["mode"] in {"zip", "module"}
     )
-    return bool(git_bootstrap or module_bootstrap)
+    return bool(git_bootstrap or release_bootstrap)
 
 
 def check_package_update(package_path: Path) -> ActionResult:
@@ -1236,9 +1236,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif action == Action.SELF_UPDATE:
             pkg_home = os.environ.get("PKG_HOME")
             if not pkg_home:
-                result = ActionResult(
-                    False,
-                    errors=["SelfUpdate requires the stable PKG_HOME launcher layout"],
+                result = action_failure(
+                    "SelfUpdate updates pkg itself and requires the stable "
+                    "PKG_HOME launcher layout. To update this package, run "
+                    "update.cmd instead.",
                     exit_code=EXIT_USER_ERROR,
                 )
             else:

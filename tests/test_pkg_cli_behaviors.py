@@ -450,6 +450,93 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(release_config["localVersion"], 1)
             self.assertFalse((version_dir / "App").exists())
 
+    def test_github_zip_bootstrap_creates_populated_release_version(self) -> None:
+        """Installing a GitHub bootstrap stages its exactly named ZIP asset."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "GithubBootstrap"
+            version_dir = package_root / "vbootstrap.l1"
+            version_dir.mkdir(parents=True)
+            archive = self.zip_bytes({"tool.exe": "release payload"})
+            checksum = hashlib.sha256(archive).hexdigest()
+            self.write_config(
+                version_dir,
+                """
+                name = "GithubBootstrap"
+                version = "bootstrap"
+                localVersion = 1
+
+                [origin]
+                url = "https://github.com/owner/tool"
+
+                [update]
+                allow_automatic_update = true
+
+                [update.check]
+                mode = "github"
+                assetName = "tool_Windows_x86_64.zip"
+
+                [update.payload]
+                mode = "zip"
+                """,
+            )
+            release = json.dumps(
+                {
+                    "id": 42,
+                    "tag_name": "v2.0.0",
+                    "assets": [
+                        {
+                            "name": "tool_Windows_x86_64.zip",
+                            "state": "uploaded",
+                            "browser_download_url": (
+                                "https://github.com/owner/tool/releases/"
+                                "download/v2.0.0/tool_Windows_x86_64.zip"
+                            ),
+                            "digest": f"sha256:{checksum}",
+                        }
+                    ],
+                }
+            ).encode()
+
+            # Keep HTTP and Windows junction boundaries controlled while
+            # exercising built-in discovery, staging, verification, and extraction.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "is_current_user_admin", return_value=False
+                ):
+                    with mock.patch.object(
+                        module,
+                        "update_current_junction_if_needed",
+                        return_value=True,
+                    ):
+                        with mock.patch.object(
+                            runtime_module("updates").urllib.request,
+                            "urlopen",
+                            side_effect=[io.BytesIO(release), io.BytesIO(archive)],
+                        ):
+                            result = module.install_package(version_dir)
+
+            release_dir = package_root / "v2.0.0.l1"
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertTrue(result.changed)
+            self.assertEqual(
+                (release_dir / "App" / "tool.exe").read_text(encoding="utf-8"),
+                "release payload",
+            )
+            self.assertFalse((version_dir / "App").exists())
+
+    def test_self_update_without_pkg_home_explains_package_update_command(self) -> None:
+        """SelfUpdate without PKG_HOME reports that packages use update.cmd."""
+        module = load_pkg_module()
+
+        with mock.patch.dict(os.environ, {"PKG_HOME": ""}, clear=False):
+            code, output = self.run_main(module, ["--action", "SelfUpdate"])
+
+        self.assertEqual(code, module.EXIT_USER_ERROR)
+        self.assertIn("SelfUpdate updates pkg itself", output)
+        self.assertIn("update.cmd instead", output)
+
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""
         module = load_pkg_module()
