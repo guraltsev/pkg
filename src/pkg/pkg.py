@@ -280,8 +280,9 @@ def _is_update_bootstrap(
     """Return whether a template should stage its first immutable version."""
     origin = config.get("origin")
     update = config.get("update")
+    is_bootstrap = identity.version.startswith("bootstrap")
     git_bootstrap = (
-        identity.version == "0-git"
+        is_bootstrap
         and origin is not None
         and origin.get("mode") == "git"
         and update is not None
@@ -289,7 +290,7 @@ def _is_update_bootstrap(
         and update["payload"]["mode"] == "git"
     )
     release_bootstrap = (
-        identity.version == "bootstrap"
+        is_bootstrap
         and update is not None
         and update["check"]["mode"] in {"github", "module"}
         and update["payload"]["mode"] in {"zip", "module"}
@@ -732,8 +733,8 @@ def install_package(
             warnings=warnings,
         )
 
-    # Bootstrap directories are templates, never installed versions. Let their
-    # generic Git or package-local module check stage the first immutable
+    # Bootstrap version strings are templates, never installed versions. Let
+    # their generic Git or package-local module check stage the first immutable
     # version before junction, origin, or component work begins.
     if _is_update_bootstrap(identity, runtime_config):
         log_info("Promoting bootstrap into an immutable package version...")

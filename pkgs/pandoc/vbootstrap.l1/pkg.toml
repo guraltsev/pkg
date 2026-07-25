@@ -1,0 +1,31 @@
+name = "pandoc"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Universal markup converter."
+homepage = "https://pandoc.org/"
+
+[origin]
+url = "https://github.com/jgm/pandoc"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "pandoc-${version}-windows-x86_64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[update.payload.extract]]
+src = "pandoc-*/"
+dest = ""
+
+[[path]]
+value = "$App"
+
+
+[[bin]]
+name = "pandoc.cmd"
+content = "@ $App\\pandoc.exe %*"

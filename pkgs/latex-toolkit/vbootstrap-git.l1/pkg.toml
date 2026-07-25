@@ -1,6 +1,6 @@
-# Package metadata follows the containing v0-git.l1 version directory.
+# Package metadata follows the containing vbootstrap-git.l1 version directory.
 name = "latex-toolkit"
-version = "0-git"
+version = "bootstrap-git"
 localVersion = 1
 only_portable = false
 

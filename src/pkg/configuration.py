@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from .core import (
@@ -632,6 +632,7 @@ def normalize_update_config(
     allowed_payload = {
         "mode",
         "extractSubdir",
+        "extract",
         "ignore_checksum",
         "module",
         "maxSizeMB",
@@ -665,6 +666,62 @@ def normalize_update_config(
                 "[update.payload].extractSubdir must be a safe relative path"
             )
         normalized_payload["extractSubdir"] = extract_subdir
+    extract_mappings = payload.get("extract")
+    if extract_mappings is not None:
+        if payload_mode != "zip":
+            raise ConfigValidationError(
+                "[update.payload].extract is only supported with mode = 'zip'"
+            )
+        if extract_subdir is not None:
+            raise ConfigValidationError(
+                "[update.payload].extract cannot be combined with extractSubdir"
+            )
+        if not isinstance(extract_mappings, list):
+            raise ConfigValidationError(
+                "[update.payload].extract must be an array of tables"
+            )
+        if not extract_mappings:
+            raise ConfigValidationError(
+                "[update.payload].extract must contain at least one mapping"
+            )
+        normalized_mappings: List[Dict[str, str]] = []
+        for index, mapping in enumerate(extract_mappings):
+            context = f"update.payload.extract[{index}]"
+            if not isinstance(mapping, dict):
+                raise ConfigValidationError(f"[{context}] must be a table")
+            _validate_exact_keys(
+                mapping,
+                allowed={"src", "dest"},
+                context=context,
+                ordered_allowed=["src", "dest"],
+            )
+            src = mapping.get("src")
+            dest = mapping.get("dest")
+            if not isinstance(src, str) or not src:
+                raise ConfigValidationError(f"[{context}].src must be a non-empty string")
+            if not isinstance(dest, str):
+                raise ConfigValidationError(f"[{context}].dest must be a string")
+            src_path = PureWindowsPath(src)
+            dest_path = PureWindowsPath(dest)
+            if (
+                src_path.is_absolute()
+                or src_path.drive
+                or ".." in src_path.parts
+            ):
+                raise ConfigValidationError(
+                    f"[{context}].src must be a safe path relative to the zip root"
+                )
+            if (
+                dest_path.is_absolute()
+                or dest_path.drive
+                or ".." in dest_path.parts
+                or any(character in dest for character in "*?[]")
+            ):
+                raise ConfigValidationError(
+                    f"[{context}].dest must be a safe path relative to $App"
+                )
+            normalized_mappings.append({"src": src, "dest": dest})
+        normalized_payload["extract"] = normalized_mappings
     if payload_mode == "module":
         module = payload.get("module", "pkg.local/unpack_app.py")
         if not isinstance(module, str):
@@ -1066,10 +1123,13 @@ def check_metadata_consistency(
 
     inconsistencies: List[str] = []
     if "name" in raw_config and raw_config.get("name") not in (None, ""):
-        if (
-            _normalize_optional_string(raw_config.get("name"), field_name="name")
-            != identity.name
-        ):
+        # The directory owns the canonical spelling. Case-only differences are
+        # the same package identity, while UpdateConfig writes the directory's
+        # exact spelling back to package metadata when synchronization is run.
+        configured_name = _normalize_optional_string(
+            raw_config.get("name"), field_name="name"
+        )
+        if configured_name.casefold() != identity.name.casefold():
             inconsistencies.append(
                 f"Name mismatch: directory='{identity.name}', config='{raw_config.get('name')}'"
             )

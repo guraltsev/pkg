@@ -321,8 +321,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 ["v0-git.l1"],
             )
 
-    def test_v0_git_install_creates_populated_timestamped_version(self) -> None:
-        """Installing v0-git promotes its origin into a new immutable version."""
+    def test_bootstrap_git_install_creates_populated_timestamped_version(self) -> None:
+        """Installing bootstrap-git promotes its origin into an immutable version."""
         module = load_pkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -343,13 +343,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.run_git(upstream, "commit", "-m", "initial")
 
             package_root = root / "ImmutableGitApp"
-            version_dir = package_root / "v0-git.l1"
+            version_dir = package_root / "vbootstrap-git.l1"
             version_dir.mkdir(parents=True)
             self.write_config(
                 version_dir,
                 f"""
                 name = "ImmutableGitApp"
-                version = "0-git"
+                version = "bootstrap-git"
                 localVersion = 1
 
                 [origin]
@@ -372,7 +372,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertFalse((version_dir / "App").exists())
 
             # Installing the bootstrap template must stage and install a new
-            # immutable version rather than activating v0-git itself.
+            # immutable version rather than activating bootstrap-git itself.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
@@ -382,7 +382,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             new_versions = [
                 path
                 for path in package_root.glob("v*.l*")
-                if path.name != "v0-git.l1"
+                if path.name != "vbootstrap-git.l1"
             ]
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue(result.changed)
@@ -520,15 +520,21 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(release_config["localVersion"], 1)
             self.assertFalse((version_dir / "App").exists())
 
-    def test_github_zip_bootstrap_creates_populated_release_version(self) -> None:
-        """Installing a GitHub bootstrap stages its exactly named ZIP asset."""
+    def test_github_zip_bootstrap_extracts_configured_archive_mappings(self) -> None:
+        """ZIP mappings select wildcard contents and preserve selected directories."""
         module = load_pkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "GithubBootstrap"
             version_dir = package_root / "vbootstrap.l1"
             version_dir.mkdir(parents=True)
-            archive = self.zip_bytes({"tool.exe": "release payload"})
+            archive = self.zip_bytes(
+                {
+                    "tool-2.0.0/tool.exe": "release payload",
+                    "documentation/guide.txt": "guide",
+                    "unrelated/skip.txt": "skip",
+                }
+            )
             checksum = hashlib.sha256(archive).hexdigest()
             self.write_config(
                 version_dir,
@@ -549,6 +555,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
                 [update.payload]
                 mode = "zip"
+
+                [[update.payload.extract]]
+                src = "tool-*/"
+                dest = ""
+
+                [[update.payload.extract]]
+                src = "documentation"
+                dest = "share"
                 """,
             )
             release = json.dumps(
@@ -594,6 +608,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 (release_dir / "App" / "tool.exe").read_text(encoding="utf-8"),
                 "release payload",
             )
+            self.assertEqual(
+                (
+                    release_dir / "App" / "share" / "documentation" / "guide.txt"
+                ).read_text(encoding="utf-8"),
+                "guide",
+            )
+            self.assertFalse((release_dir / "App" / "unrelated").exists())
             self.assertFalse((version_dir / "App").exists())
 
     def test_self_update_without_pkg_home_explains_package_update_command(self) -> None:
@@ -931,6 +952,59 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
             )
             self.assertFalse((version_dir / "pkg.toml.bak").exists())
+
+    def test_install_accepts_package_name_that_differs_only_by_case(self) -> None:
+        """Package-directory and configured names compare case-insensitively."""
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "CaseSensitiveApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "casesensitiveapp"
+                version = "1.0.0"
+                localVersion = 1
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "update_current_junction_if_needed", return_value=True
+                ):
+                    with mock.patch.object(
+                        module,
+                        "install_components",
+                        return_value=mock.Mock(
+                            ok=True, changed=False, warnings=[], errors=[]
+                        ),
+                    ):
+                        code, output = self.run_main(module, [str(version_dir)])
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+
+    def test_update_config_uses_the_package_directory_name_case(self) -> None:
+        """UpdateConfig writes the package directory's exact name spelling."""
+        module = load_pkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "CaseSensitiveApp")
+            self.write_config(
+                version_dir,
+                """
+                name = "casesensitiveapp"
+                version = "1.0.0"
+                localVersion = 1
+                """,
+            )
+
+            code, output = self.run_main(
+                module, ["--action", "UpdateConfig", str(version_dir)]
+            )
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            self.assertIn(
+                'name = "CaseSensitiveApp"',
+                (version_dir / "pkg.toml").read_text(encoding="utf-8"),
+            )
 
     def test_install_with_fix_config_repairs_metadata_then_continues(self) -> None:
         """Install with fix config repairs metadata then continues."""

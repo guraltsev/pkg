@@ -293,13 +293,14 @@ mode = "git"
 The omitted origin ref and update check both default to Git on
 `refs/heads/main`. Declare `origin.ref` once for a different branch.
 
-An initial `v0-git` package using `payload.mode = "git"` is a bootstrap
+An initial `vbootstrap-git.l1` package using `payload.mode = "git"` is a bootstrap
 template. Both `Install` and `Update` resolve its Git origin, clone the
 candidate into a new immutable `vYYYYMMDD-HHMMSS-git.l1` directory, synchronize
 that directory's `pkg.toml`, and activate it through ordinary installation.
 The bootstrap template's own `App/` is not populated or activated.
 
-A `vbootstrap.l1` template can use a package-local module check with a ZIP or
+Any version whose value begins with `bootstrap` is a bootstrap template. For
+example, `vbootstrap.l1` can use a package-local module check with a ZIP or
 module payload in the same way. Installing the template runs the trusted check,
 stages the returned release as its real version, and leaves the bootstrap
 directory without an `App/`.
@@ -321,6 +322,29 @@ mode = "module"
 mode = "zip"
 extractSubdir = "tool-portable"
 ```
+
+ZIP payloads can instead select archive paths and place them beneath `$App`.
+Each `[[update.payload.extract]]` entry has a shell-wildcard `src`, interpreted
+relative to the ZIP root, and a `dest`, interpreted relative to `$App`. A `src`
+ending in `/` copies the matched directory's contents; otherwise a matched
+directory is copied as a directory.
+
+```toml
+[update.payload]
+mode = "zip"
+
+[[update.payload.extract]]
+src = "pandoc-*/"
+dest = ""
+
+[[update.payload.extract]]
+src = "documentation"
+dest = "share"
+```
+
+This produces `$App\pandoc.exe` from the first mapping and
+`$App\share\documentation` from the second. ZIP mappings and `extractSubdir`
+cannot be combined.
 
 The default check hook is `pkg.local/check_update.py`; it must declare
 `PKG_MODULE_API = 1` and implement `check_update(context)`. Packages with a
@@ -349,7 +373,9 @@ mode = "zip"
 The checker derives
 `https://api.github.com/repos/{owner}/{repo}/releases/latest`, removes a
 conventional leading `v` from the release tag, and selects only the uploaded
-asset whose name exactly equals `assetName`. When GitHub supplies a
+asset whose name exactly equals `assetName`. For assets whose filenames include
+the release version, `${version}` in `assetName` expands to the latest release
+version; for example, `tool-${version}-windows-x86_64.zip`. When GitHub supplies a
 `sha256:<digest>` asset digest, the existing payload verifier uses it.
 
 Manager state, locks, receipts, and disposable downloads live under

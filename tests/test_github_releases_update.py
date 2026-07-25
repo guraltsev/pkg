@@ -99,6 +99,32 @@ def test_current_release_returns_no_candidate() -> None:
     assert candidate is None
 
 
+def test_latest_release_expands_version_in_asset_name() -> None:
+    """A versioned asset template selects the asset from the latest release."""
+    response = release_response()
+    release = json.loads(response.getvalue())
+    release["assets"][1]["name"] = "backrest-1.13.0-windows-x86_64.zip"
+    release["assets"][1]["browser_download_url"] = (
+        "https://github.com/garethgeorge/backrest/releases/"
+        "download/v1.13.0/backrest-1.13.0-windows-x86_64.zip"
+    )
+    context = {
+        "url": "https://github.com/garethgeorge/backrest",
+        "assetName": "backrest-${version}-windows-x86_64.zip",
+        "current": {"version": "1.12.1"},
+    }
+
+    with mock.patch.object(
+        github_releases.urllib.request,
+        "urlopen",
+        return_value=io.BytesIO(json.dumps(release).encode()),
+    ):
+        candidate = github_releases.check_update(context)
+
+    assert candidate is not None
+    assert candidate["fileName"] == "backrest-1.13.0-windows-x86_64.zip"
+
+
 def test_missing_named_asset_fails_clearly() -> None:
     """A release without the configured asset reports the exact missing name."""
     context = {

@@ -2,7 +2,8 @@
 
 The update checker accepts a normal ``https://github.com/owner/repository``
 origin URL, queries GitHub's latest-release REST endpoint, and returns the
-release asset named by the package configuration as an update candidate.
+configured release asset as an update candidate. An ``assetName`` may include
+``${version}``, which expands to the latest release version.
 
 Usage and API
 -------------
@@ -14,8 +15,8 @@ Implementation Approach
 -----------------------
 The origin URL is validated and converted to the corresponding GitHub API
 endpoint. Release metadata and asset fields are validated before the exactly
-named asset is exposed to the package manager's existing download, checksum,
-and extraction workflow.
+named asset, optionally derived from the release version, is exposed to the
+package manager's existing download, checksum, and extraction workflow.
 """
 
 from __future__ import annotations
@@ -37,7 +38,8 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     ----------
     context : dict[str, Any]
         Update context containing the origin ``url``, mandatory ``assetName``,
-        and the current package version.
+        and the current package version. ``assetName`` may contain one or more
+        ``${version}`` placeholders for the latest release version.
 
     Returns
     -------
@@ -125,25 +127,26 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     if context.get("current", {}).get("version") in {tag, version}:
         return None
 
-    # Select the exactly named uploaded asset, preventing accidental
-    # cross-platform installs when a release publishes several archives.
+    # Substitute the discovered version before selecting one exact uploaded
+    # asset. This retains platform safety while allowing versioned filenames.
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise RuntimeError("GitHub latest release has no valid asset list")
     asset_name = context.get("assetName")
     if not isinstance(asset_name, str) or not asset_name:
         raise RuntimeError("GitHub assetName must be a non-empty string")
+    expected_asset_name = asset_name.replace("${version}", version)
     candidates = []
     for asset in assets:
         if not isinstance(asset, dict) or asset.get("state") != "uploaded":
             continue
         name = asset.get("name")
-        if name == asset_name:
+        if name == expected_asset_name:
             candidates.append(asset)
     if len(candidates) != 1:
         raise RuntimeError(
             "GitHub latest release must contain exactly one uploaded asset named "
-            f"{asset_name!r}; found {len(candidates)}"
+            f"{expected_asset_name!r}; found {len(candidates)}"
         )
 
     # Return only fields understood by the update coordinator. GitHub's asset

@@ -38,12 +38,12 @@ The explicit `git-inplace` payload mode is the deliberate mutable exception to
 immutable staging. It fast-forwards the existing checkout only when tracked
 files are clean and the checked candidate still matches the fetched ref, then
 reruns ordinary installation to repair package components. Ordinary `git`
-payloads, including bootstrap `v0-git` packages, create and activate a new
+payloads, including bootstrap `vbootstrap-git.l1` packages, create and activate a new
 timestamped version directory.
 
-Installing a normal Git-backed `v0-git` template enters the update coordinator
+Installing a normal Git-backed `vbootstrap-git.l1` template enters the update coordinator
 before origin population or junction management. The resolved commit is staged
-directly into the timestamped version, so `v0-git` never becomes an installed
+directly into the timestamped version, so `vbootstrap-git.l1` never becomes an installed
 payload.
 
 The same coordinator accepts a `vbootstrap.l1` template backed by a trusted

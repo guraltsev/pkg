@@ -34,7 +34,12 @@ from .core import (
     write_text_atomic,
 )
 from .metadata import sync_config_metadata_text
-from .origin import _app_contains_entries, _copy_directory_contents, safe_extract_zip
+from .origin import (
+    _app_contains_entries,
+    _copy_directory_contents,
+    copy_zip_extract_mappings,
+    safe_extract_zip,
+)
 from .github_releases import check_update as check_github_release
 
 
@@ -171,10 +176,11 @@ def _normalize_update_candidate(
             "Update candidate version is unsafe for a version directory"
         )
     comparison = compare_package_versions(version, identity.version)
-    if identity.version != "bootstrap" and comparison < 0:
+    is_bootstrap = identity.version.startswith("bootstrap")
+    if not is_bootstrap and comparison < 0:
         raise ConfigValidationError("Update candidate is older than the active version")
     if (
-        identity.version != "bootstrap"
+        not is_bootstrap
         and comparison == 0
         and candidate_id != state.get("lastCandidateId")
     ):
@@ -392,17 +398,21 @@ def _prepare_update(
             extract = work / "extract"
             extract.mkdir()
             safe_extract_zip(artifact, extract)
-            source = extract / candidate.get(
-                "extractSubdir", payload.get("extractSubdir", "")
-            )
-            if not source.exists():
-                source = extract
-            if not source.is_dir() or not source.resolve().is_relative_to(
-                extract.resolve()
-            ):
-                raise RuntimeError("Update extractSubdir was not found safely")
-            stage_app.mkdir()
-            _copy_directory_contents(source, stage_app)
+            mappings = payload.get("extract")
+            if mappings:
+                copy_zip_extract_mappings(extract, stage_app, mappings)
+            else:
+                source = extract / candidate.get(
+                    "extractSubdir", payload.get("extractSubdir", "")
+                )
+                if not source.exists():
+                    source = extract
+                if not source.is_dir() or not source.resolve().is_relative_to(
+                    extract.resolve()
+                ):
+                    raise RuntimeError("Update extractSubdir was not found safely")
+                stage_app.mkdir()
+                _copy_directory_contents(source, stage_app)
         else:
             module = _load_package_module(identity, payload["module"], work / "pycache")
             callback = getattr(module, "unpack_app", None)

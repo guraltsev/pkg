@@ -224,6 +224,47 @@ def safe_extract_zip(zip_path: Path, destination: Path) -> None:
         archive.extractall(destination)
 
 
+def copy_zip_extract_mappings(
+    archive_root: Path, app_path: Path, mappings: List[Dict[str, str]]
+) -> None:
+    """Copy selected archive paths into ``App/`` according to ZIP mappings."""
+    resolved_root = archive_root.resolve()
+    resolved_app = app_path.resolve(strict=False)
+    app_path.mkdir()
+
+    # Apply each mapping independently so package authors can compose a runtime
+    # tree from several archive directories without extracting unrelated files.
+    for mapping in mappings:
+        src = mapping["src"]
+        copy_contents = src.endswith("/")
+        pattern = src[:-1] if copy_contents else src
+        matches = list(archive_root.glob(pattern))
+        if not matches:
+            raise RuntimeError(f"Update ZIP source matched no archive paths: {src!r}")
+
+        # Keep each selected source and destination inside their respective
+        # staging roots even when wildcard expansion reaches unusual names.
+        destination = app_path / mapping["dest"]
+        resolved_destination = destination.resolve(strict=False)
+        if not resolved_destination.is_relative_to(resolved_app):
+            raise RuntimeError("Update ZIP destination escapes App")
+        destination.mkdir(parents=True, exist_ok=True)
+        for source in matches:
+            resolved_source = source.resolve()
+            if not resolved_source.is_relative_to(resolved_root):
+                raise RuntimeError("Update ZIP source escapes the archive")
+            if copy_contents:
+                if not source.is_dir():
+                    raise RuntimeError(
+                        f"Update ZIP source ending in '/' is not a directory: {src!r}"
+                    )
+                _copy_directory_contents(source, destination)
+            elif source.is_dir():
+                shutil.copytree(source, destination / source.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(source, destination / source.name)
+
+
 def _copy_directory_contents(source: Path, destination: Path) -> None:
     """Copy the entries under one directory into another directory."""
     for entry in source.iterdir():
