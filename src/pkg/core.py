@@ -621,7 +621,8 @@ def expand_text(
 
     Expansion rules:
 
-    - ``$App``, ``$Icons``, and ``$Shortcuts`` expand in every mode.
+    - ``$App``, ``$Icons``, ``$Shortcuts``, and ``${version}`` expand in every
+      mode.
     - ``${VAR}`` expands in every mode and is tracked as unresolved when the
       environment variable does not exist.
     - Plain ``$NAME`` only expands when it names a package variable.
@@ -660,6 +661,7 @@ def expand_text(
         "App": str(pkg_base / "App"),
         "Icons": str(pkg_base / "Icons"),
         "Shortcuts": str(pkg_base / "Shortcuts"),
+        "version": identity.version,
     }
     out: List[str] = []
     unresolved: List[str] = []
@@ -684,7 +686,9 @@ def expand_text(
                 continue
             var_name = source[i + 2 : closing]
             token = source[i : closing + 1]
-            if var_name in os.environ:
+            if var_name in pkg_map:
+                out.append(pkg_map[var_name])
+            elif var_name in os.environ:
                 out.append(os.environ[var_name])
             else:
                 out.append(token)

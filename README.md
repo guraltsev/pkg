@@ -390,6 +390,7 @@ Package variables:
 - `$App`
 - `$Icons`
 - `$Shortcuts`
+- `${version}` expands to the upstream version from the active package directory
 
 Environment-variable syntax:
 

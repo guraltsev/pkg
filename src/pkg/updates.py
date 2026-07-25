@@ -363,11 +363,26 @@ def _prepare_update(
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
             raise ConfigValidationError("Update URL must be credential-free HTTP(S)")
+        headers = candidate.get("headers")
+        if headers is not None and (
+            not isinstance(headers, dict)
+            or any(
+                not isinstance(name, str)
+                or not isinstance(value, str)
+                or "\r" in name
+                or "\n" in name
+                or "\r" in value
+                or "\n" in value
+                for name, value in headers.items()
+            )
+        ):
+            raise ConfigValidationError("Update candidate headers must be safe strings")
         download = work / "download"
         download.mkdir()
         artifact = download / "payload.part"
+        request = urllib.request.Request(url, headers=headers) if headers else url
         with (
-            urllib.request.urlopen(url, timeout=60) as response,
+            urllib.request.urlopen(request, timeout=60) as response,
             open(artifact, "wb") as handle,
         ):
             shutil.copyfileobj(response, handle)

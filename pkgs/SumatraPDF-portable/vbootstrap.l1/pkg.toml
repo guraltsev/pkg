@@ -1,0 +1,24 @@
+name = "SumatraPDF-portable"
+version = "bootstrap"
+localVersion = 1
+only_portable = true
+description = "PDF, eBook (epub, mobi), comic book (cbz/cbr), DjVu, XPS, CHM, image viewer for Windows. Fast, small, packed with features, customizable, free."
+homepage = "https://www.sumatrapdfreader.org"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "zip"
+ignore_checksum = true
+
+[[shortcut]]
+name = "SumatraPDF"
+targetPath = "$App\\SumatraPDF-${version}-64.exe"
+
+[[bin]]
+name = "SumatraPDF.cmd"
+content = "@ start \"\" $App\\SumatraPDF-${version}-64.exe %*"
