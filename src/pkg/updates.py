@@ -21,7 +21,7 @@ import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, Optional, Tuple
 
 from .core import (
@@ -410,24 +410,44 @@ def _prepare_update(
                 f"Checksum verification bypassed for {candidate['version']} ({bypass})"
             )
         if payload["mode"] == "zip":
-            extract = work / "extract"
-            extract.mkdir()
-            safe_extract_zip(artifact, extract)
-            mappings = payload.get("extract")
-            if mappings:
-                copy_zip_extract_mappings(extract, stage_app, mappings)
-            else:
-                source = extract / candidate.get(
-                    "extractSubdir", payload.get("extractSubdir", "")
-                )
-                if not source.exists():
-                    source = extract
-                if not source.is_dir() or not source.resolve().is_relative_to(
-                    extract.resolve()
+            file_name = candidate.get("fileName")
+            if not isinstance(file_name, str):
+                file_name = Path(
+                    urllib.parse.unquote(urllib.parse.urlparse(candidate["url"]).path)
+                ).name
+            if isinstance(file_name, str) and file_name.lower().endswith(".exe"):
+                # A release executable is already the complete application payload.
+                # Preserve its published name while keeping it inside the staged App.
+                if (
+                    Path(file_name).name != file_name
+                    or PureWindowsPath(file_name).name != file_name
                 ):
-                    raise RuntimeError("Update extractSubdir was not found safely")
+                    raise ConfigValidationError("Update executable fileName must be a name")
+                if payload.get("extract") or payload.get("extractSubdir"):
+                    raise ConfigValidationError(
+                        "Update executable payloads cannot use ZIP extraction settings"
+                    )
                 stage_app.mkdir()
-                _copy_directory_contents(source, stage_app)
+                shutil.copy2(artifact, stage_app / file_name)
+            else:
+                extract = work / "extract"
+                extract.mkdir()
+                safe_extract_zip(artifact, extract)
+                mappings = payload.get("extract")
+                if mappings:
+                    copy_zip_extract_mappings(extract, stage_app, mappings)
+                else:
+                    source = extract / candidate.get(
+                        "extractSubdir", payload.get("extractSubdir", "")
+                    )
+                    if not source.exists():
+                        source = extract
+                    if not source.is_dir() or not source.resolve().is_relative_to(
+                        extract.resolve()
+                    ):
+                        raise RuntimeError("Update extractSubdir was not found safely")
+                    stage_app.mkdir()
+                    _copy_directory_contents(source, stage_app)
         else:
             module = _load_package_module(identity, payload["module"], work / "pycache")
             callback = getattr(module, "unpack_app", None)

@@ -520,6 +520,74 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(release_config["localVersion"], 1)
             self.assertFalse((version_dir / "App").exists())
 
+    def test_zip_payload_stages_a_direct_executable_release(self) -> None:
+        """A ZIP-mode update installs an executable release without archive extraction."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "ExecutableBootstrap"
+            version_dir = package_root / "vbootstrap.l1"
+            local_dir = version_dir / "pkg.local"
+            local_dir.mkdir(parents=True)
+            self.write_config(
+                version_dir,
+                """
+                name = "ExecutableBootstrap"
+                version = "bootstrap"
+                localVersion = 1
+
+                [update]
+                allow_automatic_update = true
+
+                [update.check]
+                mode = "module"
+
+                [update.payload]
+                mode = "zip"
+                ignore_checksum = true
+                """,
+            )
+            local_dir.joinpath("check_update.py").write_text(
+                textwrap.dedent(
+                    """
+                    PKG_MODULE_API = 1
+
+                    def check_update(context):
+                        return {
+                            "candidateId": "release:2.0.0",
+                            "version": "2.0.0",
+                            "url": "https://example.invalid/tool.exe",
+                        }
+                    """
+                ).lstrip(),
+                encoding="utf-8",
+            )
+            executable = b"MZ executable payload"
+
+            # Keep HTTP and Windows junction boundaries controlled while
+            # exercising module loading, staging, and executable deployment.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "is_current_user_admin", return_value=False
+                ):
+                    with mock.patch.object(
+                        module,
+                        "update_current_junction_if_needed",
+                        return_value=True,
+                    ):
+                        with mock.patch.object(
+                            runtime_module("updates").urllib.request,
+                            "urlopen",
+                            return_value=io.BytesIO(executable),
+                        ):
+                            result = module.install_package(version_dir)
+
+            release_dir = package_root / "v2.0.0.l1"
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertEqual(
+                (release_dir / "App" / "tool.exe").read_bytes(), executable
+            )
+
     def test_github_zip_bootstrap_extracts_configured_archive_mappings(self) -> None:
         """ZIP mappings select wildcard contents and preserve selected directories."""
         module = load_pkg_module()
