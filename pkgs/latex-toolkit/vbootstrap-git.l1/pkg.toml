@@ -1,4 +1,4 @@
-# Package metadata follows the containing vbootstrap-git.l1 version directory.
+# Package metadata follows the containing v0-git.l1 version directory.
 name = "latex-toolkit"
 version = "bootstrap-git"
 localVersion = 1
@@ -22,6 +22,13 @@ name = "lt_brace_args.cmd"
 content = '''
 @echo off
 call "$App\src\lt_brace_args.cmd" %*
+'''
+
+[[bin]]
+name = "lt_eqnum_label.cmd"
+content = '''
+@echo off
+call "$App\src\lt_eqnum_label.cmd" %*
 '''
 
 [[bin]]
