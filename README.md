@@ -352,6 +352,12 @@ non-zip layout may set `payload.mode = "module"` and provide
 `pkg.local/unpack_app.py` with `unpack_app(context)`. These modules run inside
 the `pkg` process and are trusted extension code, not sandboxed plugins.
 
+When a `zip` payload candidate names a direct `.exe` file (through `fileName`,
+or the download URL basename), `pkg` stages that file directly in `$App`
+instead of attempting ZIP extraction. This is appropriate for portable
+executables. Installer executables require a package-local `module` payload to
+run their vendor-specific silent-install or unpack command.
+
 GitHub releases use the built-in REST API checker. Put the normal repository
 page URL in `[origin].url` and name exactly one uploaded release asset:
 

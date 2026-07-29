@@ -1,0 +1,29 @@
+name = "resticprofile"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Configuration profiles and scheduling for restic backups."
+homepage = "https://creativeprojects.github.io/resticprofile/"
+
+[origin]
+url = "https://github.com/creativeprojects/resticprofile"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "resticprofile_${version}_windows_amd64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[shortcut]]
+name = "resticprofile"
+targetPath = "$App\\resticprofile.exe"
+description = "Restic backup profile manager"
+
+[[bin]]
+name = "resticprofile.cmd"
+command = "\"$App\\resticprofile.exe\""
+forward_args = true
