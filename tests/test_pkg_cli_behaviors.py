@@ -588,8 +588,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 (release_dir / "App" / "tool.exe").read_bytes(), executable
             )
 
-    def test_github_zip_bootstrap_extracts_configured_archive_mappings(self) -> None:
-        """ZIP mappings select wildcard contents and preserve selected directories."""
+    def test_github_zip_bootstrap_extracts_and_renames_configured_paths(self) -> None:
+        """ZIP mappings select archive contents and rename the staged executable."""
         module = load_pkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -631,6 +631,10 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 [[update.payload.extract]]
                 src = "documentation"
                 dest = "share"
+
+                [[update.payload.rename]]
+                src = "tool.exe"
+                dest = "renamed-tool.exe"
                 """,
             )
             release = json.dumps(
@@ -673,9 +677,12 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue(result.changed)
             self.assertEqual(
-                (release_dir / "App" / "tool.exe").read_text(encoding="utf-8"),
+                (release_dir / "App" / "renamed-tool.exe").read_text(
+                    encoding="utf-8"
+                ),
                 "release payload",
             )
+            self.assertFalse((release_dir / "App" / "tool.exe").exists())
             self.assertEqual(
                 (
                     release_dir / "App" / "share" / "documentation" / "guide.txt"

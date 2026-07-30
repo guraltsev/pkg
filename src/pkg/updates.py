@@ -26,8 +26,10 @@ from typing import Any, Dict, Optional, Tuple
 
 from .core import (
     ConfigValidationError,
+    ExpansionMode,
     PackageIdentity,
     compare_package_versions,
+    expand_text,
     is_version_directory_name,
     log_warning,
     read_toml_file,
@@ -448,6 +450,11 @@ def _prepare_update(
                         raise RuntimeError("Update extractSubdir was not found safely")
                     stage_app.mkdir()
                     _copy_directory_contents(source, stage_app)
+            _apply_payload_renames(
+                stage_app,
+                payload.get("rename", []),
+                staged_identity,
+            )
         else:
             module = _load_package_module(identity, payload["module"], work / "pycache")
             callback = getattr(module, "unpack_app", None)
@@ -469,6 +476,49 @@ def _prepare_update(
     if not _app_contains_entries(stage_app):
         raise RuntimeError("Prepared update App directory is missing or empty")
     return new_identity
+
+
+def _apply_payload_renames(
+    app_path: Path,
+    mappings: list[Dict[str, str]],
+    identity: PackageIdentity,
+) -> None:
+    """Rename configured files or directories within a staged ``App`` tree."""
+    resolved_app = app_path.resolve()
+
+    # Expand the release version only after the candidate identity is known,
+    # while retaining containment checks before every filesystem mutation.
+    for mapping in mappings:
+        source_text = expand_text(
+            mapping["src"], identity, ExpansionMode.GENERAL
+        ).value
+        destination_text = expand_text(
+            mapping["dest"], identity, ExpansionMode.GENERAL
+        ).value
+        source = app_path / source_text
+        destination = app_path / destination_text
+        resolved_source = source.resolve()
+        resolved_destination = destination.resolve(strict=False)
+        if (
+            not resolved_source.is_relative_to(resolved_app)
+            or not resolved_destination.is_relative_to(resolved_app)
+            or resolved_source == resolved_app
+            or resolved_destination == resolved_app
+        ):
+            raise RuntimeError("Update rename path escapes App")
+        if not source.exists():
+            raise RuntimeError(f"Update rename source was not found: {mapping['src']!r}")
+        if destination.exists():
+            raise RuntimeError(
+                f"Update rename destination already exists: {mapping['dest']!r}"
+            )
+        if source.is_dir() and resolved_destination.is_relative_to(resolved_source):
+            raise RuntimeError("Update rename destination cannot be inside its source")
+
+        # Make intentional subdirectory renames possible without allowing a
+        # package to replace an existing staged file or directory.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
 
 
 def _refresh_git_app_inplace(

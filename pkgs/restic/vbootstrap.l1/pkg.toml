@@ -18,6 +18,13 @@ assetName = "restic_${version}_windows_amd64.zip"
 [update.payload]
 mode = "zip"
 
+[[update.payload.rename]]
+src = "restic_${version}_windows_amd64.exe"
+dest = "restic.exe"
+
+[[path]]
+value = "$App"
+
 [[bin]]
 name = "restic.cmd"
-content = "@ $App\\restic_${version}_windows_amd64.exe %*"
+content = "@ $App\\restic.exe %*"

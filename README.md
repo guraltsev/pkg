@@ -329,6 +329,12 @@ relative to the ZIP root, and a `dest`, interpreted relative to `$App`. A `src`
 ending in `/` copies the matched directory's contents; otherwise a matched
 directory is copied as a directory.
 
+After a ZIP payload is placed in `$App`, `[[update.payload.rename]]` entries
+can rename one exact `src` path to a `dest` path. Both paths are relative to
+`$App`, must stay within it, and cannot overwrite an existing entry. Use
+`${version}` when an upstream archive includes its release version in a file
+name.
+
 ```toml
 [update.payload]
 mode = "zip"
@@ -340,6 +346,10 @@ dest = ""
 [[update.payload.extract]]
 src = "documentation"
 dest = "share"
+
+[[update.payload.rename]]
+src = "pandoc-${version}.exe"
+dest = "pandoc.exe"
 ```
 
 This produces `$App\pandoc.exe` from the first mapping and

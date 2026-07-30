@@ -633,6 +633,7 @@ def normalize_update_config(
         "mode",
         "extractSubdir",
         "extract",
+        "rename",
         "ignore_checksum",
         "module",
         "maxSizeMB",
@@ -722,6 +723,47 @@ def normalize_update_config(
                 )
             normalized_mappings.append({"src": src, "dest": dest})
         normalized_payload["extract"] = normalized_mappings
+    rename_mappings = payload.get("rename")
+    if rename_mappings is not None:
+        if payload_mode != "zip":
+            raise ConfigValidationError(
+                "[update.payload].rename is only supported with mode = 'zip'"
+            )
+        if not isinstance(rename_mappings, list) or not rename_mappings:
+            raise ConfigValidationError(
+                "[update.payload].rename must be a non-empty array of tables"
+            )
+        normalized_renames: List[Dict[str, str]] = []
+        for index, mapping in enumerate(rename_mappings):
+            context = f"update.payload.rename[{index}]"
+            if not isinstance(mapping, dict):
+                raise ConfigValidationError(f"[{context}] must be a table")
+            _validate_exact_keys(
+                mapping,
+                allowed={"src", "dest"},
+                context=context,
+                ordered_allowed=["src", "dest"],
+            )
+            src = mapping.get("src")
+            dest = mapping.get("dest")
+            if not isinstance(src, str) or not src:
+                raise ConfigValidationError(f"[{context}].src must be a non-empty string")
+            if not isinstance(dest, str) or not dest:
+                raise ConfigValidationError(f"[{context}].dest must be a non-empty string")
+            for field, value in (("src", src), ("dest", dest)):
+                path = PureWindowsPath(value)
+                if (
+                    path.is_absolute()
+                    or path.drive
+                    or ".." in path.parts
+                    or value in {".", ".."}
+                    or any(character in value for character in "*?[]")
+                ):
+                    raise ConfigValidationError(
+                        f"[{context}].{field} must be a safe path relative to $App"
+                    )
+            normalized_renames.append({"src": src, "dest": dest})
+        normalized_payload["rename"] = normalized_renames
     if payload_mode == "module":
         module = payload.get("module", "pkg.local/unpack_app.py")
         if not isinstance(module, str):
