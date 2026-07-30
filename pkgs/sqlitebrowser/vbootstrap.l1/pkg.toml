@@ -1,0 +1,30 @@
+name = "sqlitebrowser"
+version = "bootstrap"
+localVersion = 1
+only_portable = true
+description = "DB Browser for SQLite, a visual tool for creating, designing, and editing SQLite database files."
+homepage = "https://sqlitebrowser.org/"
+
+[origin]
+url = "https://github.com/sqlitebrowser/sqlitebrowser"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "DB.Browser.for.SQLite-v${version}-win64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[shortcut]]
+name = "DB Browser for SQLite"
+targetPath = "$App\\DB Browser for SQLite.exe"
+iconLocation = "$App\\DB Browser for SQLite.exe"
+description = "DB Browser for SQLite"
+
+[[bin]]
+name = "sqlitebrowser.cmd"
+command = "\"$App\\DB Browser for SQLite.exe\""
+forward_args = true

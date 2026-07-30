@@ -1,0 +1,21 @@
+name = "vlc"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Free and open-source cross-platform multimedia player and framework."
+homepage = "https://www.videolan.org/vlc/"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "zip"
+
+[[shortcut]]
+name = "VLC media player"
+targetPath = "$App\\vlc.exe"
+description = "VLC media player"
+

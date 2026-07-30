@@ -1,0 +1,29 @@
+name = "keepassxc"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Cross-platform password manager compatible with KeePass databases."
+homepage = "https://keepassxc.org/"
+
+[origin]
+url = "https://github.com/keepassxreboot/keepassxc"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "KeePassXC-${version}-Win64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[update.payload.extract]]
+src = "KeePassXC-*/"
+dest = ""
+
+[[shortcut]]
+name = "KeePassXC"
+targetPath = "$App\\KeePassXC.exe"
+description = "KeePassXC password manager"
+
