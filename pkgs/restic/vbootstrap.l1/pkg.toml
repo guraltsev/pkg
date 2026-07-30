@@ -1,0 +1,23 @@
+name = "restic"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Fast, secure, and efficient backup program."
+homepage = "https://restic.net/"
+
+[origin]
+url = "https://github.com/restic/restic"
+
+[update]
+allow_automatic_update = true
+
+[update.check]
+mode = "github"
+assetName = "restic_${version}_windows_amd64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[bin]]
+name = "restic.cmd"
+content = "@ $App\\restic_${version}_windows_amd64.exe %*"
