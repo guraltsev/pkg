@@ -9,7 +9,6 @@ homepage = "https://keepassxc.org/"
 url = "https://github.com/keepassxreboot/keepassxc"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"
@@ -26,4 +25,3 @@ dest = ""
 name = "KeePassXC"
 targetPath = "$App\\KeePassXC.exe"
 description = "KeePassXC password manager"
-

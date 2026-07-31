@@ -1,7 +1,7 @@
 # Development architecture
 
 `src/pkg/pkg.py` is the stable executable and public Python facade. It contains CLI
-dispatch and the high-level action workflows, so a maintainer can read an
+dispatch and the high-level command workflows, so a maintainer can read an
 install or update from validation through its final result without following a
 generic pipeline. Significant implementation domains live directly in
 `src/pkg/`.
@@ -22,24 +22,22 @@ The facade imports only the names needed by its workflows. It does not provide
 compatibility re-exports, a provider framework, or a configurable install
 pipeline. New implementation code should be placed in the module that owns its
 state or side effect. Legacy format conversion remains implemented in
-`legacy_to_pkg_toml.py`; the `ConvertLegacy` action in `pkg/pkg.py` coordinates its
-public CLI result.
+`legacy_to_pkg_toml.py`; `pkg config from-legacy` coordinates its public CLI
+result.
 
 ## Update coordinator
 
 The public update coordinator in `src/pkg/pkg.py` resolves the active package,
 validates its `[update]` table, acquires the package-root lock, checks for a
 candidate, asks the `updates` module to stage a complete version under
-`.pkg/work`, atomically commits it, and activates it through the normal install
+`.pkg/work`, and atomically commits it. A separate explicit `pkg upgrade
+install` command activates the downloaded version through the normal install
 workflow. Check and unpack hooks are imported from `pkg.local/` as trusted
 in-process Python extensions; they are never executed as shell commands.
 
-The explicit `git-inplace` payload mode is the deliberate mutable exception to
-immutable staging. It fast-forwards the existing checkout only when tracked
-files are clean and the checked candidate still matches the fetched ref, then
-reruns ordinary installation to repair package components. Ordinary `git`
-payloads, including bootstrap `vbootstrap-git.l1` packages, create and activate a new
-timestamped version directory.
+Git payloads, including bootstrap `vbootstrap-git.l1` packages, create a new
+timestamped version directory. The update model has no mutable in-place mode
+and no automatic update policy.
 
 Installing a normal Git-backed `vbootstrap-git.l1` template enters the update coordinator
 before origin population or junction management. The resolved commit is staged

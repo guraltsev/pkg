@@ -6,7 +6,6 @@ description = "PDF, eBook (epub, mobi), comic book (cbz/cbr), DjVu, XPS, CHM, im
 homepage = "https://www.sumatrapdfreader.org"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "module"

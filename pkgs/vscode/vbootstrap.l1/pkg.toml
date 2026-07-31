@@ -7,7 +7,6 @@ description = "Visual Studio Code editor with debugging, tasks, and version-cont
 homepage = "https://code.visualstudio.com/"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "module"

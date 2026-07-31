@@ -37,7 +37,6 @@ description = "An advanced and multi-platform BitTorrent client with a nice Qt u
 homepage = "https://www.qbittorrent.org/"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "module"

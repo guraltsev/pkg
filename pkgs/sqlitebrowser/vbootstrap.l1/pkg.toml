@@ -9,7 +9,6 @@ homepage = "https://sqlitebrowser.org/"
 url = "https://github.com/sqlitebrowser/sqlitebrowser"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"

@@ -9,7 +9,6 @@ homepage = "https://github.com/garethgeorge/backrest"
 url = "https://github.com/garethgeorge/backrest"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"

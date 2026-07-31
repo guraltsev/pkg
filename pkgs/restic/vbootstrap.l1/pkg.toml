@@ -9,7 +9,6 @@ homepage = "https://restic.net/"
 url = "https://github.com/restic/restic"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"

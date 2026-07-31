@@ -36,7 +36,7 @@ from .core import (
 def update_config_file(identity: PackageIdentity) -> StepResult:
     """Synchronize directory-owned metadata back to ``pkg.toml``.
 
-    ``UpdateConfig`` and ``Install --fix-config`` both use this function. It
+    ``config update`` uses this function. It
     intentionally works from explicit inputs only: one package identity and the
     current file contents on disk. Missing configs become documented starter
     templates; existing configs are rewritten only when they already use the
@@ -124,7 +124,7 @@ def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, s
     """Parse one editable top-level metadata line.
 
     The helper is intentionally narrow: it supports the single-line assignment
-    shape that ``UpdateConfig`` rewrites safely and understands ``#`` only when
+    shape that ``config update`` rewrites safely and understands ``#`` only when
     it appears outside quoted strings.
     """
     index = 0
@@ -137,7 +137,7 @@ def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, s
         line[key_start].isalpha() or line[key_start] == "_"
     ):
         raise ConfigValidationError(
-            "pkg.toml contains a metadata line that UpdateConfig cannot rewrite safely. Edit the line manually."
+            "pkg.toml contains a metadata line that config update cannot rewrite safely. Edit the line manually."
         )
     index += 1
     while index < len(line) and (line[index].isalnum() or line[index] == "_"):
@@ -406,7 +406,7 @@ def create_starter_config(identity: PackageIdentity) -> str:
     lines = [
         "# Generated automatically by `pkg`.",
         "",
-        "# UpdateConfig will keep these fields aligned with the package folder name.",
+        "# `pkg config update` keeps these fields aligned with the package folder name.",
         f"name = {_to_toml_scalar(metadata['name'])}",
         f"version = {_to_toml_scalar(metadata['version'])}",
         f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
@@ -458,18 +458,14 @@ def create_starter_config(identity: PackageIdentity) -> str:
         '# url = "https://example.invalid/tool-current.zip"',
         "",
         "# Update examples:",
-        "# Update checks run after a root/current Install when due. Set this to true",
-        "# only when an available update may be downloaded and activated without prompting.",
-        "# [update]",
-        "# allow_automatic_update = false",
+        "# Use `pkg upgrade check`, `pkg upgrade download`, and",
+        "# `pkg upgrade install` to update explicitly.",
         "#",
         "# Git origin workflow (App is a Git work tree). The update check",
         "# inherits Git mode and ref from [origin]. The ordinary git payload",
-        "# creates a new timestamped version; use git-inplace to fast-forward",
-        "# the current App checkout instead:",
+        "# creates a new timestamped version:",
         "# [update.payload]",
         '# mode = "git"',
-        '# mode = "git-inplace"',
         "#",
         "# Downloaded zip workflow (pkg.local/check_update.py finds releases):",
         "# [update.check]",

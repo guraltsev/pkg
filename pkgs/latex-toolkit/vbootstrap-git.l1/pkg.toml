@@ -12,7 +12,6 @@ mode = "git"
 url = "git@github.com:guraltsev/latex-toolkit.git"
 
 [update]
-allow_automatic_update = true
 
 [update.payload]
 mode = "git"

@@ -17,17 +17,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 WRAPPER_SCRIPTS = [
-    (SRC_ROOT / "install.cmd", ["--pause"]),
-    (SRC_ROOT / "update-config.cmd", ["--action", "UpdateConfig", "--pause"]),
-    (SRC_ROOT / "health-check.cmd", ["--action", "HealthCheck", "--pause"]),
-    (SRC_ROOT / "check-update.cmd", ["--action", "CheckUpdate", "--pause"]),
-    (SRC_ROOT / "update.cmd", ["--action", "Update", "--pause"]),
-    (SRC_ROOT / "auto-update.cmd", ["--action", "AutoUpdate", "--pause"]),
-    (SRC_ROOT / "self-update.cmd", ["--action", "SelfUpdate", "--pause"]),
-    (SRC_ROOT / "refresh-app.cmd", ["--refresh-app", "--pause"]),
+    (SRC_ROOT / "install.cmd", ["--pause", "install"]),
+    (SRC_ROOT / "update-config.cmd", ["--pause", "config", "update"]),
+    (SRC_ROOT / "health-check.cmd", ["--pause", "config", "check"]),
+    (SRC_ROOT / "check-update.cmd", ["--pause", "upgrade", "check"]),
+    (SRC_ROOT / "update.cmd", ["--pause", "upgrade", "download"]),
+    (SRC_ROOT / "refresh-app.cmd", ["--refresh-app", "--pause", "install"]),
     (
         SRC_ROOT / "legacy_to_pkg_toml.cmd",
-        ["--action", "ConvertLegacy"],
+        ["config", "from-legacy"],
     ),
 ]
 HELPER_WRAPPER_SCRIPTS = [

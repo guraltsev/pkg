@@ -19,8 +19,8 @@ domains used by the stable `pkg/pkg.py` executable:
 the high-level install, health-check, configuration, and update workflows.
 These runtime modules are internal implementation details and are not a
 separate public API. Legacy conversion remains implemented in
-`legacy_to_pkg_toml.py` and is coordinated by the public `ConvertLegacy`
-action.
+`legacy_to_pkg_toml.py` and is coordinated by the public
+`pkg config from-legacy` command.
 
 ## Migration helpers
 
@@ -59,7 +59,7 @@ before installing the converted package.
 Supported `pkg` action:
 
 ```bat
-pkg.cmd --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd config from-legacy C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 The implementation also retains its standalone interface:

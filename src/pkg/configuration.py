@@ -520,20 +520,17 @@ def normalize_update_config(
     identity: PackageIdentity,
     origin: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Normalize the optional update policy and its check and payload modes."""
+    """Normalize the optional update check and payload configuration."""
     if raw_update is None:
         return None
     if not isinstance(raw_update, dict):
         raise ConfigValidationError("'update' must be a table")
     _validate_exact_keys(
         raw_update,
-        allowed={"allow_automatic_update", "check", "payload"},
+        allowed={"check", "payload"},
         context="update",
-        ordered_allowed=["allow_automatic_update", "check", "payload"],
+        ordered_allowed=["check", "payload"],
     )
-    automatic = raw_update.get("allow_automatic_update", False)
-    if not isinstance(automatic, bool):
-        raise ConfigValidationError("'update.allow_automatic_update' must be a boolean")
     check = raw_update.get("check")
     payload = raw_update.get("payload")
     if not isinstance(payload, dict):
@@ -625,9 +622,9 @@ def normalize_update_config(
             "[update.check].mode must be 'git', 'github', or 'module'"
         )
     payload_mode = payload.get("mode")
-    if payload_mode not in {"git", "git-inplace", "zip", "module"}:
+    if payload_mode not in {"git", "zip", "module"}:
         raise ConfigValidationError(
-            "[update.payload].mode must be 'git', 'git-inplace', 'zip', or 'module'"
+            "[update.payload].mode must be 'git', 'zip', or 'module'"
         )
     allowed_payload = {
         "mode",
@@ -644,7 +641,7 @@ def normalize_update_config(
         context="update.payload",
         ordered_allowed=list(allowed_payload),
     )
-    if payload_mode in {"git", "git-inplace"} and mode != "git":
+    if payload_mode == "git" and mode != "git":
         raise ConfigValidationError(
             f"[update.payload].mode = '{payload_mode}' requires a git update check"
         )
@@ -771,11 +768,7 @@ def normalize_update_config(
         normalized_payload["module"] = _validate_package_local_path(
             identity, module, context="update.payload"
         )
-    return {
-        "allow_automatic_update": automatic,
-        "check": normalized_check,
-        "payload": normalized_payload,
-    }
+    return {"check": normalized_check, "payload": normalized_payload}
 
 
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:

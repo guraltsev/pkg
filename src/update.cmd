@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem Check, prepare, and install an available package update.
-call "%~dp0pkg.cmd" --action Update --pause %*
+rem Download an available package update. Activate it with `pkg upgrade install`.
+call "%~dp0pkg.cmd" --pause upgrade download %*
 exit /b %ERRORLEVEL%

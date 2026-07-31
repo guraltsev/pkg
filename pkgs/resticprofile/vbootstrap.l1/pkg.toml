@@ -9,7 +9,6 @@ homepage = "https://creativeprojects.github.io/resticprofile/"
 url = "https://github.com/creativeprojects/resticprofile"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"

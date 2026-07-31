@@ -1,162 +1,249 @@
 # pkg
 
-`pkg` is a Windows package tool for locally cached applications in versioned
-directories. A package can already include `App/`, or it can declare an
-`[origin]` step that populates `App/` during install.
+`pkg` manages self-contained Windows applications that live on disk rather
+than in a central package store. A package author puts an application's files,
+its version number, and a small `pkg.toml` definition in one directory. From
+that definition, `pkg` selects the active version and makes the application
+available to Windows: it can create Start Menu shortcuts, set environment
+variables, add directories to PATH, and generate command-line wrappers. It can
+also fetch application files when they are not already present and stage new
+versions when updates are available.
 
-It does four main things:
+The model is deliberately repair-friendly. Re-running an install re-applies
+the declared Windows integration without re-downloading an application whose
+files are already present.
 
-- keeps the package-level `current` junction pointed at the active version
-- populates a missing or empty `App/` from `[origin]` when configured
-- creates shortcuts from `pkg.toml`
-- writes environment variables and PATH entries for the selected scope
-- creates wrapper files in the selected scope bin directory when `[[bin]]`
-  entries are configured
+## At a glance
 
-`pkg` is repair-oriented. Re-running install for the same version is expected:
-it will reapply shortcuts, environment variables, PATH entries, and wrapper
-files so a broken install can be restored without downloading anything again.
+- Works on Windows with Python 3.11 or newer.
+- Treats the directory layout as the authority for package identity.
+- Uses a canonical, strict `pkg.toml` format.
+- Supports ZIP, Git, and package-local-script application sources.
+- Checks and stages updates before activating a new immutable version.
+- Supports GitHub Releases and trusted package-local Python update hooks.
 
-## Requirements
+Git must be available for Git origins or Git updates. PowerShell is used to
+create Windows shortcuts. Network access is required only when a configured
+origin or update source is contacted.
 
-- Windows
-- Python 3.11+
+## Architecture and organization
 
-## Package layout
+Each application has a **package root**. It contains one or more immutable
+**version directories** and a `current` junction that points to the active
+one. The version directory is the unit that `pkg` installs and updates.
 
 ```text
 <PackageName>/
-  current/                # NTFS junction to the active version
+  current/                         # NTFS junction to the active version
   v1.2.3.l1/
-    App/
-    Icons/
-    Shortcuts/
+    App/                            # application payload
+    Icons/                          # optional icon assets
+    Shortcuts/                      # optional package-owned assets
+    pkg.local/                      # trusted update hook modules
     pkg.toml
 ```
 
-You can point `pkg` at any of these:
+`App` is the application payload: the files that actually run. For example,
+`App` might contain `rg.exe`, a portable editor's executable and libraries, or
+a Git checkout. `pkg` never invents a particular application layout inside
+`App`; it either starts with the files already there or populates them from the
+configured origin. Shortcuts, PATH entries, environment values, and wrappers
+normally point at files or directories beneath `App`.
 
-- a version directory
-- the package root
-- the `current` junction
+`pkg.toml` sits beside `App` and describes the package version. It declares
+how to obtain `App` when necessary and how to expose it to Windows. The
+configuration uses package variables so that it does not need hard-coded
+machine-specific paths: `$App`, `$Icons`, and `$Shortcuts` resolve to the
+matching directories in the installed version, while `${version}` resolves to
+the version in the directory name. For example,
 
-Version directories use this naming scheme:
+```toml
+[[shortcut]]
+name = "Ripgrep"
+targetPath = "$App\\rg.exe"
 
-```text
-v<upstream-version>.l<local-version>
+[[environment]]
+Name = "RIPGREP_HOME"
+Value = "$App"
+
+[[bin]]
+name = "rg.cmd"
+command = "\"$App\\rg.exe\""
+forward_args = true
 ```
 
-## Commands
+This creates a shortcut to the executable, stores the full `App` path in an
+environment variable, and creates a command wrapper that launches the same
+executable. The exact expansion rules are documented in [Variables and
+expansion](#variables-and-expansion).
 
-Install from the current directory. Scope is selected automatically:
+`Icons` and `Shortcuts` are optional package-owned asset directories. `Icons`
+is a natural place for shortcut icons; `Shortcuts` is available to package
+scripts or configuration that needs package-local shortcut assets. `pkg.local`
+is reserved for trusted Python update-check and unpack hooks. `.pkg`, created
+at the package root by update operations, holds manager state, locks, receipts,
+and disposable work files rather than application files.
+
+Version directories must be named `v<upstream-version>.l<local-version>`.
+For example, `v1.2.3.l1` has upstream version `1.2.3` and local revision `1`.
+The package name is the package-root directory name. A name ending in
+`-portable` is portable-only by convention.
+
+You may give `pkg` a version directory, a package root, or its `current`
+junction. A package root without `current` is accepted only when it contains
+exactly one version directory. Update actions require the active version,
+package root, or `current`, except when they are promoting a bootstrap
+template.
+
+Installing a newer version advances `current`. Installing an older version
+does not replace a newer active version unless `--allow-downgrade` is supplied. Old
+versions are retained.
+
+## Install a package
+
+From a version directory:
 
 ```bat
 pkg.cmd
 ```
 
-Administrators install machine-wide unless the package is portable-only.
-Non-administrators and portable-only packages install for the current user.
-
-Install a specific package:
+Or pass a version directory or package root:
 
 ```bat
 pkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd C:\Packages\Ripgrep
 ```
 
-Install in Machine scope:
+The default `Auto` scope uses Machine scope for an administrator unless the
+package is portable-only; otherwise it uses User scope. Select a scope
+explicitly when needed:
 
 ```bat
-pkg.cmd --scope Machine C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --scope User C:\Packages\Ripgrep
+pkg.cmd --scope Machine C:\Packages\Ripgrep
 ```
 
-Synchronize or create `pkg.toml` metadata only:
+Machine scope requires Administrator privileges. Portable-only packages cannot
+be installed in Machine scope.
+
+| Scope | Start Menu shortcut root | Registry environment and PATH | Wrapper directory |
+| --- | --- | --- | --- |
+| User | `%APPDATA%\Microsoft\Windows\Start Menu\opt` | `HKCU\Environment` | `%USERPROFILE%\bin` |
+| Machine | `%PROGRAMDATA%\Microsoft\Windows\Start Menu\opt` | `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` | `<SYSTEMDRIVE>\bin` |
+
+During an ordinary install, `pkg`:
+
+1. resolves the package and validates `pkg.toml`;
+2. makes the selected version current when appropriate;
+3. populates `App` if an `[origin]` is configured and `App` is missing or empty;
+4. creates declared shortcuts;
+5. writes declared environment variables and PATH additions;
+6. creates declared wrappers and ensures the scope's wrapper directory is on PATH.
+
+An already populated `App` is left alone by default. Reinstalling still repairs
+shortcuts, registry values, PATH entries, and wrappers. Use `--refresh-app` to
+explicitly rebuild `App` from its origin before that repair.
+
+## Commands and options
+
+`pkg` uses a small verb-based command line. Every update is explicit: check
+what is available, download it into a new version directory, then choose when
+to make that downloaded version current.
+
+```text
+pkg.cmd [options] <command> [subcommand] [path]
+```
+
+### Install
 
 ```bat
-pkg.cmd --action UpdateConfig C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd install C:\Packages\Tool
 ```
 
-Convert legacy package files into canonical `pkg.toml`:
+`install` activates the chosen version and applies its package definition. With
+no path it installs the package in the current directory.
+
+### Upgrade
 
 ```bat
-pkg.cmd --action ConvertLegacy C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd upgrade check C:\Packages\Tool
+pkg.cmd upgrade download C:\Packages\Tool
+pkg.cmd upgrade install C:\Packages\Tool
 ```
 
-Use `--dry-run` to print the generated TOML, or `--output <path>` to select a
-different destination.
+`upgrade check` is read-only and reports whether a newer release exists.
+`upgrade download` checks again, downloads and verifies the release, and stages
+it as a new version directory without changing `current`. `upgrade install`
+activates the most recently downloaded version and applies its shortcuts,
+environment settings, PATH entries, and wrappers. There is no automatic update
+policy or background update action.
 
-Repair mismatched top-level metadata during install:
+### Configuration
 
 ```bat
-pkg.cmd --fix-config C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd config check C:\Packages\Ripgrep
+pkg.cmd config update C:\Packages\Ripgrep\v14.1.0.l1
+pkg.cmd --dry-run config from-legacy C:\OldPackages\Ripgrep
 ```
 
-Refresh `App/` from the package origin before reinstalling components:
+`config check` validates a package without installing it. `config update`
+creates a starter `pkg.toml` when absent or synchronizes its directory-owned
+metadata. `config from-legacy` is a one-time, best-effort migration tool for
+older package formats.
 
-```bat
-pkg.cmd --refresh-app C:\Packages\Ripgrep\v14.1.0.l1
-```
+All options are accepted by the command parser; the following table notes where
+they have an effect.
 
-The convenience wrappers call the same entry point:
+| Option | Meaning |
+| --- | --- |
+| `--scope Auto\|User\|Machine` | Selects installation scope; defaults to `Auto`. Relevant to install and activation actions. |
+| `--use-defaults` | For `Install`, continues with defaults when an existing `pkg.toml` cannot be parsed or validated. |
+| `--allow-downgrade` | For `install`, permits replacing `current` when it already targets a newer version. |
+| `--refresh-app` | For `Install`, replaces `App` from `[origin]`, even when it is populated. |
+| `--no-checksum` | Bypasses configured origin or update checksum verification and emits a warning. |
+| `--output <path>` | Selects `config from-legacy` output; the default is `<path>\pkg.toml`. |
+| `--dry-run` | For `config from-legacy`, writes generated TOML to standard output without changing files. |
+| `--toml` | Adds `ok`, `changed`, and `status` fields to normal output. |
+| `--pause` | Waits for a keypress before exit. |
+| `--version` | Prints the `pkg` version and exits. |
+| `--help`, `--help-extended` | Prints standard or expanded CLI help and exits. |
 
-- `install.cmd`
-- `update-config.cmd`
-- `health-check.cmd`
-- `check-update.cmd`
-- `update.cmd`
-- `auto-update.cmd`
-- `refresh-app.cmd`
-- `self-update.cmd`
-- `legacy_to_pkg_toml.cmd`
-- `pkg.cmd`
+Exit status is `0` for success, `2` for a user/configuration error, `3` for a
+mutation failure, and `4` for an unexpected internal error.
 
-Run `pkg.cmd --help` for the full CLI reference.
+The convenience scripts call the same entry point and add `--pause` where
+appropriate. They use the same `install`, `upgrade`, and `config` commands
+documented above.
 
-Validate package metadata without installing:
+`pkg.cmd` locates Python in this order: `PKG_PYTHON`, `pkg.python` beside the
+launcher, then `python` from `PATH`.
 
-```bat
-pkg.cmd --action HealthCheck C:\Packages\Ripgrep\v14.1.0.l1
-```
+## `pkg.toml` reference
 
-## Bootstrap interpreter selection
+`pkg.toml` is optional for a simple pre-populated package. If it is absent,
+`install` uses defaults and does not create a file; `config update` creates a
+starter configuration. When a file exists, its schema is strict: unknown keys
+and legacy spellings are errors.
 
-`pkg.cmd` chooses Python in this order:
-
-1. `PKG_PYTHON`
-2. `pkg.python` next to `pkg.cmd`
-3. `python` from `PATH`
-
-## `pkg.toml`
-
-`pkg` accepts one canonical schema.
-
-Top-level metadata owned by `pkg`:
-
-- `name`
-- `version`
-- `localVersion`
-- `only_portable`
-
-Runtime tables:
-
-- `[origin]`
-- `[update]`
-- `[[shortcut]]`
-- `[[environment]]`
-- `[[path]]`
-- `[[bin]]`
-
-Minimal example:
+`name`, `version`, `localVersion`, and `only_portable` are package-owned
+metadata. Their canonical values come from the directory name and layout.
+`config update` synchronizes those fields while preserving unrelated runtime
+configuration and comments where possible. An install stops on a metadata
+mismatch. Run `pkg config update <version-directory>` before installing to
+synchronize it.
 
 ```toml
-name = "Ripgrep"
-version = "14.1.0"
-localVersion = 1
-only_portable = false
+name = "Ripgrep"                 # package-root directory name
+version = "14.1.0"               # version from v14.1.0.l1
+localVersion = 1                 # local revision from .l1
+only_portable = false            # must agree with the -portable convention
+description = "Fast text search" # descriptive metadata only
+homepage = "https://example.com" # descriptive metadata only
 
 [origin]
 url = "https://example.invalid/ripgrep.zip"
 checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-extractSubdir = "ripgrep"
+extractSubdir = "ripgrep-14.1.0"
 
 [[shortcut]]
 name = "Ripgrep"
@@ -164,7 +251,7 @@ targetPath = "$App\\rg.exe"
 
 [[environment]]
 Name = "RIPGREP_HOME"
-Value = "${USERPROFILE}\\Ripgrep"
+Value = "$App"
 
 [[path]]
 value = "$App"
@@ -176,164 +263,194 @@ forward_args = true
 extra_args = "--color=auto"
 ```
 
-Each `[[bin]]` table can instead use `content` (with only `name`) for a fully
-custom wrapper.
-With `command`, `pkg` generates a batch file containing `@echo off` and `call
-<command>`, then appends `extra_args` and `%*` when `forward_args = true`.
+Top-level keys are exactly: `name`, `version`, `localVersion`, `description`,
+`homepage`, `only_portable`, `origin`, `update`, `shortcut`, `environment`,
+`path`, and `bin`.
 
-`[origin]` is optional. When present, install populates `App/` only if the
-directory is missing or empty. If `App/` already contains anything, install
-skips origin population and still repairs shortcuts, environment variables,
-PATH entries, and wrappers.
+### Application origins
 
-A Git origin clones one exact commit from the configured ref into `App/`:
+`[origin]` is optional. It supplies `App` only when `App` is missing or empty,
+unless `--refresh-app` is used. An origin is one of the following.
+
+**ZIP origin.** Omit `mode` and supply an HTTP(S) archive URL. `checksum`, when
+present, must be `sha256:` followed by 64 hexadecimal characters. `extractSubdir`
+selects a directory inside the archive; its contents become `App`.
+
+```toml
+[origin]
+url = "https://example.invalid/tool-portable.zip"
+checksum = "sha256:<64-hex-digits>"
+extractSubdir = "tool-portable"
+```
+
+**Git origin.** Set `mode = "git"`, provide a safe Git URL, and optionally a
+full `refs/...` ref. The ref defaults to `refs/heads/main`. `pkg` resolves the
+ref and checks out that exact commit into `App`.
 
 ```toml
 [origin]
 mode = "git"
 url = "git@github.com:owner/repository.git"
-# ref = "refs/heads/main"
+ref = "refs/heads/main"
 ```
 
-The Git ref defaults to `refs/heads/main`. When a Git update is configured,
-`[update.check]` may be omitted: it defaults to Git mode with the origin ref.
-If an explicit Git update check is present, its ref must match the origin.
-Update discovery and candidate cloning use the origin URL from `pkg.toml`;
-they do not trust a checkout-local remote URL.
-
-Built-in origin mode downloads an HTTP(S) zip archive:
-
-```toml
-[origin]
-url = "https://example.invalid/tool-portable.zip"
-checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-extractSubdir = "tool-portable"
-```
-
-`checksum` is optional, but when present it is verified by default. Use
-`--no-checksum` only for an explicit local override; install prints a warning
-and skips verification. `extractSubdir` selects a directory inside the archive
-whose contents become `App/`.
-
-Historical origins can be recorded with repeated `[[origin.versions]]` tables.
-Entries may contain only `version` until you try to install from that entry:
-
-```toml
-[origin]
-url = "https://example.invalid/tool-2.0.0.zip"
-
-[[origin.versions]]
-version = "1.0.0"
-url = "https://example.invalid/tool-1.0.0.zip"
-checksum = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-```
-
-When the current origin is one of the versioned entries, omit top-level `url`
-or `script`. `pkg` selects the entry whose `version` matches the top-level
-package `version`:
-
-```toml
-version = "1.0.0"
-
-[origin]
-
-[[origin.versions]]
-version = "1.0.0"
-url = "https://example.invalid/tool-1.0.0.zip"
-```
-
-`HealthCheck` verifies that origin history is internally consistent: versioned
-entries must have unique `version` values, history-only origins must include
-an entry matching the top-level package `version`, and script origins must
-point to supported package-local script files when a script is declared.
-
-Script origin mode runs a package-local script:
+**Script origin.** Supply a package-local `.ps1`, `.cmd`, `.bat`, or `.exe`
+path. It must stay beneath the version directory. `pkg` runs it with its
+directory as the working directory, sends a JSON document on standard input,
+and requires a successful exit status and a non-empty `App`. The JSON contains
+`config`, `identity`, and `PkgVars` (`PkgRoot`, `App`, `Icons`, and
+`Shortcuts`). Script origins clear `App` first only when `--refresh-app` is
+used.
 
 ```toml
 [origin]
 script = "scripts\\populate-app.ps1"
 ```
 
-Scripts must live under the version directory and use `.ps1`, `.cmd`, `.bat`,
-or `.exe`. The script receives JSON on stdin, including `PkgVars.App`,
-`PkgVars.Icons`, and `PkgVars.Shortcuts`, and must leave `App/` non-empty.
+`url` and `script` are mutually exclusive. `mode` is valid only as `git`; ZIP
+and script modes are inferred. Git origins cannot use `checksum` or
+`extractSubdir`.
 
-`--refresh-app` explicitly repopulates an already populated `App/`. Zip origin
-prepares the new payload before replacing the directory. Script origin clears
-`App/` first, then runs the script.
-
-## Updates
-
-Updates use an explicit `check -> prepare -> activate` workflow. `CheckUpdate`
-only discovers a candidate; `Update` downloads into package-root `.pkg/work/`,
-creates a new immutable version directory, and then activates it through the
-ordinary install path. `AutoUpdate` only applies candidates when the package
-opts in with `allow_automatic_update = true`.
-
-```bat
-pkg.cmd --action CheckUpdate C:\Packages\Tool
-pkg.cmd --action Update C:\Packages\Tool
-pkg.cmd --action AutoUpdate C:\Packages\Tool
-```
-
-A Git origin can check and prepare its configured ref directly:
+Use repeated `[[origin.versions]]` tables to record historical sources. Every
+entry needs a unique `version`; it may initially contain only that version.
+If `[origin]` has no inline `url` or `script`, the entry matching the package's
+top-level `version` becomes the active source.
 
 ```toml
 [origin]
-mode = "git"
-url = "git@github.com:owner/repository.git"
 
-[update]
-allow_automatic_update = true
-
-[update.payload]
-mode = "git"
+[[origin.versions]]
+version = "1.0.0"
+url = "https://example.invalid/tool-1.0.0.zip"
+checksum = "sha256:<64-hex-digits>"
 ```
 
-The omitted origin ref and update check both default to Git on
-`refs/heads/main`. Declare `origin.ref` once for a different branch.
+### Integration tables
 
-An initial `vbootstrap-git.l1` package using `payload.mode = "git"` is a bootstrap
-template. Both `Install` and `Update` resolve its Git origin, clone the
-candidate into a new immutable `vYYYYMMDD-HHMMSS-git.l1` directory, synchronize
-that directory's `pkg.toml`, and activate it through ordinary installation.
-The bootstrap template's own `App/` is not populated or activated.
+Each `[[shortcut]]` table accepts `name`, `targetPath`, `arguments`,
+`workingDirectory`, `iconLocation`, and `description`. Only `name` and
+`targetPath` are required. A `.lnk` suffix is added to `name` when absent.
 
-Any version whose value begins with `bootstrap` is a bootstrap template. For
-example, `vbootstrap.l1` can use a package-local module check with a ZIP or
-module payload in the same way. Installing the template runs the trusted check,
-stages the returned release as its real version, and leaves the bootstrap
-directory without an `App/`.
+Each `[[environment]]` table requires exact-case `Name` and `Value` keys.
+Values are written as expandable Windows registry strings. Each `[[path]]`
+table has one `value`; normalized entries are appended only when they are not
+already present (case-insensitive, ignoring a trailing slash).
 
-Use `payload.mode = "git-inplace"` only when the package should retain its
-current version directory and fast-forward the existing `App/` checkout.
-Tracked local changes and divergent commits stop an in-place update; untracked
-runtime files are preserved. An install through `current` performs the same due
-automatic check when `allow_automatic_update = true`.
+Each `[[bin]]` table requires `name` and either `content` or `command`:
 
-Downloaded releases use a trusted local Python module to find the release and
-the built-in verified zip extractor to populate `App/`:
+```toml
+# Write exactly this wrapper content.
+[[bin]]
+name = "tool.cmd"
+content = "@echo off\r\ncall \"$App\\tool.exe\" %*\r\n"
+
+# Or let pkg produce @echo off / call <command>.
+[[bin]]
+name = "tool.cmd"
+command = "\"$App\\tool.exe\""
+extra_args = "--safe"
+forward_args = true
+```
+
+`extra_args` and `forward_args` are valid only with `command`; `forward_args`
+defaults to `false`. With command form, `pkg` emits `@echo off`, then `call
+<command>`, followed by `extra_args` and `%*` when requested.
+
+Shortcut and wrapper names are expanded before placement. A simple name goes
+under the scope's default root; nested relative paths are allowed. Absolute
+paths and `..` traversal are also allowed, but an output outside the default
+root produces a warning. This is intentional flexibility, so review such
+configuration carefully.
+
+### Variables and expansion
+
+`$App`, `$Icons`, and `$Shortcuts` expand to the corresponding directories in
+the selected version. `${version}` expands to the upstream version. Braced
+environment references such as `${USERPROFILE}` expand from the process
+environment and must resolve. `$$` becomes a literal dollar sign.
+
+In normal configuration fields, an unbraced non-package token such as `$NAME`
+is an error. In `[[bin]].content` and generated command wrappers, such tokens
+remain literal so native batch, PowerShell, and shell variables work as
+expected.
+
+## Updates
+
+Updates follow **check → download → install**. `pkg upgrade check` only
+discovers a candidate. `pkg upgrade download` stages a complete new version under
+`<package-root>\.pkg\work`, commits it as a new `v<version>.lN` directory,
+and records a receipt. `pkg upgrade install` activates the most recently
+downloaded version through the regular install workflow.
+Update state, locks, receipts, and disposable work files all live in
+`<package-root>\.pkg`; package repositories should ignore `/.pkg/`.
+
+Updates are never started or activated automatically. A package administrator
+or a scheduler chooses when to run each explicit upgrade command.
+
+Every update needs `[update.payload]` and normally `[update.check]`:
 
 ```toml
 [update.check]
-mode = "module"
+mode = "github"
+assetName = "tool-${version}-windows-x86_64.zip"
 
 [update.payload]
 mode = "zip"
-extractSubdir = "tool-portable"
+extractSubdir = "tool"
 ```
 
-ZIP payloads can instead select archive paths and place them beneath `$App`.
-Each `[[update.payload.extract]]` entry has a shell-wildcard `src`, interpreted
-relative to the ZIP root, and a `dest`, interpreted relative to `$App`. A `src`
-ending in `/` copies the matched directory's contents; otherwise a matched
-directory is copied as a directory.
+#### Update checks
 
-After a ZIP payload is placed in `$App`, `[[update.payload.rename]]` entries
-can rename one exact `src` path to a `dest` path. Both paths are relative to
-`$App`, must stay within it, and cannot overwrite an existing entry. Use
-`${version}` when an upstream archive includes its release version in a file
-name.
+`[update.check].mode` is one of:
+
+- `github`: requires `[origin].url` to be an `https://github.com/owner/repository`
+  page URL and requires `assetName`. The built-in checker reads GitHub's latest
+  release, removes a conventional leading `v` from its tag, and requires
+  exactly one uploaded asset with that name. `${version}` in `assetName`
+  expands to the discovered release version. GitHub's SHA-256 asset digest is
+  used when available.
+- `git`: checks `appPath` (default `App`) against `remote` (default `origin`)
+  and a full `ref` (default `refs/heads/main`). For a Git origin, `check` may
+  be omitted and defaults to that origin's ref; an explicit ref must match it.
+- `module`: imports a trusted `.py` module beneath `pkg.local` (default
+  `pkg.local/check_update.py`) and calls `check_update(context)`. `channel`
+  defaults to `stable`.
+
+Module checks must declare `PKG_MODULE_API = 1`. Their context has
+`apiVersion`, `current` identity fields, package/version/App paths, persisted
+state, and `channel`. Return `None` when current, or a mapping with
+non-empty `candidateId`, `version`, and `url`. Optional candidate fields are
+`sha256` (64 hex digits), `fileName`, `headers`, and `extractSubdir`. Candidate
+versions must be safe version-directory values and may not go backward.
+
+Trusted package-local hooks are not sandboxed. If a hook imports a missing
+dependency, `pkg` installs it into `%LOCALAPPDATA%\pkg\dependencies` and
+retries it, preferring `uv` and otherwise using that interpreter's `pip`.
+The launcher Python is not modified.
+
+#### Update payloads
+
+`[update.payload].mode` is one of:
+
+- `zip`: downloads a verified ZIP payload and populates a new `App`. A direct
+  candidate `.exe` is instead copied intact into `App`; installers need a
+  module payload.
+- `module`: downloads the candidate artifact and calls trusted
+  `pkg.local/unpack_app.py` by default. It must declare `PKG_MODULE_API = 1`
+  and define `unpack_app(context)`. The context contains `candidate` and paths
+  for `artifact`, `stageRoot`, and `stageApp`; the hook must leave `stageApp`
+  non-empty.
+- `git`: clones the checked Git candidate into a new immutable version.
+
+`git` requires a Git check. Downloaded candidates require a SHA-256 checksum
+unless `ignore_checksum = true` in the payload or
+`--no-checksum` is used.
+
+ZIP payloads may use `extractSubdir`, a candidate-provided `extractSubdir`, or
+explicit extraction mappings. `[[update.payload.extract]]` uses a ZIP-root
+shell-wildcard `src` and an `$App`-relative `dest`. A `src` ending in `/` copies
+the matched directory's contents; otherwise a matched directory is copied as a
+directory. `extract` cannot be combined with `extractSubdir`.
 
 ```toml
 [update.payload]
@@ -343,111 +460,50 @@ mode = "zip"
 src = "pandoc-*/"
 dest = ""
 
-[[update.payload.extract]]
-src = "documentation"
-dest = "share"
-
 [[update.payload.rename]]
 src = "pandoc-${version}.exe"
 dest = "pandoc.exe"
 ```
 
-This produces `$App\pandoc.exe` from the first mapping and
-`$App\share\documentation` from the second. ZIP mappings and `extractSubdir`
-cannot be combined.
+`[[update.payload.rename]]` renames exact, safe paths inside staged `App`
+after extraction; it cannot overwrite an existing destination. `maxSizeMB` is
+accepted by the current schema for future policy use but is not currently
+enforced.
 
-The default check hook is `pkg.local/check_update.py`; it must declare
-`PKG_MODULE_API = 1` and implement `check_update(context)`. Packages with a
-non-zip layout may set `payload.mode = "module"` and provide
-`pkg.local/unpack_app.py` with `unpack_app(context)`. These modules run inside
-the `pkg` process and are trusted extension code, not sandboxed plugins.
+Versions beginning with `bootstrap` are templates rather than active payloads.
+Installing one with a Git or module update configuration downloads and
+activates the first immutable version, leaving the template itself without an `App`.
+A Git bootstrap commonly uses `vbootstrap-git.l1` with `payload.mode = "git"`.
 
-When a `zip` payload candidate names a direct `.exe` file (through `fileName`,
-or the download URL basename), `pkg` stages that file directly in `$App`
-instead of attempting ZIP extraction. This is appropriate for portable
-executables. Installer executables require a package-local `module` payload to
-run their vendor-specific silent-install or unpack command.
+## Configuration, validation, and migration
 
-GitHub releases use the built-in REST API checker. Put the normal repository
-page URL in `[origin].url` and name exactly one uploaded release asset:
+Use `config check` before deploying a package definition. It validates canonical
+TOML, directory-derived metadata, historical-origin consistency, package-local
+origin scripts, and configured update modules without modifying the package.
 
-```toml
-[origin]
-url = "https://github.com/garethgeorge/backrest"
+Use `config update` to create a starter `pkg.toml` or repair metadata while
+keeping runtime settings. It does not populate `App` or install components.
 
-[update]
-allow_automatic_update = true
+`config from-legacy` is a best-effort migration aid for older JSON-based layouts.
+It recognizes common `opt_pkg.json`, `environment*.json`/`env*.json`,
+`shortcut*.json`, and `bin*.json` inputs; unknown and malformed material may
+become warnings. Review its output before installing. Existing output is
+backed up as `pkg.toml.bak`, then incremented suffixes when necessary.
 
-[update.check]
-mode = "github"
-assetName = "backrest_Windows_x86_64.zip"
+The standalone helpers remain available from `src`:
 
-[update.payload]
-mode = "zip"
+```bat
+python pkg\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+python pkg\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
-The checker derives
-`https://api.github.com/repos/{owner}/{repo}/releases/latest`, removes a
-conventional leading `v` from the release tag, and selects only the uploaded
-asset whose name exactly equals `assetName`. For assets whose filenames include
-the release version, `${version}` in `assetName` expands to the latest release
-version; for example, `tool-${version}-windows-x86_64.zip`. When GitHub supplies a
-`sha256:<digest>` asset digest, the existing payload verifier uses it.
+The shortcut importer reads `.lnk` files from `_shortcuts`, converts
+package-owned paths back to package variables, and updates matching
+`[[shortcut]]` tables. Both helpers are migration tools, not the supported
+runtime package API.
 
-Manager state, locks, receipts, and disposable downloads live under
-`<package-root>/.pkg/`; add `/.pkg/` to a package repository's `.gitignore`.
-`SelfUpdate` is reserved for a bootstrapped installation with `PKG_HOME`, a
-stable launcher outside the version directories, and a `current` junction.
+## Development
 
-## Variable rules
-
-Package variables:
-
-- `$App`
-- `$Icons`
-- `$Shortcuts`
-- `${version}` expands to the upstream version from the active package directory
-
-Environment-variable syntax:
-
-- `${VAR}` expands from the process environment
-- `$$` becomes a literal `$`
-
-In normal config fields, unresolved `${VAR}` values are errors. Inside
-`[[bin]]` content, plain non-package `$NAME` text is left alone so batch,
-PowerShell, and shell variables keep their native meaning.
-
-## Output placement
-
-`shortcut.name` and `bin.name` are expanded before placement. Each may be a
-simple name, a nested relative path under the default shortcut/bin root, or a
-path-like destination outside that root.
-
-Absolute paths and parent traversal are allowed. When the final destination is
-outside the default root, install prints a warning but still creates the output.
-
-## `UpdateConfig` behavior
-
-`UpdateConfig` is intentionally narrow:
-
-- if `pkg.toml` is missing, it creates a starter file with synchronized
-  metadata and commented examples
-- if `pkg.toml` already exists and uses the canonical schema, it synchronizes
-  only the owned top-level metadata keys
-- if you point it at a package root that does not yet have `current`, it uses
-  the only version directory under that root when there is exactly one
-- it preserves unrelated runtime content and comments when possible
-
-`Install` does not create `pkg.toml` when it is missing. It uses defaults and
-continues.
-
-## Migration tools
-
-`ConvertLegacy` is the supported entry point for best-effort conversion from
-older package formats. Conversion details and the standalone migration module
-are documented in [`pkg/`](src/pkg/README.md).
-
-## Development notes
-
-Contributor notes live in
-[`docs/development_guide.md`](docs/development_guide.md).
+Implementation and test guidance is in [docs/development_guide.md](docs/development_guide.md).
+The runtime module overview and migration-helper details are in
+[src/pkg/README.md](src/pkg/README.md).

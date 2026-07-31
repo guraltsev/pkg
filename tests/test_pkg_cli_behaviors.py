@@ -1,4 +1,4 @@
-"""Cover observable package CLI behavior across configuration and installation.
+﻿"""Cover observable package CLI behavior across configuration and installation.
 
 Temporary package trees, TOML parsing, and filesystem output are real. Windows
 registry, junction, shortcut, process, and network boundaries are mocked where
@@ -184,7 +184,10 @@ class PkgCliBehaviorTests(unittest.TestCase):
         module = load_pkg_module()
         code, help_text = self.run_main(module, ["--help"])
         self.assertEqual(code, 0)
-        self.assertIn("--action", help_text)
+        self.assertNotIn("--action", help_text)
+        self.assertNotIn("--fix-config", help_text)
+        self.assertNotIn("--force", help_text)
+        self.assertIn("--allow-downgrade", help_text)
         self.assertNotIn("--python", help_text)
         self.assertNotIn("--no-autoupdate-config", help_text)
         self.assertNotIn("Compress", help_text)
@@ -192,10 +195,12 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_invalid_install_path_returns_user_error_and_banner(self) -> None:
         """Invalid install path returns user error and banner."""
         module = load_pkg_module()
-        code, output = self.run_main(module, [str(ROOT / "does-not-exist")])
+        code, output = self.run_main(
+            module, ["install", str(ROOT / "does-not-exist")]
+        )
         self.assertEqual(code, module.EXIT_USER_ERROR)
-        self.assertIn("Operation: Install", output)
-        self.assertIn("Install failed.", output)
+        self.assertIn("Operation: install", output)
+        self.assertIn("install failed.", output)
 
     def test_update_rejects_historical_version_with_visible_error(self) -> None:
         """Update rejects a non-current concrete version and prints the cause."""
@@ -217,7 +222,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 url = "https://example.invalid/tool.git"
 
                 [update]
-                allow_automatic_update = true
 
                 [update.payload]
                 mode = "git"
@@ -226,100 +230,41 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             code, output = self.run_main(
                 module,
-                ["--action", "Update", str(version_dir)],
+                ["upgrade", "download", str(version_dir)],
             )
 
         self.assertEqual(code, module.EXIT_USER_ERROR)
         self.assertIn("Update actions require the active version", output)
 
-    def test_git_inplace_automatic_update_fast_forwards_existing_checkout(
-        self,
-    ) -> None:
-        """Git-inplace automatic update advances the existing checkout."""
+    def test_config_check_rejects_removed_automatic_update_setting(self) -> None:
+        """Config check rejects the removed automatic-update setting."""
         module = load_pkg_module()
-        layout = runtime_module("layout")
-
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            upstream = root / "upstream"
-            upstream.mkdir()
-
-            # Build a local upstream repository so Git discovery, fetch, and
-            # fast-forward behavior remain real without using the network.
-            self.run_git(upstream, "init")
-            self.run_git(upstream, "checkout", "-b", "main")
-            self.run_git(upstream, "config", "user.name", "Pkg Tests")
-            self.run_git(
-                upstream, "config", "user.email", "pkg-tests@example.invalid"
-            )
-            upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
-            self.run_git(upstream, "add", "payload.txt")
-            self.run_git(upstream, "commit", "-m", "initial")
-
-            package_root = root / "RollingApp"
-            version_dir = package_root / "v0-git.l1"
-            version_dir.mkdir(parents=True)
-            self.run_git(root, "clone", str(upstream), str(version_dir / "App"))
-            self.run_git(
-                version_dir / "App",
-                "remote",
-                "set-url",
-                "origin",
-                str(root / "wrong-remote"),
-            )
+            version_dir = self.make_version_dir(tmpdir, "ManualUpdates")
             self.write_config(
                 version_dir,
-                f"""
-                name = "RollingApp"
-                version = "0-git"
+                """
+                name = "ManualUpdates"
+                version = "1.0.0"
                 localVersion = 1
-
-                [origin]
-                mode = "git"
-                url = "{upstream.as_posix()}"
 
                 [update]
                 allow_automatic_update = true
 
+                [update.check]
+                mode = "module"
+
                 [update.payload]
-                mode = "git-inplace"
+                mode = "zip"
                 """,
             )
 
-            # Publish a new upstream commit after the installed checkout has
-            # been created, making one observable update available.
-            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
-            self.run_git(upstream, "add", "payload.txt")
-            self.run_git(upstream, "commit", "-m", "update")
-
-            # Simulate the Windows current junction while keeping the Git and
-            # package filesystem transitions real.
-            current = package_root / "current"
-            current.mkdir()
-            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                with mock.patch.object(layout, "is_junction", return_value=True):
-                    with mock.patch.object(
-                        layout, "get_junction_target", return_value=version_dir
-                    ):
-                        with mock.patch.object(
-                            module,
-                            "update_current_junction_if_needed",
-                            return_value=True,
-                        ):
-                            result = module.update_package(
-                                package_root, automatic=True
-                            )
-
-            self.assertTrue(result.ok, msg=result.errors)
-            self.assertTrue(result.changed)
-            self.assertEqual(
-                (version_dir / "App" / "payload.txt").read_text(encoding="utf-8"),
-                "two",
+            code, output = self.run_main(
+                module, ["config", "check", str(version_dir)]
             )
-            self.assertEqual(
-                sorted(path.name for path in package_root.glob("v*.l*")),
-                ["v0-git.l1"],
-            )
+
+        self.assertEqual(code, module.EXIT_USER_ERROR)
+        self.assertIn("Unknown key 'allow_automatic_update' in update", output)
 
     def test_bootstrap_git_install_creates_populated_timestamped_version(self) -> None:
         """Installing bootstrap-git promotes its origin into an immutable version."""
@@ -357,14 +302,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 url = "{upstream.as_posix()}"
 
                 [update]
-                allow_automatic_update = true
 
                 [update.payload]
                 mode = "git"
                 """,
             )
 
-            # CheckUpdate can inspect a bootstrap template directly without
+            # Upgrade checks can inspect a bootstrap template directly without
             # populating App or requiring a current junction.
             check_result = module.check_package_update(version_dir)
             self.assertTrue(check_result.ok, msg=check_result.errors)
@@ -428,7 +372,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             "update_current_junction_if_needed",
                             return_value=True,
                         ):
-                            update_result = module.update_package(new_version)
+                            update_result = module.download_package_update(new_version)
 
             updated_versions = [
                 path
@@ -461,7 +405,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 localVersion = 1
 
                 [update]
-                allow_automatic_update = true
 
                 [update.check]
                 mode = "module"
@@ -537,7 +480,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 localVersion = 1
 
                 [update]
-                allow_automatic_update = true
 
                 [update.check]
                 mode = "module"
@@ -615,7 +557,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 url = "https://github.com/owner/tool"
 
                 [update]
-                allow_automatic_update = true
 
                 [update.check]
                 mode = "github"
@@ -692,17 +633,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertFalse((release_dir / "App" / "unrelated").exists())
             self.assertFalse((version_dir / "App").exists())
 
-    def test_self_update_without_pkg_home_explains_package_update_command(self) -> None:
-        """SelfUpdate without PKG_HOME reports that packages use update.cmd."""
-        module = load_pkg_module()
-
-        with mock.patch.dict(os.environ, {"PKG_HOME": ""}, clear=False):
-            code, output = self.run_main(module, ["--action", "SelfUpdate"])
-
-        self.assertEqual(code, module.EXIT_USER_ERROR)
-        self.assertIn("SelfUpdate updates pkg itself", output)
-        self.assertIn("update.cmd instead", output)
-
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""
         module = load_pkg_module()
@@ -711,7 +641,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v0.9.0.l1"
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(version_dir)]
+                module, ["config", "update", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -725,7 +655,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
     def test_convert_legacy_action_writes_canonical_toml(self) -> None:
-        """ConvertLegacy writes canonical TOML through the main pkg CLI."""
+        """Config from-legacy writes canonical TOML through the main pkg CLI."""
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "LegacyApp" / "v2.3.4.l5"
@@ -744,7 +674,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             code, output = self.run_main(
                 module,
-                ["--action", "ConvertLegacy", str(version_dir)],
+                ["config", "from-legacy", str(version_dir)],
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -757,7 +687,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertFalse(parsed["only_portable"])
 
     def test_convert_legacy_dry_run_emits_only_parseable_toml(self) -> None:
-        """ConvertLegacy dry-run emits parseable TOML without writing output."""
+        """Config from-legacy dry-run emits parseable TOML without writing output."""
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "DryLegacy" / "v1.0.0.l2"
@@ -776,9 +706,9 @@ class PkgCliBehaviorTests(unittest.TestCase):
             code, output = self.run_main(
                 module,
                 [
-                    "--action",
-                    "ConvertLegacy",
                     "--dry-run",
+                    "config",
+                    "from-legacy",
                     str(version_dir),
                 ],
             )
@@ -796,7 +726,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             version_dir = self.make_version_dir(tmpdir, "DotApp")
 
             with pushd(version_dir):
-                code, output = self.run_main(module, ["--action", "UpdateConfig"])
+                code, output = self.run_main(module, ["config", "update"])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertTrue((version_dir / "pkg.toml").exists())
@@ -811,7 +741,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v0.9.0.l1"
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(package_root)]
+                module, ["config", "update", str(package_root)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -835,7 +765,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             (package_root / "v2.0.0.l1").mkdir()
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(package_root)]
+                module, ["config", "update", str(package_root)]
             )
 
             self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
@@ -849,7 +779,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v2.0.0.l3"
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(version_dir)]
+                module, ["config", "update", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -888,7 +818,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(version_dir)]
+                module, ["config", "update", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -918,7 +848,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(version_dir)]
+                module, ["config", "update", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -942,7 +872,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
                 ):
-                    code, output = self.run_main(module, [str(version_dir)])
+                    code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertIn("using defaults without creating a file", output)
@@ -970,7 +900,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ) as components_mock:
-                        code, output = self.run_main(module, [str(package_root)])
+                        code, output = self.run_main(module, ["install", str(package_root)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             junction_mock.assert_called_once()
@@ -994,7 +924,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                code, output = self.run_main(module, [str(version_dir)])
+                code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn(
@@ -1016,12 +946,13 @@ class PkgCliBehaviorTests(unittest.TestCase):
                     with mock.patch.object(
                         module, "install_components"
                     ) as components_mock:
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             junction_mock.assert_not_called()
             components_mock.assert_not_called()
             self.assertIn("Configuration inconsistencies detected", output)
+            self.assertIn(f"pkg config update {version_dir}", output)
             self.assertIn(
                 'name = "MismatchApp-OLD"',
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
@@ -1053,12 +984,12 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ):
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
 
     def test_update_config_uses_the_package_directory_name_case(self) -> None:
-        """UpdateConfig writes the package directory's exact name spelling."""
+        """Config update writes the package directory's exact name spelling."""
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "CaseSensitiveApp")
@@ -1072,7 +1003,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["--action", "UpdateConfig", str(version_dir)]
+                module, ["config", "update", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1080,88 +1011,6 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 'name = "CaseSensitiveApp"',
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
             )
-
-    def test_install_with_fix_config_repairs_metadata_then_continues(self) -> None:
-        """Install with fix config repairs metadata then continues."""
-        module = load_pkg_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            package_root = self.copy_fixture(tmpdir, "MismatchApp")
-            version_dir = package_root / "v2.0.0.l3"
-
-            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                with mock.patch.object(
-                    module, "update_current_junction_if_needed", return_value=True
-                ) as junction_mock:
-                    with mock.patch.object(
-                        module,
-                        "install_components",
-                        return_value=mock.Mock(
-                            ok=True, changed=False, warnings=[], errors=[]
-                        ),
-                    ) as components_mock:
-                        code, output = self.run_main(
-                            module, ["--fix-config", str(version_dir)]
-                        )
-
-            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            junction_mock.assert_called_once()
-            components_mock.assert_called_once()
-            self.assertIn("Configuration updated successfully.", output)
-            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
-            backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
-            self.assertIn('name = "MismatchApp"', updated)
-            self.assertIn('version = "2.0.0"', updated)
-            self.assertIn("localVersion = 3", updated)
-            self.assertIn('name = "MismatchApp-OLD"', backup)
-
-    def test_install_with_fix_config_repairs_portable_flag_before_machine_scope_gate(
-        self,
-    ) -> None:
-        """Install with fix config repairs portable flag before machine scope gate."""
-        module = load_pkg_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            version_dir = self.make_version_dir(tmpdir, "MachineRepairApp")
-            self.write_config(
-                version_dir,
-                """
-                name = "MachineRepairApp"
-                version = "1.0.0"
-                localVersion = 1
-                only_portable = true
-                """,
-            )
-
-            with mock.patch.dict(os.environ, self.machine_env(tmpdir), clear=False):
-                with mock.patch.object(
-                    module, "is_current_user_admin", return_value=True
-                ):
-                    with mock.patch.object(
-                        module, "update_current_junction_if_needed", return_value=True
-                    ):
-                        with mock.patch.object(
-                            module,
-                            "install_components",
-                            return_value=mock.Mock(
-                                ok=True, changed=False, warnings=[], errors=[]
-                            ),
-                        ):
-                            code, output = self.run_main(
-                                module,
-                                [
-                                    "--scope",
-                                    "Machine",
-                                    "--fix-config",
-                                    str(version_dir),
-                                ],
-                            )
-
-            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            self.assertIn("Configuration updated successfully.", output)
-            self.assertNotIn(
-                "only_portable packages cannot be installed system-wide", output
-            )
-            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
-            self.assertIn("only_portable = false", updated)
 
     def test_auto_scope_uses_admin_status_and_portability_policy(self) -> None:
         """Automatic scope selects Machine only for permitted administrator installs."""
@@ -1206,7 +1055,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                                 return_value=True,
                             ):
                                 code, output = self.run_main(
-                                    module, [str(version_dir)]
+                                    module, ["install", str(version_dir)]
                                 )
 
                 self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1239,7 +1088,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                         "create_shortcut",
                         side_effect=RuntimeError("boom"),
                     ):
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
             self.assertIn("Failed to create shortcut 'Broken Shortcut': boom", output)
@@ -1257,7 +1106,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
                 ):
-                    code, output = self.run_main(module, [str(version_dir)])
+                    code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
             self.assertIn("unresolved variable", output)
@@ -1289,7 +1138,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                     with mock.patch.object(
                         runtime_module("components"), "create_shortcut"
                     ) as create_shortcut_mock:
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
             create_shortcut_mock.assert_not_called()
@@ -1325,7 +1174,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ):
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertTrue((Path(env["USERPROFILE"]) / "outside.cmd").exists())
@@ -1359,7 +1208,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                     with mock.patch.object(
                         runtime_module("components"), "create_shortcut"
                     ) as create_shortcut_mock:
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             shortcut_path = create_shortcut_mock.call_args.args[0]
@@ -1414,7 +1263,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ):
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             written = (Path(env["USERPROFILE"]) / "bin" / "tool.ps1").read_text(
@@ -1460,7 +1309,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ):
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             written = (Path(env["USERPROFILE"]) / "bin" / "tool.cmd").read_text(
@@ -1492,7 +1341,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                code, output = self.run_main(module, [str(version_dir)])
+                code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn(
@@ -1533,11 +1382,11 @@ class PkgCliBehaviorTests(unittest.TestCase):
                     ):
                         write_wrapper_config("one")
                         first_code, first_output = self.run_main(
-                            module, [str(version_dir)]
+                            module, ["install", str(version_dir)]
                         )
                         write_wrapper_config("two")
                         second_code, second_output = self.run_main(
-                            module, [str(version_dir)]
+                            module, ["install", str(version_dir)]
                         )
 
             self.assertEqual(first_code, module.EXIT_SUCCESS, msg=first_output)
@@ -1565,7 +1414,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
-                code, output = self.run_main(module, [str(version_dir)])
+                code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("Unsupported legacy key 'downloadURL'", output)
@@ -1612,7 +1461,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                         with mock.patch.object(
                             module, "install_components", side_effect=assert_app_ready
                         ):
-                            code, output = self.run_main(module, [str(version_dir)])
+                            code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             urlopen_mock.assert_called_once_with("https://example.invalid/tool.zip")
@@ -1650,7 +1499,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                                 ok=True, changed=False, warnings=[], errors=[]
                             ),
                         ):
-                            code, output = self.run_main(module, [str(version_dir)])
+                            code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             urlopen_mock.assert_not_called()
@@ -1701,7 +1550,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                                 ok=True, changed=False, warnings=[], errors=[]
                             ),
                         ):
-                            code, output = self.run_main(module, [str(version_dir)])
+                            code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             urlopen_mock.assert_called_once_with("https://example.invalid/current.zip")
@@ -1744,7 +1593,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ),
                         ):
                             code, output = self.run_main(
-                                module, ["--refresh-app", str(version_dir)]
+                                module, ["--refresh-app", "install", str(version_dir)]
                             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1775,7 +1624,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
                 ):
-                    code, output = self.run_main(module, [str(version_dir)])
+                    code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
             self.assertIn("does not declare url or script", output)
@@ -1811,7 +1660,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                         urllib.request, "urlopen", return_value=io.BytesIO(archive)
                     ):
                         code, output = self.run_main(
-                            module, ["--refresh-app", str(version_dir)]
+                            module, ["--refresh-app", "install", str(version_dir)]
                         )
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
@@ -1850,7 +1699,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                         urllib.request, "urlopen", return_value=io.BytesIO(archive)
                     ):
                         code, output = self.run_main(
-                            module, ["--refresh-app", str(version_dir)]
+                            module, ["--refresh-app", "install", str(version_dir)]
                         )
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
@@ -1895,7 +1744,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             ),
                         ):
                             code, output = self.run_main(
-                                module, ["--no-checksum", str(version_dir)]
+                                module, ["--no-checksum", "install", str(version_dir)]
                             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1954,14 +1803,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
                                 ok=True, changed=False, warnings=[], errors=[]
                             ),
                         ):
-                            code, output = self.run_main(module, [str(version_dir)])
+                            code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             run_mock.assert_called_once()
             self.assertTrue((version_dir / "App" / "created.txt").exists())
 
     def test_health_check_accepts_valid_origin_history(self) -> None:
-        """HealthCheck validates origin history without downloading or installing."""
+        """Config check validates origin history without downloading or installing."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1989,7 +1838,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(urllib.request, "urlopen") as urlopen_mock:
                     code, output = self.run_main(
-                        module, ["--action", "HealthCheck", str(version_dir)]
+                        module, ["config", "check", str(version_dir)]
                     )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1997,7 +1846,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertIn("Health check passed.", output)
 
     def test_health_check_accepts_origin_history_without_sources(self) -> None:
-        """HealthCheck accepts version-only origin history entries."""
+        """Config check accepts version-only origin history entries."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2019,14 +1868,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["--action", "HealthCheck", str(version_dir)]
+                    module, ["config", "check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertIn("Health check passed.", output)
 
     def test_health_check_rejects_duplicate_origin_history_versions(self) -> None:
-        """HealthCheck reports duplicate versioned origin entries."""
+        """Config check reports duplicate versioned origin entries."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2050,14 +1899,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["--action", "HealthCheck", str(version_dir)]
+                    module, ["config", "check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("duplicate version: 1.0", output)
 
     def test_health_check_rejects_missing_package_version_origin_history(self) -> None:
-        """HealthCheck reports origin history that lacks the package version."""
+        """Config check reports origin history that lacks the package version."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2077,7 +1926,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["--action", "HealthCheck", str(version_dir)]
+                    module, ["config", "check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -2087,7 +1936,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
     def test_health_check_rejects_top_level_origin_version(self) -> None:
-        """HealthCheck rejects removed top-level [origin].version syntax."""
+        """Config check rejects removed top-level [origin].version syntax."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2110,14 +1959,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["--action", "HealthCheck", str(version_dir)]
+                    module, ["config", "check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("Unknown key 'version' in origin", output)
 
     def test_health_check_rejects_bad_origin_script_reference(self) -> None:
-        """HealthCheck reports package-local script reference problems."""
+        """Config check reports package-local script reference problems."""
 
         module = load_pkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2136,7 +1985,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["--action", "HealthCheck", str(version_dir)]
+                    module, ["config", "check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -2168,7 +2017,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                         with mock.patch.object(
                             module, "install_components"
                         ) as install_components_mock:
-                            code, output = self.run_main(module, [str(version_dir)])
+                            code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             urlopen_mock.assert_not_called()

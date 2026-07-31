@@ -312,7 +312,7 @@ def resolve_input_path(raw_path: Path) -> Tuple[PackageIdentity, bool]:
 
 
 def update_current_junction_if_needed(
-    identity: PackageIdentity, *, force: bool = False
+    identity: PackageIdentity, *, allow_downgrade: bool = False
 ) -> bool:
     r"""Update ``<package>\current`` unless a newer version should win.
 
@@ -325,10 +325,10 @@ def update_current_junction_if_needed(
     ----------
     identity : PackageIdentity
         Package version that should become or remain ``current``.
-    force : bool
+    allow_downgrade : bool
         Whether to allow replacing ``current`` when it already
             points to a newer version. Same-version targets may still
-            refresh ``current`` without ``force``.
+            refresh ``current`` without the override.
 
     Returns
     -------
@@ -382,15 +382,15 @@ def update_current_junction_if_needed(
             )
             # Same-version reinstalls are a supported refresh path. Only
             # keep the existing junction untouched when it points to a
-            # newer version and --force was not requested.
-            if not force and comparison < 0:
+            # newer version and --allow-downgrade was not requested.
+            if not allow_downgrade and comparison < 0:
                 log_info(
                     f"JUNCTION: keeping current ({current_version} > {identity.version_string})"
                 )
                 return False
-            if force:
+            if allow_downgrade:
                 log_info(
-                    f"JUNCTION: --force: updating current to {identity.version_string}"
+                    f"JUNCTION: --allow-downgrade: updating current to {identity.version_string}"
                 )
 
     # Refreshing the currently active version may still recreate

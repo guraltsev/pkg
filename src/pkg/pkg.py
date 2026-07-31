@@ -10,7 +10,8 @@ Usage and API
 Call ``main(...)`` for command-line execution. Embedders may call
 ``install_package(...)``, ``update_package_config(...)``,
 ``convert_legacy_config(...)``, ``health_check_package(...)``,
-``check_package_update(...)``, or ``update_package(...)`` directly.
+``check_package_update(...)``, ``download_package_update(...)``, or
+``install_downloaded_update(...)`` directly.
 
 Implementation Approach
 -----------------------
@@ -26,7 +27,7 @@ import os
 import shutil
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -45,7 +46,6 @@ from pkg.configuration import (  # noqa: E402
     read_runtime_config,
 )
 from pkg.core import (  # noqa: E402
-    Action,
     ActionResult,
     ConfigValidationError,
     PackageIdentity,
@@ -53,6 +53,7 @@ from pkg.core import (  # noqa: E402
     log_error,
     log_info,
     log_warning,
+    read_toml_file,
     write_text_atomic,
 )
 from pkg.layout import (  # noqa: E402
@@ -73,7 +74,6 @@ from pkg.updates import (  # noqa: E402
     _load_update_state,
     _next_version_identity,
     _prepare_update,
-    _refresh_git_app_inplace,
     _toml_value,
     _update_paths,
     _write_update_state,
@@ -102,29 +102,27 @@ Quick start
 
 Notes:
   - ``pkg --help`` and ``pkg --version`` do not write files.
-  - ``Install`` does not auto-create ``pkg.toml``.
-  - ``HealthCheck`` validates ``pkg.toml`` and origin script references without writing files.
-  - ``CheckUpdate`` discovers an update without downloading it.
-  - ``Update`` checks, stages, and activates an available update.
-  - ``AutoUpdate`` performs a due check and applies only when ``[update]`` opts in.
-  - ``SelfUpdate`` requires a stable ``PKG_HOME`` launcher installation.
-  - ``UpdateConfig`` creates a documented starter template when ``pkg.toml`` is missing.
-  - ``UpdateConfig`` syncs only canonical top-level metadata keys in an existing file.
-  - ``ConvertLegacy`` builds canonical ``pkg.toml`` from legacy package files.
+  - ``install`` does not auto-create ``pkg.toml``.
+  - ``config check`` validates ``pkg.toml`` and origin script references without writing files.
+  - ``upgrade check`` discovers an update without downloading it.
+  - ``upgrade download`` stages an available update without activating it.
+  - ``upgrade install`` activates the most recently downloaded update.
+  - ``config update`` creates a documented starter template when ``pkg.toml`` is missing.
+  - ``config from-legacy`` builds canonical ``pkg.toml`` from legacy package files.
   - Contributor notes live in ``docs/development_guide.md``.
 
 Run the tool from inside a *version directory*:
 
-  pkg                 # installs from the current working directory
+  pkg install         # installs from the current working directory
 
 Or pass a path to a version directory:
 
-  pkg C:\opt\pkgs\Ripgrep\v14.1.0.l1
+  pkg install C:\opt\pkgs\Ripgrep\v14.1.0.l1
 
 You may also pass the *package root* (the directory that contains ``current``);
 in that case the tool installs from the ``current`` junction:
 
-  pkg C:\opt\pkgs\Ripgrep
+  pkg install C:\opt\pkgs\Ripgrep
 
 If ``current`` is missing, a package root with exactly one version directory
 is still accepted and the tool uses that version directory directly.
@@ -224,13 +222,13 @@ Variable expansion
 """
 
 
-def print_action_banner(operation: Action, scope: Scope) -> None:
+def print_action_banner(operation: str, scope: Scope) -> None:
     """Emit the standard CLI banner for one operation.
 
     Parameters
     ----------
-    operation : Action
-        Action currently being executed.
+    operation : str
+        Command currently being executed.
     scope : Scope
         Installation scope selected by the caller.
 
@@ -238,7 +236,7 @@ def print_action_banner(operation: Action, scope: Scope) -> None:
     log_info("")
     log_info("=" * 60)
     log_info("gurlatsev/pkg: Package Manager")
-    log_info(f"Operation: {operation.value}")
+    log_info(f"Operation: {operation}")
     log_info(f"Scope: {scope.value}")
     log_info("=" * 60)
     log_info("")
@@ -389,31 +387,25 @@ def check_package_update(package_path: Path) -> ActionResult:
         lock.unlink(missing_ok=True)
 
 
-def update_package(
+def download_package_update(
     package_path: Path,
     *,
-    scope: Scope = Scope.AUTO,
-    automatic: bool = False,
     no_checksum: bool = False,
 ) -> ActionResult:
-    """Check, stage, commit, and activate an available package update.
+    """Check, download, and stage an available package update.
 
     Parameters
     ----------
     package_path : Path
         Package root or ``current`` junction whose active version should be
         updated, or a supported bootstrap template version.
-    scope : Scope, default=Scope.AUTO
-        Installation scope used when activating the prepared version.
-    automatic : bool, default=False
-        Whether interval and automatic-activation policy should be enforced.
     no_checksum : bool, default=False
         Whether checksum verification may be bypassed for downloaded payloads.
 
     Returns
     -------
     ActionResult
-        Update outcome with warnings and the recommended process exit code.
+        Download outcome with warnings and the recommended process exit code.
     """
 
     # Resolve update ownership and policy before creating manager state.
@@ -433,7 +425,7 @@ def update_package(
             warnings=warnings,
         )
 
-    # Serialize check, staging, and activation beneath one package-root lock.
+    # Serialize discovery and staging beneath one package-root lock.
     paths = _update_paths(identity.package_root)
     paths["locks"].mkdir(parents=True, exist_ok=True)
     lock = paths["locks"] / "update.toml"
@@ -451,22 +443,9 @@ def update_package(
     work.mkdir(parents=True)
     (work / "pycache").mkdir()
     try:
-        # Automatic checks honor the advisory interval; explicit updates always
-        # contact the configured source.
+        # Every explicit download contacts the configured source and records its
+        # resulting candidate before deciding whether a payload is needed.
         state = _load_update_state(paths["state"])
-        if automatic and state.get("lastSuccessfulCheck"):
-            try:
-                previous = datetime.fromisoformat(state["lastSuccessfulCheck"])
-                if previous.tzinfo is None:
-                    previous = previous.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) - previous < timedelta(hours=24):
-                    log_info("Automatic update check is not due yet")
-                    return ActionResult(True, warnings=warnings)
-            except ValueError:
-                log_warning("Ignoring an invalid lastSuccessfulCheck value")
-
-        # Record successful discovery before deciding whether policy permits
-        # activation of the returned candidate.
         if bootstrap and update["check"]["mode"] == "git":
             status = "available"
             candidate = _git_origin_candidate(identity, config, state)
@@ -484,28 +463,14 @@ def update_package(
         _write_update_state(paths["state"], state)
         if status == "current" or candidate is None:
             return ActionResult(True, warnings=warnings)
-        if automatic and not update["allow_automatic_update"]:
-            log_info("Update is available but automatic activation is disabled")
-            return ActionResult(True, warnings=warnings)
-
-        # Explicit in-place Git packages keep one mutable version. Refresh its
-        # checkout, then repair installed components without recursively
-        # checking for another update.
-        if update["payload"]["mode"] == "git-inplace":
-            _refresh_git_app_inplace(identity, config, candidate)
-            result = install_package(
-                identity.version_path, scope=scope, _skip_update_check=True
-            )
-            result.changed = True
-            result.warnings = warnings + result.warnings
-            return result
 
         # Reuse an already committed candidate or atomically commit a complete
-        # staged version before entering the normal install workflow.
+        # staged version. Activation is a separate explicit command.
         new_identity = _next_version_identity(identity, candidate)
         receipt = paths["receipts"] / f"{new_identity.version_string}.toml"
         if new_identity.version_path.exists():
-            return install_package(new_identity.version_path, scope=scope)
+            log_info(f"Downloaded: {new_identity.version_string}")
+            return ActionResult(True, warnings=warnings)
         staged = _prepare_update(
             identity, config, candidate, work, no_checksum=no_checksum
         )
@@ -515,11 +480,8 @@ def update_package(
             receipt,
             f"schemaVersion = 1\ncandidateId = {_toml_value(candidate['candidateId'])}\nversion = {_toml_value(staged.version)}\nlocalVersion = {staged.local_version}\n",
         )
-        result = install_package(
-            staged.version_path, scope=scope, _skip_update_check=True
-        )
-        result.warnings = warnings + result.warnings
-        return result
+        log_info(f"Downloaded: {staged.version_string}")
+        return ActionResult(True, changed=True, warnings=warnings)
     except (ConfigValidationError, ValueError) as exc:
         return action_failure(
             str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
@@ -533,16 +495,69 @@ def update_package(
         lock.unlink(missing_ok=True)
 
 
+def install_downloaded_update(
+    package_path: Path, *, scope: Scope = Scope.AUTO, no_checksum: bool = False
+) -> ActionResult:
+    """Activate the most recently downloaded update for a package.
+
+    Parameters
+    ----------
+    package_path : Path
+        Package root or active package path that owns staged updates.
+    scope : Scope, default=Scope.AUTO
+        Installation scope used to activate the staged version.
+    no_checksum : bool, default=False
+        Accepted for command consistency; checksums are verified during download.
+
+    Returns
+    -------
+    ActionResult
+        Activation outcome with warnings and the recommended process exit code.
+    """
+    _ = no_checksum
+
+    # Resolve the active package and inspect only manager-owned receipts before
+    # selecting an immutable version to activate.
+    try:
+        identity, _ = resolve_input_path(package_path)
+    except ValueError as exc:
+        return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
+    receipts = _update_paths(identity.package_root)["receipts"]
+    receipt_paths = sorted(
+        receipts.glob("v*.l*.toml"), key=lambda path: path.stat().st_mtime, reverse=True
+    ) if receipts.exists() else []
+    if not receipt_paths:
+        return action_failure(
+            "No downloaded update is available. Run 'pkg upgrade download' first.",
+            exit_code=EXIT_USER_ERROR,
+        )
+
+    # Receipts name the committed version and are validated against the package
+    # layout before the regular install workflow manages the current junction.
+    try:
+        receipt = read_toml_file(receipt_paths[0])
+        version = receipt.get("version")
+        local_version = receipt.get("localVersion")
+        if not isinstance(version, str) or not isinstance(local_version, int):
+            raise ValueError("receipt has invalid version metadata")
+        version_path = identity.package_root / f"v{version}.l{local_version}"
+        if not version_path.is_dir():
+            raise ValueError(f"downloaded version is missing: {version_path}")
+    except (OSError, ValueError) as exc:
+        return action_failure(
+            f"Cannot activate downloaded update: {exc}", exit_code=EXIT_USER_ERROR
+        )
+    return install_package(version_path, scope=scope)
+
+
 def install_package(
     package_path: Path,
     *,
     scope: Scope = Scope.AUTO,
-    fix_config: bool = False,
     use_defaults: bool = False,
-    force: bool = False,
+    allow_downgrade: bool = False,
     refresh_app: bool = False,
     no_checksum: bool = False,
-    _skip_update_check: bool = False,
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -560,15 +575,13 @@ def install_package(
     scope : Scope, default=Scope.AUTO
         Installation scope to use for mutations. Automatic selection uses
         machine scope for administrators unless the package is portable-only.
-    fix_config : bool, default=False
-        Whether installs may synchronize mismatched metadata automatically.
     use_defaults : bool, default=False
         Whether installs may fall back to runtime defaults when TOML loading
         fails.
-    force : bool, default=False
+    allow_downgrade : bool, default=False
         Whether installs may replace ``current`` even when it already points to
         a newer version. Ordinary same-version repair reruns do not require
-        ``force``.
+        this override.
     refresh_app : bool, default=False
         Whether to repopulate ``App/`` from origin even when it already
         contains files.
@@ -581,7 +594,7 @@ def install_package(
         Truthful description of the install outcome and recommended exit code.
 
     """
-    print_action_banner(Action.INSTALL, scope)
+    print_action_banner("install", scope)
 
     # Resolve the caller's path first so every later step works from a concrete
     # version directory and knows whether ``current`` was the original target.
@@ -610,82 +623,22 @@ def install_package(
     for warning in load_warnings:
         log_warning(warning)
 
-    # Keep directory-derived metadata authoritative. When the config disagrees,
-    # either stop with actionable guidance or repair it explicitly.
-    config_sync_changed = False
+    # Keep directory-derived metadata authoritative. Installation never rewrites
+    # package definitions; authors must run `pkg config update` explicitly.
     inconsistencies = check_metadata_consistency(identity, raw_config_data)
     if inconsistencies:
-        if not fix_config:
-            log_error("Configuration inconsistencies detected:")
-            for message in inconsistencies:
-                log_error(f"  - {message}")
-            log_info(
-                "Aborting installation to avoid mutating configs as a side effect."
-            )
-            log_info("To fix the config, run one of:")
-            log_info(
-                f"  - pkg --action {Action.UPDATE_CONFIG.value} {identity.version_path}"
-            )
-            log_info("  - re-run this install with --fix-config")
-            return ActionResult(
-                ok=False,
-                changed=False,
-                warnings=warnings,
-                errors=inconsistencies,
-                exit_code=EXIT_USER_ERROR,
-            )
-
-        log_warning("Configuration inconsistencies detected:")
+        log_error("Configuration inconsistencies detected:")
         for message in inconsistencies:
-            log_warning(f"  - {message}")
-        log_info(
-            "--fix-config enabled: syncing configuration metadata to match directory structure..."
+            log_error(f"  - {message}")
+        log_info("Run this command before installing:")
+        log_info(f"  pkg config update {identity.version_path}")
+        return ActionResult(
+            ok=False,
+            changed=False,
+            warnings=warnings,
+            errors=inconsistencies,
+            exit_code=EXIT_USER_ERROR,
         )
-        try:
-            update_result = update_config_file(identity)
-        except (ConfigValidationError, RuntimeError, ValueError) as exc:
-            return action_failure(
-                f"Failed to update configuration: {exc}",
-                exit_code=EXIT_USER_ERROR,
-                warnings=warnings,
-            )
-        except OSError as exc:
-            return action_failure(
-                f"Failed to update configuration: {exc}",
-                exit_code=EXIT_MUTATION_ERROR,
-                warnings=warnings,
-            )
-        warnings.extend(update_result.warnings)
-        config_sync_changed = update_result.changed
-        if not update_result.ok:
-            return ActionResult(
-                ok=False,
-                changed=config_sync_changed,
-                warnings=warnings,
-                errors=update_result.errors,
-                exit_code=EXIT_MUTATION_ERROR,
-            )
-        log_info("Configuration updated successfully.")
-        try:
-            runtime_config, raw_config_data, reload_warnings = read_runtime_config(
-                identity, use_defaults=use_defaults
-            )
-        except (ConfigValidationError, RuntimeError, ValueError) as exc:
-            return action_failure(
-                f"Failed to reload configuration after update: {exc}",
-                exit_code=EXIT_USER_ERROR,
-                warnings=warnings,
-            )
-        except OSError as exc:
-            return action_failure(
-                f"Failed to reload configuration after update: {exc}",
-                exit_code=EXIT_MUTATION_ERROR,
-                warnings=warnings,
-            )
-        warnings.extend(reload_warnings)
-        for warning in reload_warnings:
-            log_warning(warning)
-        log_info("")
 
     log_info(f"Package: {identity.name}")
     log_info(f"Version: {identity.version_string}")
@@ -738,12 +691,12 @@ def install_package(
     # version before junction, origin, or component work begins.
     if _is_update_bootstrap(identity, runtime_config):
         log_info("Promoting bootstrap into an immutable package version...")
-        result = update_package(
-            identity.version_path,
-            scope=scope,
-            no_checksum=no_checksum,
+        download_result = download_package_update(
+            identity.version_path, no_checksum=no_checksum
         )
-        result.changed = result.changed or config_sync_changed
+        if not download_result.ok:
+            return download_result
+        result = install_downloaded_update(identity.version_path, scope=scope)
         result.warnings = warnings + result.warnings
         return result
 
@@ -758,7 +711,9 @@ def install_package(
     else:
         log_info("Managing 'current' junction...")
         try:
-            junction_changed = update_current_junction_if_needed(identity, force=force)
+            junction_changed = update_current_junction_if_needed(
+                identity, allow_downgrade=allow_downgrade
+            )
         except ValueError as exc:
             return action_failure(
                 str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
@@ -774,7 +729,7 @@ def install_package(
             )
             return ActionResult(
                 ok=True,
-                changed=config_sync_changed,
+                changed=False,
                 warnings=warnings,
                 exit_code=EXIT_SUCCESS,
             )
@@ -795,7 +750,7 @@ def install_package(
             log_error(f"  - {error}")
         return ActionResult(
             ok=False,
-            changed=junction_changed or config_sync_changed or origin_result.changed,
+            changed=junction_changed or origin_result.changed,
             warnings=warnings,
             errors=origin_result.errors,
             exit_code=EXIT_MUTATION_ERROR,
@@ -813,41 +768,18 @@ def install_package(
             log_error(f"  - {error}")
         return ActionResult(
             ok=False,
-            changed=junction_changed or config_sync_changed or component_result.changed,
+            changed=junction_changed or component_result.changed,
             warnings=warnings,
             errors=component_result.errors,
             exit_code=EXIT_MUTATION_ERROR,
         )
 
-    result = ActionResult(
+    return ActionResult(
         ok=True,
-        changed=junction_changed
-        or config_sync_changed
-        or origin_result.changed
-        or component_result.changed,
+        changed=junction_changed or origin_result.changed or component_result.changed,
         warnings=warnings,
         exit_code=EXIT_SUCCESS,
     )
-    # Root and current installs may check after repair, preserving the repair
-    # contract when an update source is unavailable.
-    if (
-        installing_from_current
-        and not _skip_update_check
-        and runtime_config.get("update") is not None
-    ):
-        update_result = update_package(
-            identity.package_root, scope=scope, automatic=True, no_checksum=no_checksum
-        )
-        if not update_result.ok:
-            result.warnings.append(
-                f"Automatic update failed: {'; '.join(update_result.errors)}"
-            )
-        else:
-            result.changed = result.changed or update_result.changed
-            result.warnings.extend(update_result.warnings)
-    return result
-
-
 def update_package_config(
     package_path: Path, *, scope: Scope = Scope.USER
 ) -> ActionResult:
@@ -867,7 +799,7 @@ def update_package_config(
         Metadata update outcome and recommended exit code.
 
     """
-    print_action_banner(Action.UPDATE_CONFIG, scope)
+    print_action_banner("config update", scope)
 
     try:
         identity, _ = resolve_input_path(Path(package_path))
@@ -968,7 +900,7 @@ def health_check_package(
         Validation outcome and recommended exit code.
 
     """
-    print_action_banner(Action.HEALTH_CHECK, scope)
+    print_action_banner("config check", scope)
 
     try:
         identity, _ = resolve_input_path(Path(package_path))
@@ -1094,13 +1026,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  %(prog)s                         # Auto-select User or Machine installation scope\n"
-            "  %(prog)s --scope Machine          # Install system-wide (requires admin)\n"
-            "  %(prog)s --action UpdateConfig     # Sync configuration metadata only\n"
-            "  %(prog)s --action ConvertLegacy    # Convert legacy files to canonical TOML\n"
-            "  %(prog)s --action HealthCheck      # Validate package metadata only\n"
-            "  %(prog)s --fix-config             # Install and sync config metadata if it mismatches\n"
-            "  %(prog)s --pause                  # Pause for a keypress before exit\n"
+            "  %(prog)s install                    # Install the current package\n"
+            "  %(prog)s upgrade check C:\\Packages\\Tool\n"
+            "  %(prog)s upgrade download C:\\Packages\\Tool\n"
+            "  %(prog)s upgrade install C:\\Packages\\Tool\n"
+            "  %(prog)s config check C:\\Packages\\Tool\n"
+            "  %(prog)s config update C:\\Packages\\Tool\n"
+            "  %(prog)s config from-legacy C:\\OldPackages\\Tool\n"
             "  %(prog)s --help-extended          # Show detailed help and config examples\n"
         ),
     )
@@ -1125,23 +1057,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
-        "--action",
-        choices=[action.value for action in Action],
-        default=Action.INSTALL.value,
-        help="Action to perform",
-    )
-
-    parser.add_argument(
         "--pause",
         action="store_true",
         help="Pause for a keypress before exiting",
-    )
-
-    parser.add_argument(
-        "--fix-config",
-        action="store_true",
-        default=False,
-        help="If config metadata mismatches the directory, sync the owned metadata fields in pkg.toml instead of aborting",
     )
 
     parser.add_argument(
@@ -1152,10 +1070,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
-        "--force",
+        "--allow-downgrade",
         action="store_true",
         default=False,
-        help="Force install: allow replacing current even if a newer version is already active",
+        help="Allow install to replace current even if it already targets a newer version",
     )
 
     parser.add_argument(
@@ -1175,86 +1093,94 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--output",
         default=None,
-        help="Output path for ConvertLegacy (default: <path>/pkg.toml)",
+        help="Output path for config from-legacy (default: <path>/pkg.toml)",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
-        help="Print ConvertLegacy TOML without writing files",
+        help="Print config from-legacy TOML without writing files",
     )
 
     parser.add_argument(
         "--toml",
         action="store_true",
         default=False,
-        help="Emit a machine-readable summary for update actions",
+        help="Emit a machine-readable command summary",
     )
 
     parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["install", "upgrade", "config"],
+        default="install",
+        help="Top-level command (default: install)",
+    )
+    parser.add_argument(
+        "operation",
+        nargs="?",
+        help="upgrade: check, download, or install; config: from-legacy, update, or check",
+    )
+    parser.add_argument(
         "path",
         nargs="?",
-        default=".",
-        help="Package path, or legacy source directory for ConvertLegacy (default: current directory)",
+        help="Package path (default: current directory)",
     )
 
     args = parser.parse_args(argv)
     scope = Scope(args.scope)
-    action = Action(args.action)
     result: ActionResult
+    label = args.command
 
     try:
-        package_path = Path(args.path).expanduser()
-
-        if action == Action.INSTALL:
+        # Install has no subcommand, so its second positional value is its path.
+        if args.command == "install":
+            if args.path is not None:
+                parser.error("install accepts one optional package path")
+            package_path = Path(args.operation or ".").expanduser()
+            label = "install"
             result = install_package(
                 package_path,
                 scope=scope,
-                fix_config=args.fix_config,
                 use_defaults=args.use_defaults,
-                force=args.force,
+                allow_downgrade=args.allow_downgrade,
                 refresh_app=args.refresh_app,
                 no_checksum=args.no_checksum,
             )
-        elif action == Action.UPDATE_CONFIG:
-            result = update_package_config(package_path, scope=scope)
-        elif action == Action.CONVERT_LEGACY:
-            output_path = Path(args.output).expanduser() if args.output else None
-            result = convert_legacy_config(
-                package_path,
-                output_path=output_path,
-                dry_run=args.dry_run,
-            )
-        elif action == Action.HEALTH_CHECK:
-            result = health_check_package(package_path, scope=scope)
-        elif action == Action.CHECK_UPDATE:
-            result = check_package_update(package_path)
-        elif action == Action.UPDATE:
-            result = update_package(
-                package_path, scope=scope, no_checksum=args.no_checksum
-            )
-        elif action == Action.AUTO_UPDATE:
-            result = update_package(
-                package_path, scope=scope, automatic=True, no_checksum=args.no_checksum
-            )
-        elif action == Action.SELF_UPDATE:
-            pkg_home = os.environ.get("PKG_HOME")
-            if not pkg_home:
-                result = action_failure(
-                    "SelfUpdate updates pkg itself and requires the stable "
-                    "PKG_HOME launcher layout. To update this package, run "
-                    "update.cmd instead.",
-                    exit_code=EXIT_USER_ERROR,
+        else:
+            operations = {
+                "upgrade": {"check", "download", "install"},
+                "config": {"from-legacy", "update", "check"},
+            }
+            if args.operation not in operations[args.command]:
+                parser.error(
+                    f"{args.command} requires one of: "
+                    + ", ".join(sorted(operations[args.command]))
+                )
+            package_path = Path(args.path or ".").expanduser()
+            label = f"{args.command} {args.operation}"
+            if args.command == "upgrade" and args.operation == "check":
+                result = check_package_update(package_path)
+            elif args.command == "upgrade" and args.operation == "download":
+                result = download_package_update(
+                    package_path, no_checksum=args.no_checksum
+                )
+            elif args.command == "upgrade":
+                result = install_downloaded_update(
+                    package_path, scope=scope, no_checksum=args.no_checksum
+                )
+            elif args.operation == "update":
+                result = update_package_config(package_path, scope=scope)
+            elif args.operation == "from-legacy":
+                output_path = Path(args.output).expanduser() if args.output else None
+                result = convert_legacy_config(
+                    package_path,
+                    output_path=output_path,
+                    dry_run=args.dry_run,
                 )
             else:
-                result = update_package(
-                    Path(pkg_home), scope=scope, no_checksum=args.no_checksum
-                )
-        else:
-            message = f"Unknown action: {action}"
-            log_error(message)
-            result = ActionResult(ok=False, errors=[message], exit_code=EXIT_USER_ERROR)
+                result = health_check_package(package_path, scope=scope)
     except Exception as exc:
         message = f"Unexpected internal error: {exc}"
         log_error(message)
@@ -1262,7 +1188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Dry-run conversion is designed for redirection and TOML parsing, so keep
     # stdout free of the normal action footer and pause prompt.
-    if action == Action.CONVERT_LEGACY and args.dry_run:
+    if label == "config from-legacy" and args.dry_run:
         return result.exit_code
 
     if args.pause:
@@ -1279,11 +1205,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     log_info("")
     log_info("-" * 60)
     if result.ok and result.changed:
-        log_info(f"{action.value} completed successfully.")
+        log_info(f"{label} completed successfully.")
     elif result.ok:
-        log_info(f"{action.value} completed successfully (no changes needed).")
+        log_info(f"{label} completed successfully (no changes needed).")
     else:
-        log_info(f"{action.value} failed.")
+        log_info(f"{label} failed.")
     log_info("-" * 60)
     return result.exit_code
 

@@ -9,7 +9,6 @@ homepage = "https://pandoc.org/"
 url = "https://github.com/jgm/pandoc"
 
 [update]
-allow_automatic_update = true
 
 [update.check]
 mode = "github"

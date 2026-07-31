@@ -2,5 +2,5 @@
 setlocal EnableExtensions DisableDelayedExpansion
 
 rem Repopulate App from its configured origin and repair installation artifacts.
-call "%~dp0pkg.cmd" --refresh-app --pause %*
+call "%~dp0pkg.cmd" --refresh-app --pause install %*
 exit /b %ERRORLEVEL%

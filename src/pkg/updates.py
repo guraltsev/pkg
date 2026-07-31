@@ -1,4 +1,4 @@
-"""Provide staging and state primitives for automatic package updates.
+"""Provide staging and state primitives for explicit package upgrades.
 
 Update hooks are loaded only from the package-owned ``pkg.local`` tree. Candidate
 versions are normalized, downloaded or populated into manager-owned work space,
@@ -35,6 +35,7 @@ from .core import (
     read_toml_file,
     write_text_atomic,
 )
+from .dependencies import run_with_missing_dependencies
 from .metadata import sync_config_metadata_text
 from .origin import (
     _app_contains_entries,
@@ -266,14 +267,16 @@ def _check_update(
         )
         callback = check_github_release
     else:
-        module = _load_package_module(identity, check["module"], work / "pycache")
+        module = run_with_missing_dependencies(
+            _load_package_module, identity, check["module"], work / "pycache"
+        )
         callback = getattr(module, "check_update", None)
         if not callable(callback):
             raise ConfigValidationError(
                 "Update check module must define check_update(context)"
             )
         context["channel"] = check["channel"]
-    raw = callback(context)
+    raw = run_with_missing_dependencies(callback, context)
     if raw is None:
         return "current", None
     return "available", _normalize_update_candidate(
@@ -456,13 +459,16 @@ def _prepare_update(
                 staged_identity,
             )
         else:
-            module = _load_package_module(identity, payload["module"], work / "pycache")
+            module = run_with_missing_dependencies(
+                _load_package_module, identity, payload["module"], work / "pycache"
+            )
             callback = getattr(module, "unpack_app", None)
             if not callable(callback):
                 raise ConfigValidationError(
                     "Update unpack module must define unpack_app(context)"
                 )
-            callback(
+            run_with_missing_dependencies(
+                callback,
                 {
                     "apiVersion": 1,
                     "candidate": dict(candidate),
@@ -471,7 +477,7 @@ def _prepare_update(
                         "stageRoot": stage,
                         "stageApp": stage_app,
                     },
-                }
+                },
             )
     if not _app_contains_entries(stage_app):
         raise RuntimeError("Prepared update App directory is missing or empty")
@@ -519,64 +525,3 @@ def _apply_payload_renames(
         # package to replace an existing staged file or directory.
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
-
-
-def _refresh_git_app_inplace(
-    identity: PackageIdentity,
-    config: Dict[str, Any],
-    candidate: Dict[str, Any],
-) -> None:
-    """Fast-forward an in-place Git checkout to a checked candidate."""
-    check = config["update"]["check"]
-    app = (identity.version_path / check["appPath"]).resolve()
-    if not app.is_relative_to(identity.version_path.resolve()):
-        raise ConfigValidationError("Git appPath escapes the version directory")
-
-    # Preserve tracked local work instead of allowing an update to mix it with
-    # a different upstream revision. Untracked runtime files remain untouched.
-    status = subprocess.run(
-        ["git", "-C", str(app), "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    if status.strip():
-        raise RuntimeError(
-            "Git-inplace update refused because App has tracked local changes"
-        )
-
-    # Fetch only the configured ref and verify it still names the commit found
-    # by the preceding check before changing the checkout.
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(app),
-            "fetch",
-            "--no-tags",
-            candidate["url"],
-            check["ref"],
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    fetched = subprocess.run(
-        ["git", "-C", str(app), "rev-parse", "FETCH_HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    if fetched != candidate["commit"]:
-        raise RuntimeError(
-            "Configured Git ref changed during the rolling update; retry the update"
-        )
-
-    # A fast-forward merge retains the checkout's branch or detached-HEAD
-    # state while refusing divergent local commits.
-    subprocess.run(
-        ["git", "-C", str(app), "merge", "--ff-only", candidate["commit"]],
-        capture_output=True,
-        text=True,
-        check=True,
-    )

@@ -2,5 +2,5 @@
 setlocal EnableExtensions DisableDelayedExpansion
 
 rem Validate package metadata and source configuration without installing.
-call "%~dp0pkg.cmd" --action HealthCheck --pause %*
+call "%~dp0pkg.cmd" --pause config check %*
 exit /b %ERRORLEVEL%

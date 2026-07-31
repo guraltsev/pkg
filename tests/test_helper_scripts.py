@@ -168,7 +168,9 @@ class LegacyConverterTests(unittest.TestCase):
                             ok=True, changed=False, warnings=[], errors=[]
                         ),
                     ) as install_components_mock:
-                        code, output = self.run_main(module, [str(version_dir)])
+                        code, output = self.run_main(
+                            module, ["install", str(version_dir)]
+                        )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             install_components_mock.assert_called_once()
