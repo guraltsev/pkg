@@ -107,6 +107,8 @@ Notes:
   - ``upgrade check`` discovers an update without downloading it.
   - ``upgrade download`` stages an available update without activating it.
   - ``upgrade install`` activates the most recently downloaded update.
+  - ``pkg.local`` hooks do not install missing dependencies unless
+    ``--local-deps-autoinstall`` is supplied.
   - ``config update`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``config from-legacy`` builds canonical ``pkg.toml`` from legacy package files.
   - Contributor notes live in ``docs/development_guide.md``.
@@ -296,7 +298,9 @@ def _is_update_bootstrap(
     return bool(git_bootstrap or release_bootstrap)
 
 
-def check_package_update(package_path: Path) -> ActionResult:
+def check_package_update(
+    package_path: Path, *, local_deps_autoinstall: bool = False
+) -> ActionResult:
     """Check one package's configured source and persist its result.
 
     Parameters
@@ -304,6 +308,8 @@ def check_package_update(package_path: Path) -> ActionResult:
     package_path : Path
         Package root or ``current`` junction whose update source should be
         checked, or a supported bootstrap template version.
+    local_deps_autoinstall : bool, default=False
+        Whether package-local update hooks may install missing dependencies.
 
     Returns
     -------
@@ -357,7 +363,13 @@ def check_package_update(package_path: Path) -> ActionResult:
             status = "available"
             candidate = _git_origin_candidate(identity, config, state)
         else:
-            status, candidate = _check_update(identity, config, state, work)
+            status, candidate = _check_update(
+                identity,
+                config,
+                state,
+                work,
+                local_deps_autoinstall=local_deps_autoinstall,
+            )
         state.update(
             {
                 "lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(),
@@ -391,6 +403,7 @@ def download_package_update(
     package_path: Path,
     *,
     no_checksum: bool = False,
+    local_deps_autoinstall: bool = False,
 ) -> ActionResult:
     """Check, download, and stage an available package update.
 
@@ -401,6 +414,8 @@ def download_package_update(
         updated, or a supported bootstrap template version.
     no_checksum : bool, default=False
         Whether checksum verification may be bypassed for downloaded payloads.
+    local_deps_autoinstall : bool, default=False
+        Whether package-local update hooks may install missing dependencies.
 
     Returns
     -------
@@ -450,7 +465,13 @@ def download_package_update(
             status = "available"
             candidate = _git_origin_candidate(identity, config, state)
         else:
-            status, candidate = _check_update(identity, config, state, work)
+            status, candidate = _check_update(
+                identity,
+                config,
+                state,
+                work,
+                local_deps_autoinstall=local_deps_autoinstall,
+            )
         state.update(
             {
                 "lastSuccessfulCheck": datetime.now(timezone.utc).isoformat(),
@@ -472,7 +493,12 @@ def download_package_update(
             log_info(f"Downloaded: {new_identity.version_string}")
             return ActionResult(True, warnings=warnings)
         staged = _prepare_update(
-            identity, config, candidate, work, no_checksum=no_checksum
+            identity,
+            config,
+            candidate,
+            work,
+            no_checksum=no_checksum,
+            local_deps_autoinstall=local_deps_autoinstall,
         )
         os.replace(work / "version", staged.version_path)
         paths["receipts"].mkdir(parents=True, exist_ok=True)
@@ -558,6 +584,7 @@ def install_package(
     allow_downgrade: bool = False,
     refresh_app: bool = False,
     no_checksum: bool = False,
+    local_deps_autoinstall: bool = False,
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -587,6 +614,9 @@ def install_package(
         contains files.
     no_checksum : bool, default=False
         Whether to skip configured origin checksum verification.
+    local_deps_autoinstall : bool, default=False
+        Whether package-local update hooks may install missing dependencies
+        while promoting a bootstrap package.
 
     Returns
     -------
@@ -692,7 +722,9 @@ def install_package(
     if _is_update_bootstrap(identity, runtime_config):
         log_info("Promoting bootstrap into an immutable package version...")
         download_result = download_package_update(
-            identity.version_path, no_checksum=no_checksum
+            identity.version_path,
+            no_checksum=no_checksum,
+            local_deps_autoinstall=local_deps_autoinstall,
         )
         if not download_result.ok:
             return download_result
@@ -1033,6 +1065,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "  %(prog)s config check C:\\Packages\\Tool\n"
             "  %(prog)s config update C:\\Packages\\Tool\n"
             "  %(prog)s config from-legacy C:\\OldPackages\\Tool\n"
+            "  %(prog)s tui                        # Open the interactive interface\n"
             "  %(prog)s --help-extended          # Show detailed help and config examples\n"
         ),
     )
@@ -1111,9 +1144,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
+        "--local-deps-autoinstall",
+        action="store_true",
+        default=False,
+        help="Allow trusted pkg.local update hooks to install missing dependencies",
+    )
+
+    parser.add_argument(
         "command",
         nargs="?",
-        choices=["install", "upgrade", "config"],
+        choices=["install", "upgrade", "config", "tui"],
         default="install",
         help="Top-level command (default: install)",
     )
@@ -1129,6 +1169,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.command == "tui":
+        if args.operation is not None or args.path is not None:
+            parser.error("tui does not accept an operation or package path")
+        try:
+            # Provision every declared dependency for this pkg-owned feature
+            # before importing its optional interface module.
+            from pkg.dependencies import ensure_runtime_dependencies
+
+            ensure_runtime_dependencies("tui")
+            from pkg.tui import run_tui
+
+            return run_tui()
+        except RuntimeError as install_error:
+            log_error(f"Could not install a TUI dependency: {install_error}")
+            return EXIT_MUTATION_ERROR
+
     scope = Scope(args.scope)
     result: ActionResult
     label = args.command
@@ -1147,6 +1203,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 allow_downgrade=args.allow_downgrade,
                 refresh_app=args.refresh_app,
                 no_checksum=args.no_checksum,
+                local_deps_autoinstall=args.local_deps_autoinstall,
             )
         else:
             operations = {
@@ -1161,10 +1218,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             package_path = Path(args.path or ".").expanduser()
             label = f"{args.command} {args.operation}"
             if args.command == "upgrade" and args.operation == "check":
-                result = check_package_update(package_path)
+                result = check_package_update(
+                    package_path,
+                    local_deps_autoinstall=args.local_deps_autoinstall,
+                )
             elif args.command == "upgrade" and args.operation == "download":
                 result = download_package_update(
-                    package_path, no_checksum=args.no_checksum
+                    package_path,
+                    no_checksum=args.no_checksum,
+                    local_deps_autoinstall=args.local_deps_autoinstall,
                 )
             elif args.command == "upgrade":
                 result = install_downloaded_update(

@@ -150,6 +150,24 @@ explicitly rebuild `App` from its origin before that repair.
 what is available, download it into a new version directory, then choose when
 to make that downloaded version current.
 
+### Terminal interface
+
+Run the simple interactive interface:
+
+```bat
+tui.cmd
+```
+
+You can also run `pkg.cmd tui` directly.
+
+The interface exposes install, each update stage, and every configuration
+action with the same package path, scope, and applicable flags as the command
+line. It intentionally uses selections and plain output instead of a
+frame-heavy terminal layout. On first use, `pkg` automatically installs its
+Textual dependency into `%LOCALAPPDATA%\pkg\dependencies`; the launcher Python
+is not modified. `--pause` is omitted because the interface stays open after
+each operation.
+
 ```text
 pkg.cmd [options] <command> [subcommand] [path]
 ```
@@ -201,6 +219,7 @@ they have an effect.
 | `--allow-downgrade` | For `install`, permits replacing `current` when it already targets a newer version. |
 | `--refresh-app` | For `Install`, replaces `App` from `[origin]`, even when it is populated. |
 | `--no-checksum` | Bypasses configured origin or update checksum verification and emits a warning. |
+| `--local-deps-autoinstall` | Allows trusted `pkg.local` update hooks to install missing imports. Hooks otherwise report unavailable dependencies without installing anything. |
 | `--output <path>` | Selects `config from-legacy` output; the default is `<path>\pkg.toml`. |
 | `--dry-run` | For `config from-legacy`, writes generated TOML to standard output without changing files. |
 | `--toml` | Adds `ok`, `changed`, and `status` fields to normal output. |
@@ -423,10 +442,13 @@ non-empty `candidateId`, `version`, and `url`. Optional candidate fields are
 `sha256` (64 hex digits), `fileName`, `headers`, and `extractSubdir`. Candidate
 versions must be safe version-directory values and may not go backward.
 
-Trusted package-local hooks are not sandboxed. If a hook imports a missing
-dependency, `pkg` installs it into `%LOCALAPPDATA%\pkg\dependencies` and
-retries it, preferring `uv` and otherwise using that interpreter's `pip`.
-The launcher Python is not modified.
+`pkg` installs every dependency declared by its own optional runtime features
+into `%LOCALAPPDATA%\pkg\dependencies`; the launcher Python is not modified.
+Trusted package-local hooks never trigger dependency installation by default.
+When a hook needs an unavailable import, `pkg` reports it and stops. Pass
+`--local-deps-autoinstall` to explicitly allow installation and retrying for
+that command. Installations prefer `uv` and otherwise use that environment's
+`pip`. Trusted package-local hooks are not sandboxed.
 
 #### Update payloads
 

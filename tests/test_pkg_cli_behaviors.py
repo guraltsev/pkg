@@ -179,6 +179,39 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(module.__version__, output)
 
+    def test_tui_command_delegates_to_the_textual_entrypoint(self) -> None:
+        """The tui command starts the optional interactive entrypoint."""
+        module = load_pkg_module()
+        tui = ModuleType("pkg.tui")
+        tui.run_tui = mock.Mock(return_value=0)
+
+        with (
+            mock.patch.dict(sys.modules, {"pkg.tui": tui}),
+            mock.patch("pkg.dependencies.ensure_runtime_dependencies"),
+        ):
+            code, _ = self.run_main(module, ["tui"])
+
+        self.assertEqual(code, 0)
+        tui.run_tui.assert_called_once_with()
+
+    def test_tui_provisions_its_declared_runtime_dependencies(self) -> None:
+        """The tui command provisions its pkg-owned dependencies before launch."""
+        module = load_pkg_module()
+        tui = ModuleType("pkg.tui")
+        tui.run_tui = mock.Mock(return_value=0)
+
+        with (
+            mock.patch.dict(sys.modules, {"pkg.tui": tui}),
+            mock.patch(
+                "pkg.dependencies.ensure_runtime_dependencies"
+            ) as ensure_dependencies,
+        ):
+            code, _ = self.run_main(module, ["tui"])
+
+        self.assertEqual(code, 0)
+        ensure_dependencies.assert_called_once_with("tui")
+        tui.run_tui.assert_called_once_with()
+
     def test_short_help_hides_bootstrap_and_removed_flags(self) -> None:
         """Short help hides bootstrap and removed flags."""
         module = load_pkg_module()

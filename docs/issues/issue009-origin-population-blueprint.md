@@ -87,7 +87,7 @@ Out of scope:
 - package repository/index support
 - non-zip built-in archive formats
 - generic origin provider registries
-- dependency resolution
+- dependency resolution for package payloads or arbitrary configuration
 - resumable downloads
 - signature verification
 - automatic execution of arbitrary remote installer formats

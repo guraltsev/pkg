@@ -197,7 +197,12 @@ def _normalize_update_candidate(
 
 
 def _check_update(
-    identity: PackageIdentity, config: Dict[str, Any], state: Dict[str, Any], work: Path
+    identity: PackageIdentity,
+    config: Dict[str, Any],
+    state: Dict[str, Any],
+    work: Path,
+    *,
+    local_deps_autoinstall: bool = False,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Discover the current or next upstream state without changing App."""
     update = config["update"]
@@ -268,7 +273,11 @@ def _check_update(
         callback = check_github_release
     else:
         module = run_with_missing_dependencies(
-            _load_package_module, identity, check["module"], work / "pycache"
+            _load_package_module,
+            identity,
+            check["module"],
+            work / "pycache",
+            autoinstall=local_deps_autoinstall,
         )
         callback = getattr(module, "check_update", None)
         if not callable(callback):
@@ -276,7 +285,9 @@ def _check_update(
                 "Update check module must define check_update(context)"
             )
         context["channel"] = check["channel"]
-    raw = run_with_missing_dependencies(callback, context)
+    raw = run_with_missing_dependencies(
+        callback, context, autoinstall=local_deps_autoinstall
+    )
     if raw is None:
         return "current", None
     return "available", _normalize_update_candidate(
@@ -333,6 +344,7 @@ def _prepare_update(
     work: Path,
     *,
     no_checksum: bool,
+    local_deps_autoinstall: bool = False,
 ) -> PackageIdentity:
     """Build a complete new version under work before a single final rename."""
     new_identity = _next_version_identity(identity, candidate)
@@ -460,7 +472,11 @@ def _prepare_update(
             )
         else:
             module = run_with_missing_dependencies(
-                _load_package_module, identity, payload["module"], work / "pycache"
+                _load_package_module,
+                identity,
+                payload["module"],
+                work / "pycache",
+                autoinstall=local_deps_autoinstall,
             )
             callback = getattr(module, "unpack_app", None)
             if not callable(callback):
@@ -478,6 +494,7 @@ def _prepare_update(
                         "stageApp": stage_app,
                     },
                 },
+                autoinstall=local_deps_autoinstall,
             )
     if not _app_contains_entries(stage_app):
         raise RuntimeError("Prepared update App directory is missing or empty")

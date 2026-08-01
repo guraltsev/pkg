@@ -1,8 +1,9 @@
-"""Install missing package-local hook dependencies into a user virtual environment.
+"""Install pkg runtime dependencies while protecting package-local hooks.
 
-Trusted ``pkg.local`` hooks can import third-party Python packages without
-changing the interpreter that launches ``pkg``. When a hook reports a missing
-module, this module installs the corresponding distribution into
+The ``pkg`` runtime installs its declared third-party dependencies into an
+isolated user environment without changing the interpreter that launches
+``pkg``. Package-local hooks do not install imports by default: callers must
+explicitly opt in before their missing modules can be installed into
 ``%LOCALAPPDATA%\\pkg\\dependencies`` and makes that environment available to
 the current process. It prefers ``uv`` when it is on ``PATH`` and otherwise
 uses the environment's ``pip``.
@@ -10,18 +11,41 @@ uses the environment's ``pip``.
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import site
 import subprocess
-import sys
 import venv
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
-def run_with_missing_dependencies(callback: Callable[..., Any], *args: Any) -> Any:
-    """Run a hook and install missing third-party imports before retrying it.
+class MissingLocalDependencyError(RuntimeError):
+    """Report a package-local dependency that pkg deliberately did not install."""
+
+
+# Keep each optional pkg feature's trusted dependencies explicit and auditable.
+_RUNTIME_DEPENDENCIES = {"tui": ("textual",)}
+
+
+def ensure_runtime_dependencies(feature: str) -> None:
+    """Make every declared dependency for one pkg feature importable.
+
+    Parameters
+    ----------
+    feature : str
+        Name of the pkg feature whose declared dependencies are required.
+    """
+    for module_name in _RUNTIME_DEPENDENCIES.get(feature, ()):
+        ensure_dependency(module_name)
+
+
+def run_with_missing_dependencies(
+    callback: Callable[..., Any], *args: Any, autoinstall: bool = False
+) -> Any:
+    """Run a hook and optionally install missing third-party imports before retrying it.
 
     Parameters
     ----------
@@ -29,6 +53,8 @@ def run_with_missing_dependencies(callback: Callable[..., Any], *args: Any) -> A
         Trusted package-local hook to invoke.
     *args : Any
         Positional arguments forwarded to *callback*.
+    autoinstall : bool, default=False
+        Whether missing package-local imports may be installed before retrying.
 
     Returns
     -------
@@ -37,8 +63,8 @@ def run_with_missing_dependencies(callback: Callable[..., Any], *args: Any) -> A
 
     Raises
     ------
-    ModuleNotFoundError
-        If a hook continues to report missing imports after installation.
+    MissingLocalDependencyError
+        If a hook needs an unavailable import and automatic installation is off.
     RuntimeError
         If the user dependency environment cannot be prepared or populated.
     """
@@ -52,10 +78,35 @@ def run_with_missing_dependencies(callback: Callable[..., Any], *args: Any) -> A
             if not dependency:
                 raise
 
+            # Package-local code is trusted but still package-owned. Do not let
+            # it trigger network installs unless the caller explicitly opted in.
+            if not autoinstall:
+                raise MissingLocalDependencyError(
+                    f"Package-local dependency unavailable: {dependency}. "
+                    "Install it yourself or rerun with --local-deps-autoinstall."
+                ) from exc
+
             # Install only the missing top-level import because package indexes
             # identify distributions at that level rather than by dotted module.
             install_missing_dependency(dependency.split(".", maxsplit=1)[0])
     raise RuntimeError("A package-local hook required more than three missing dependencies")
+
+
+def ensure_dependency(module_name: str) -> None:
+    """Make one runtime dependency importable by the current pkg process.
+
+    Parameters
+    ----------
+    module_name : str
+        Top-level Python import required by pkg itself.
+
+    Raises
+    ------
+    RuntimeError
+        If the isolated dependency environment cannot install the dependency.
+    """
+    if not _module_is_importable(module_name):
+        install_missing_dependency(module_name)
 
 
 def install_missing_dependency(module_name: str) -> None:
@@ -103,6 +154,7 @@ def install_missing_dependency(module_name: str) -> None:
         )
 
     _add_environment_site_packages(python)
+    importlib.invalidate_caches()
     if not _module_is_importable(module_name):
         raise RuntimeError(
             f"Installed {distribution!r}, but Python still cannot import {module_name!r}"
@@ -129,7 +181,14 @@ def _add_environment_site_packages(python: Path) -> None:
     # Ask the environment itself for its site path so the host Python version
     # and platform layout cannot cause us to guess incorrectly.
     completed = subprocess.run(
-        [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
+        [
+            str(python),
+            "-c",
+            (
+                "import site; print(next(path for path in site.getsitepackages() "
+                "if path.lower().endswith('site-packages')))"
+            ),
+        ],
         capture_output=True,
         check=False,
         text=True,
