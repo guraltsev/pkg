@@ -189,7 +189,9 @@ pkg.cmd upgrade download C:\Packages\Tool
 pkg.cmd upgrade install C:\Packages\Tool
 ```
 
-`upgrade check` is read-only and reports whether a newer release exists.
+`upgrade check` is read-only and reports either `Available: ...` or `Current: ...`.
+When it reports an available release, it also tells you to run `upgrade download`;
+the check summary explicitly says that no files were changed.
 `upgrade download` checks again, downloads and verifies the release, and stages
 it as a new version directory without changing `current`. `upgrade install`
 activates the most recently downloaded version and applies its shortcuts,

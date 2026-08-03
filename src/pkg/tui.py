@@ -41,9 +41,18 @@ def run_tui() -> int:
 
     actions = (
         ("install", "Install"),
-        ("upgrade-check", "Upgrade: check"),
-        ("upgrade-download", "Upgrade: download"),
-        ("upgrade-install", "Upgrade: install downloaded update"),
+        (
+            "upgrade-check",
+            "Upgrade: check for an available update (read-only)",
+        ),
+        (
+            "upgrade-download",
+            "Upgrade: download available update (does not install)",
+        ),
+        (
+            "upgrade-install",
+            "Upgrade: install downloaded update (activates it)",
+        ),
         ("config-check", "Config: check"),
         ("config-update", "Config: update"),
         ("config-from-legacy", "Config: import from legacy"),
@@ -384,9 +393,16 @@ def run_tui() -> int:
             self.query_one("#output", Static).update(
                 completed.stdout or "(pkg produced no output)"
             )
-            self.query_one("#status", Static).update(
-                f"Finished with exit code {completed.returncode}."
+            status = (
+                "Completed successfully. Review the result below for the next "
+                "step."
+                if completed.returncode == 0
+                else (
+                    f"Failed with exit code {completed.returncode}. Review the "
+                    "output below."
+                )
             )
+            self.query_one("#status", Static).update(status)
 
         def action_back(self) -> None:
             """Return to the action list after viewing output."""

@@ -343,9 +343,18 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
             # Upgrade checks can inspect a bootstrap template directly without
             # populating App or requiring a current junction.
-            check_result = module.check_package_update(version_dir)
-            self.assertTrue(check_result.ok, msg=check_result.errors)
-            self.assertFalse(check_result.changed)
+            check_code, check_output = self.run_main(
+                module, ["--toml", "upgrade", "check", str(version_dir)]
+            )
+            self.assertEqual(check_code, module.EXIT_SUCCESS)
+            self.assertIn("Available: v", check_output)
+            self.assertIn('status = "available"', check_output)
+            self.assertIn(
+                "Upgrade is available. Run 'pkg upgrade download' to stage it; "
+                "this check did not change any files.",
+                check_output,
+            )
+            self.assertNotIn("no changes needed", check_output)
             self.assertFalse((version_dir / "App").exists())
 
             # Installing the bootstrap template must stage and install a new

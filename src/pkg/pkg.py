@@ -385,7 +385,7 @@ def check_package_update(
             log_info(f"Available: v{candidate['version']} ({candidate['candidateId']})")
         else:
             log_info(f"Current: {identity.version_string}")
-        return ActionResult(True, warnings=warnings, changed=False)
+        return ActionResult(True, warnings=warnings, changed=False, status=status)
     except (ConfigValidationError, ValueError) as exc:
         return action_failure(
             str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
@@ -483,7 +483,7 @@ def download_package_update(
         )
         _write_update_state(paths["state"], state)
         if status == "current" or candidate is None:
-            return ActionResult(True, warnings=warnings)
+            return ActionResult(True, warnings=warnings, status="current")
 
         # Reuse an already committed candidate or atomically commit a complete
         # staged version. Activation is a separate explicit command.
@@ -491,7 +491,7 @@ def download_package_update(
         receipt = paths["receipts"] / f"{new_identity.version_string}.toml"
         if new_identity.version_path.exists():
             log_info(f"Downloaded: {new_identity.version_string}")
-            return ActionResult(True, warnings=warnings)
+            return ActionResult(True, warnings=warnings, status="downloaded")
         staged = _prepare_update(
             identity,
             config,
@@ -507,7 +507,9 @@ def download_package_update(
             f"schemaVersion = 1\ncandidateId = {_toml_value(candidate['candidateId'])}\nversion = {_toml_value(staged.version)}\nlocalVersion = {staged.local_version}\n",
         )
         log_info(f"Downloaded: {staged.version_string}")
-        return ActionResult(True, changed=True, warnings=warnings)
+        return ActionResult(
+            True, changed=True, warnings=warnings, status="downloaded"
+        )
     except (ConfigValidationError, ValueError) as exc:
         return action_failure(
             str(exc), exit_code=EXIT_USER_ERROR, warnings=warnings
@@ -1261,15 +1263,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.toml:
         print(f"ok = {'true' if result.ok else 'false'}")
         print(f"changed = {'true' if result.changed else 'false'}")
-        print(
-            f"status = {_toml_value('updated' if result.changed else ('failed' if not result.ok else 'current'))}"
+        status = result.status or (
+            "updated" if result.changed else ("failed" if not result.ok else "current")
         )
+        print(f"status = {_toml_value(status)}")
     log_info("")
     log_info("-" * 60)
-    if result.ok and result.changed:
-        log_info(f"{label} completed successfully.")
+    if label == "upgrade check" and result.status == "available":
+        log_info(
+            "Upgrade is available. Run 'pkg upgrade download' to stage it; "
+            "this check did not change any files."
+        )
+    elif label == "upgrade check" and result.status == "current":
+        log_info("Package is current; this check did not change any files.")
+    elif label == "upgrade download" and result.status == "downloaded":
+        log_info(
+            "Upgrade is downloaded and staged. Run 'pkg upgrade install' to "
+            "activate it."
+        )
+    elif label == "upgrade download" and result.status == "current":
+        log_info("Package is current; no upgrade was downloaded.")
+    elif label == "config check" and result.ok:
+        log_info("Configuration is valid; this check did not change any files.")
+    elif result.ok and result.changed:
+        log_info(f"{label} completed successfully; changes were applied.")
     elif result.ok:
-        log_info(f"{label} completed successfully (no changes needed).")
+        log_info(f"{label} completed successfully; it made no changes.")
     else:
         log_info(f"{label} failed.")
     log_info("-" * 60)

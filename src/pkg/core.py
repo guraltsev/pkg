@@ -99,6 +99,9 @@ class ActionResult:
         Fatal errors accumulated during the action.
     exit_code : int
         Process exit code that should be returned to the caller.
+    status : str or None
+        Optional action-specific outcome for callers that need more detail than
+        whether a filesystem or registry change occurred.
 
     """
 
@@ -107,6 +110,7 @@ class ActionResult:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     exit_code: int = EXIT_SUCCESS
+    status: str | None = None
 
 
 @dataclass(frozen=True)
