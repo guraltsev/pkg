@@ -51,6 +51,7 @@ from pkg.core import (  # noqa: E402
     PackageIdentity,
     Scope,
     compare_package_versions,
+    is_version_directory_name,
     log_error,
     log_info,
     log_warning,
@@ -319,22 +320,15 @@ def check_package_update(
         Check outcome with warnings and the recommended process exit code.
     """
 
-    # Update actions require the active package view because update state is
-    # owned by the package root, not by an arbitrary historical version.
-    identity, from_current = resolve_input_path(package_path)
+    # Any package version may define the update source; persistent update state
+    # remains package-owned even when discovery begins from a historical tree.
+    identity, _ = resolve_input_path(package_path)
     config, _, warnings = read_runtime_config(identity, use_defaults=False)
     if config.get("update") is None:
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
-    bootstrap = not from_current and _is_update_bootstrap(identity, config)
-    if not from_current and not identity.is_current and not bootstrap:
-        return action_failure(
-            "Update actions require the active version, package root, or "
-            "current junction, except for a supported bootstrap template",
-            exit_code=EXIT_USER_ERROR,
-            warnings=warnings,
-        )
+    bootstrap = _is_update_bootstrap(identity, config)
 
     # Acquire the package-root update lock before creating work files so
     # concurrent checks and updates cannot overwrite each other's state.
@@ -412,8 +406,8 @@ def download_package_update(
     Parameters
     ----------
     package_path : Path
-        Package root or ``current`` junction whose active version should be
-        updated, or a supported bootstrap template version.
+        Package root, ``current`` junction, or version directory whose update
+        should be checked and staged.
     no_checksum : bool, default=False
         Whether checksum verification may be bypassed for downloaded payloads.
     local_deps_autoinstall : bool, default=False
@@ -426,21 +420,14 @@ def download_package_update(
     """
 
     # Resolve update ownership and policy before creating manager state.
-    identity, from_current = resolve_input_path(package_path)
+    identity, _ = resolve_input_path(package_path)
     config, _, warnings = read_runtime_config(identity, use_defaults=False)
     update = config.get("update")
     if update is None:
         return ActionResult(
             True, warnings=warnings + ["Updates are not configured for this package"]
         )
-    bootstrap = not from_current and _is_update_bootstrap(identity, config)
-    if not from_current and not identity.is_current and not bootstrap:
-        return action_failure(
-            "Update actions require the active version, package root, or "
-            "current junction, except for a supported bootstrap template",
-            exit_code=EXIT_USER_ERROR,
-            warnings=warnings,
-        )
+    bootstrap = _is_update_bootstrap(identity, config)
 
     # Serialize discovery and staging beneath one package-root lock.
     paths = _update_paths(identity.package_root)
@@ -541,7 +528,8 @@ def install_downloaded_update(
     Parameters
     ----------
     package_path : Path
-        Package root or active package path that owns staged updates.
+        Package root, ``current`` junction, or version directory that owns
+        staged updates.
     scope : Scope, default=Scope.AUTO
         Installation scope used to activate the staged version.
     no_checksum : bool, default=False
@@ -554,8 +542,8 @@ def install_downloaded_update(
     """
     _ = no_checksum
 
-    # Resolve the active package and inspect only manager-owned receipts before
-    # selecting an immutable version to activate.
+    # Resolve the selected package and inspect only manager-owned receipts
+    # before selecting an immutable version to activate.
     try:
         identity, _ = resolve_input_path(package_path)
     except ValueError as exc:
@@ -596,6 +584,24 @@ def install_downloaded_update(
             "'pkg upgrade download' first.",
             exit_code=EXIT_USER_ERROR,
         )
+
+    # Do not let an older package definition replace a newer installed version.
+    newer_versions = sorted(
+        path.name
+        for path in identity.package_root.iterdir()
+        if (
+            path.is_dir()
+            and is_version_directory_name(path.name)
+            and not path.name.startswith("vbootstrap")
+            and compare_package_versions(path.name, version_path.name) > 0
+        )
+    )
+    if newer_versions:
+        return action_failure(
+            "Cannot activate downloaded update because a newer installed version "
+            f"exists: {newer_versions[-1]}",
+            exit_code=EXIT_USER_ERROR,
+        )
     result = install_package(version_path, scope=scope)
     if result.ok:
         receipt_paths[0].unlink(missing_ok=True)
@@ -615,8 +621,8 @@ def full_package_upgrade(
     Parameters
     ----------
     package_path : Path
-        Package root or active package path whose update should be checked,
-        staged, and activated.
+        Package root, ``current`` junction, or version directory whose update
+        should be checked, staged, and activated.
     scope : Scope, default=Scope.AUTO
         Installation scope used when activating the staged version.
     no_checksum : bool, default=False
@@ -647,8 +653,8 @@ def full_package_upgrade(
     if not download_result.ok or download_result.status != "downloaded":
         return download_result
 
-    # Resolve the receipt from the original active package path; it identifies
-    # the newly staged version without requiring the caller to change folders.
+    # Resolve the receipt from the original package path; it identifies the
+    # newly staged version without requiring the caller to change folders.
     install_result = install_downloaded_update(package_path, scope=scope)
     install_result.warnings = (
         check_result.warnings + download_result.warnings + install_result.warnings

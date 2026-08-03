@@ -91,9 +91,9 @@ The package name is the package-root directory name. A name ending in
 
 You may give `pkg` a version directory, a package root, or its `current`
 junction. A package root without `current` is accepted only when it contains
-exactly one version directory. Update actions require the active version,
-package root, or `current`, except when they are promoting a bootstrap
-template.
+exactly one version directory. Update checks and downloads accept any version
+directory, so a historical definition can provide the update configuration.
+Activation refuses a downloaded version when a newer installed version exists.
 
 Installing a newer version advances `current`. Installing an older version
 does not replace a newer active version unless `--allow-downgrade` is supplied. Old

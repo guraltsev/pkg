@@ -235,24 +235,41 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self.assertIn("Operation: install", output)
         self.assertIn("install failed.", output)
 
-    def test_update_rejects_historical_version_with_visible_error(self) -> None:
-        """Update rejects a non-current concrete version and prints the cause."""
+    def test_update_check_accepts_historical_version_without_current(self) -> None:
+        """Update checks use an explicitly selected historical version without current."""
         module = load_pkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            package_root = Path(tmpdir) / "HistoricalApp"
+            root = Path(tmpdir)
+            upstream = root / "upstream"
+            upstream.mkdir()
+            self.run_git(upstream, "init")
+            self.run_git(upstream, "checkout", "-b", "main")
+            self.run_git(upstream, "config", "user.name", "Pkg Tests")
+            self.run_git(upstream, "config", "user.email", "pkg-tests@example.invalid")
+            upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "initial")
+
+            package_root = root / "HistoricalApp"
             version_dir = package_root / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
+            subprocess.run(
+                ["git", "clone", str(upstream), str(version_dir / "App")],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             self.write_config(
                 version_dir,
-                """
+                f"""
                 name = "HistoricalApp"
                 version = "1.0.0"
                 localVersion = 1
 
                 [origin]
                 mode = "git"
-                url = "https://example.invalid/tool.git"
+                url = "{upstream.as_posix()}"
 
                 [update]
 
@@ -260,14 +277,17 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 mode = "git"
                 """,
             )
+            upstream.joinpath("payload.txt").write_text("two", encoding="utf-8")
+            self.run_git(upstream, "add", "payload.txt")
+            self.run_git(upstream, "commit", "-m", "update")
 
             code, output = self.run_main(
                 module,
-                ["upgrade", "download", str(version_dir)],
+                ["upgrade", "check", str(version_dir)],
             )
 
-        self.assertEqual(code, module.EXIT_USER_ERROR)
-        self.assertIn("Update actions require the active version", output)
+        self.assertEqual(code, module.EXIT_SUCCESS)
+        self.assertIn("Available: v", output)
 
     def test_config_check_rejects_removed_automatic_update_setting(self) -> None:
         """Config check rejects the removed automatic-update setting."""
@@ -471,6 +491,30 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 "No downloaded upgrade is waiting to be installed. Run "
                 "'pkg upgrade download' first."
             ],
+        )
+
+    def test_upgrade_install_rejects_a_receipt_older_than_an_installed_version(self) -> None:
+        """Upgrade install does not replace a newer installed version."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ReceiptApp")
+            newer_version = version_dir.parent / "v3.0.0.l1"
+            newer_version.mkdir()
+            receipts = version_dir.parent / ".pkg" / "receipts"
+            receipts.mkdir(parents=True)
+            receipts.joinpath("v2.0.0.l1.toml").write_text(
+                "schemaVersion = 1\nversion = \"2.0.0\"\nlocalVersion = 1\n",
+                encoding="utf-8",
+            )
+            (version_dir.parent / "v2.0.0.l1").mkdir()
+
+            result = module.install_downloaded_update(version_dir)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
+        self.assertIn(
+            "newer installed version exists: v3.0.0.l1", result.errors[0]
         )
 
     def test_module_zip_bootstrap_creates_populated_release_version(self) -> None:
