@@ -321,14 +321,14 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.run_git(upstream, "commit", "-m", "initial")
 
             package_root = root / "ImmutableGitApp"
-            version_dir = package_root / "vbootstrap-git.l1"
+            version_dir = package_root / "vbootstrap-git.l2"
             version_dir.mkdir(parents=True)
             self.write_config(
                 version_dir,
                 f"""
                 name = "ImmutableGitApp"
                 version = "bootstrap-git"
-                localVersion = 1
+                localVersion = 2
 
                 [origin]
                 mode = "git"
@@ -358,7 +358,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertFalse((version_dir / "App").exists())
 
             # Installing the bootstrap template must stage and install a new
-            # immutable version rather than activating bootstrap-git itself.
+            # immutable .l1 version rather than activating bootstrap-git itself.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
@@ -368,7 +368,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             new_versions = [
                 path
                 for path in package_root.glob("v*.l*")
-                if path.name != "vbootstrap-git.l1"
+                if path != version_dir
             ]
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue(result.changed)
@@ -395,6 +395,21 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
 
+            # Reinstalling the same bootstrap must reuse its original .l1
+            # promotion instead of creating an otherwise identical .l2.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "update_current_junction_if_needed", return_value=True
+                ):
+                    repeat_result = module.install_package(version_dir)
+
+            concrete_versions = [
+                path for path in package_root.glob("v*.l*") if path != version_dir
+            ]
+            self.assertTrue(repeat_result.ok, msg=repeat_result.errors)
+            self.assertEqual(concrete_versions, [new_version])
+            self.assertTrue(new_version.name.endswith(".l1"))
+
             # A wrapper launched inside the active concrete version defaults
             # its path to ".". Accept that active version while retaining the
             # historical-version safety rule.
@@ -414,7 +429,9 @@ class PkgCliBehaviorTests(unittest.TestCase):
                             "update_current_junction_if_needed",
                             return_value=True,
                         ):
-                            update_result = module.download_package_update(new_version)
+                            update_result = module.full_package_upgrade(
+                                new_version, scope=module.Scope.USER
+                            )
 
             updated_versions = [
                 path
@@ -422,6 +439,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 if path not in {version_dir, new_version}
             ]
             self.assertTrue(update_result.ok, msg=update_result.errors)
+            self.assertEqual(update_result.status, "installed-update")
             self.assertEqual(len(updated_versions), 1)
             self.assertEqual(
                 (updated_versions[0] / "App" / "payload.txt").read_text(
@@ -429,6 +447,31 @@ class PkgCliBehaviorTests(unittest.TestCase):
                 ),
                 "two",
             )
+
+    def test_upgrade_install_rejects_a_receipt_for_the_active_version(self) -> None:
+        """Upgrade install requires a staged version newer than the active version."""
+        module = load_pkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ReceiptApp")
+            receipts = version_dir.parent / ".pkg" / "receipts"
+            receipts.mkdir(parents=True)
+            receipts.joinpath("v1.0.0.l1.toml").write_text(
+                "schemaVersion = 1\nversion = \"1.0.0\"\nlocalVersion = 1\n",
+                encoding="utf-8",
+            )
+
+            result = module.install_downloaded_update(version_dir)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
+        self.assertEqual(
+            result.errors,
+            [
+                "No downloaded upgrade is waiting to be installed. Run "
+                "'pkg upgrade download' first."
+            ],
+        )
 
     def test_module_zip_bootstrap_creates_populated_release_version(self) -> None:
         """Installing a module bootstrap stages and extracts its ZIP release."""

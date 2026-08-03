@@ -327,7 +327,13 @@ def _git_origin_candidate(
 def _next_version_identity(
     identity: PackageIdentity, candidate: Dict[str, Any]
 ) -> PackageIdentity:
-    """Assign the first unused local revision for a prepared candidate."""
+    """Assign a candidate local revision, pinning bootstrap promotions to ``.l1``."""
+    if identity.version.startswith("bootstrap"):
+        path = identity.package_root / f"v{candidate['version']}.l1"
+        return PackageIdentity.from_version_path(
+            identity.package_root, path, is_current=False
+        )
+
     revision = 1
     while (identity.package_root / f"v{candidate['version']}.l{revision}").exists():
         revision += 1

@@ -187,6 +187,7 @@ no path it installs the package in the current directory.
 pkg.cmd upgrade check C:\Packages\Tool
 pkg.cmd upgrade download C:\Packages\Tool
 pkg.cmd upgrade install C:\Packages\Tool
+pkg.cmd upgrade full C:\Packages\Tool
 ```
 
 `upgrade check` is read-only and reports either `Available: ...` or `Current: ...`.
@@ -196,7 +197,11 @@ the check summary explicitly says that no files were changed.
 it as a new version directory without changing `current`. `upgrade install`
 activates the most recently downloaded version and applies its shortcuts,
 environment settings, PATH entries, and wrappers. There is no automatic update
-policy or background update action.
+policy or background update action. A successful activation consumes its
+download receipt, so `upgrade install` cannot silently reinstall an old staged
+version; run `upgrade download` before each activation. `upgrade full` checks,
+downloads, and activates an update from the current package directory or package
+root.
 
 ### Configuration
 
@@ -402,6 +407,7 @@ discovers a candidate. `pkg upgrade download` stages a complete new version unde
 `<package-root>\.pkg\work`, commits it as a new `v<version>.lN` directory,
 and records a receipt. `pkg upgrade install` activates the most recently
 downloaded version through the regular install workflow.
+`pkg upgrade full` performs those three steps as one explicit command.
 Update state, locks, receipts, and disposable work files all live in
 `<package-root>\.pkg`; package repositories should ignore `/.pkg/`.
 

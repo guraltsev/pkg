@@ -11,7 +11,7 @@ Call ``main(...)`` for command-line execution. Embedders may call
 ``install_package(...)``, ``update_package_config(...)``,
 ``convert_legacy_config(...)``, ``health_check_package(...)``,
 ``check_package_update(...)``, ``download_package_update(...)``, or
-``install_downloaded_update(...)`` directly.
+``install_downloaded_update(...)``, or ``full_package_upgrade(...)`` directly.
 
 Implementation Approach
 -----------------------
@@ -50,6 +50,7 @@ from pkg.core import (  # noqa: E402
     ConfigValidationError,
     PackageIdentity,
     Scope,
+    compare_package_versions,
     log_error,
     log_info,
     log_warning,
@@ -107,6 +108,7 @@ Notes:
   - ``upgrade check`` discovers an update without downloading it.
   - ``upgrade download`` stages an available update without activating it.
   - ``upgrade install`` activates the most recently downloaded update.
+  - ``upgrade full`` checks, stages, and activates an available update.
   - ``pkg.local`` hooks do not install missing dependencies unless
     ``--local-deps-autoinstall`` is supplied.
   - ``config update`` creates a documented starter template when ``pkg.toml`` is missing.
@@ -490,6 +492,14 @@ def download_package_update(
         new_identity = _next_version_identity(identity, candidate)
         receipt = paths["receipts"] / f"{new_identity.version_string}.toml"
         if new_identity.version_path.exists():
+            # Reinstalling a bootstrap template must reactivate its original
+            # immutable promotion instead of allocating a higher local revision.
+            if identity.version.startswith("bootstrap"):
+                paths["receipts"].mkdir(parents=True, exist_ok=True)
+                write_text_atomic(
+                    receipt,
+                    f"schemaVersion = 1\ncandidateId = {_toml_value(candidate['candidateId'])}\nversion = {_toml_value(new_identity.version)}\nlocalVersion = {new_identity.local_version}\n",
+                )
             log_info(f"Downloaded: {new_identity.version_string}")
             return ActionResult(True, warnings=warnings, status="downloaded")
         staged = _prepare_update(
@@ -560,8 +570,9 @@ def install_downloaded_update(
             exit_code=EXIT_USER_ERROR,
         )
 
-    # Receipts name the committed version and are validated against the package
-    # layout before the regular install workflow manages the current junction.
+    # The newest receipt identifies the one staged update that may be activated.
+    # A receipt for this version or an older one was already consumed or has
+    # been superseded, so it must not turn an upgrade command into a reinstall.
     try:
         receipt = read_toml_file(receipt_paths[0])
         version = receipt.get("version")
@@ -575,7 +586,74 @@ def install_downloaded_update(
         return action_failure(
             f"Cannot activate downloaded update: {exc}", exit_code=EXIT_USER_ERROR
         )
-    return install_package(version_path, scope=scope)
+
+    if (
+        not identity.version.startswith("bootstrap")
+        and compare_package_versions(version_path.name, identity.version_string) <= 0
+    ):
+        return action_failure(
+            "No downloaded upgrade is waiting to be installed. Run "
+            "'pkg upgrade download' first.",
+            exit_code=EXIT_USER_ERROR,
+        )
+    result = install_package(version_path, scope=scope)
+    if result.ok:
+        receipt_paths[0].unlink(missing_ok=True)
+        result.status = "installed-update"
+    return result
+
+
+def full_package_upgrade(
+    package_path: Path,
+    *,
+    scope: Scope = Scope.AUTO,
+    no_checksum: bool = False,
+    local_deps_autoinstall: bool = False,
+) -> ActionResult:
+    """Check, stage, and activate an available update in one operation.
+
+    Parameters
+    ----------
+    package_path : Path
+        Package root or active package path whose update should be checked,
+        staged, and activated.
+    scope : Scope, default=Scope.AUTO
+        Installation scope used when activating the staged version.
+    no_checksum : bool, default=False
+        Whether checksum verification may be bypassed while staging a payload.
+    local_deps_autoinstall : bool, default=False
+        Whether package-local update hooks may install missing dependencies.
+
+    Returns
+    -------
+    ActionResult
+        Check, download, or activation outcome with warnings and the
+        recommended exit code.
+    """
+
+    # Report the initial discovery result before changing package state.
+    check_result = check_package_update(
+        package_path, local_deps_autoinstall=local_deps_autoinstall
+    )
+    if not check_result.ok or check_result.status != "available":
+        return check_result
+
+    # Stage next so activation only runs after a complete new version exists.
+    download_result = download_package_update(
+        package_path,
+        no_checksum=no_checksum,
+        local_deps_autoinstall=local_deps_autoinstall,
+    )
+    if not download_result.ok or download_result.status != "downloaded":
+        return download_result
+
+    # Resolve the receipt from the original active package path; it identifies
+    # the newly staged version without requiring the caller to change folders.
+    install_result = install_downloaded_update(package_path, scope=scope)
+    install_result.warnings = (
+        check_result.warnings + download_result.warnings + install_result.warnings
+    )
+    return install_result
 
 
 def install_package(
@@ -1064,6 +1142,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "  %(prog)s upgrade check C:\\Packages\\Tool\n"
             "  %(prog)s upgrade download C:\\Packages\\Tool\n"
             "  %(prog)s upgrade install C:\\Packages\\Tool\n"
+            "  %(prog)s upgrade full C:\\Packages\\Tool\n"
             "  %(prog)s config check C:\\Packages\\Tool\n"
             "  %(prog)s config update C:\\Packages\\Tool\n"
             "  %(prog)s config from-legacy C:\\OldPackages\\Tool\n"
@@ -1162,7 +1241,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "operation",
         nargs="?",
-        help="upgrade: check, download, or install; config: from-legacy, update, or check",
+        help="upgrade: check, download, full, or install; config: from-legacy, update, or check",
     )
     parser.add_argument(
         "path",
@@ -1209,7 +1288,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         else:
             operations = {
-                "upgrade": {"check", "download", "install"},
+                "upgrade": {"check", "download", "full", "install"},
                 "config": {"from-legacy", "update", "check"},
             }
             if args.operation not in operations[args.command]:
@@ -1227,6 +1306,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             elif args.command == "upgrade" and args.operation == "download":
                 result = download_package_update(
                     package_path,
+                    no_checksum=args.no_checksum,
+                    local_deps_autoinstall=args.local_deps_autoinstall,
+                )
+            elif args.command == "upgrade" and args.operation == "full":
+                result = full_package_upgrade(
+                    package_path,
+                    scope=scope,
                     no_checksum=args.no_checksum,
                     local_deps_autoinstall=args.local_deps_autoinstall,
                 )
@@ -1278,11 +1364,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_info("Package is current; this check did not change any files.")
     elif label == "upgrade download" and result.status == "downloaded":
         log_info(
-            "Upgrade is downloaded and staged. Run 'pkg upgrade install' to "
-            "activate it."
+            "Upgrade is downloaded and staged. Run 'pkg upgrade install' from "
+            "this directory or the package root to activate it."
         )
     elif label == "upgrade download" and result.status == "current":
         log_info("Package is current; no upgrade was downloaded.")
+    elif label == "upgrade full" and result.status == "current":
+        log_info("Package is current; no upgrade was downloaded or activated.")
+    elif label == "upgrade full" and result.status == "installed-update":
+        log_info("Upgrade was downloaded and is now active.")
+    elif label == "upgrade install" and result.status == "installed-update":
+        log_info("Downloaded upgrade is now active.")
     elif label == "config check" and result.ok:
         log_info("Configuration is valid; this check did not change any files.")
     elif result.ok and result.changed:

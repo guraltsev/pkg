@@ -50,6 +50,10 @@ def run_tui() -> int:
             "Upgrade: download available update (does not install)",
         ),
         (
+            "upgrade-full",
+            "Upgrade: check, download, and install available update",
+        ),
+        (
             "upgrade-install",
             "Upgrade: install downloaded update (activates it)",
         ),
@@ -84,6 +88,8 @@ def run_tui() -> int:
         elif action == "upgrade-check":
             flags = ("local-deps-autoinstall", "toml")
         elif action == "upgrade-download":
+            flags = ("no-checksum", "local-deps-autoinstall", "toml")
+        elif action == "upgrade-full":
             flags = ("no-checksum", "local-deps-autoinstall", "toml")
         elif action == "upgrade-install" or action in {"config-check", "config-update"}:
             flags = ("toml",)
@@ -180,14 +186,22 @@ def run_tui() -> int:
             options.append(Option(f"Package path: {self.path or 'current directory'}", id="path"))
             return options
 
+        def _refresh_summary(self) -> None:
+            """Re-read package metadata and refresh the visible summary."""
+            self.title, self.description, self.warning = package_summary(self.path)
+            self.query_one("#package-title", Label).update(self.title)
+            self.query_one("#description", Static).update(self.description)
+            self.query_one("#metadata-warning", Static).update(self.warning)
+
+        def on_screen_resume(self) -> None:
+            """Refresh package metadata whenever this main screen becomes visible."""
+            self._refresh_summary()
+
         def update_path_setting(self, setting: str, value: str) -> None:
             """Apply the global package-path edit and refresh the main list."""
             _ = setting
             self.path = value
-            self.title, self.description, self.warning = package_summary(value)
-            self.query_one("#package-title", Label).update(self.title)
-            self.query_one("#description", Static).update(self.description)
-            self.query_one("#metadata-warning", Static).update(self.warning)
+            self._refresh_summary()
             options = self.query_one("#main-options", OptionList)
             options.set_options(self._options())
             options.highlighted = next(
@@ -250,7 +264,11 @@ def run_tui() -> int:
         def _options(self) -> list[Option]:
             """Build the one list containing Run and every editable setting."""
             options = [Option("Run", id="run"), Option("--- Settings ---", disabled=True)]
-            if self.action in {"install", "upgrade-install"}:
+            if self.action in {
+                "install",
+                "upgrade-install",
+                "upgrade-full",
+            }:
                 scope = "Machine" if self.scope == "Machine" else "Local"
                 options.append(
                     Option(
