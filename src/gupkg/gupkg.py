@@ -899,7 +899,10 @@ def install_package(
         exit_code=EXIT_SUCCESS,
     )
 def update_package_config(
-    package_path: Path, *, scope: Scope = Scope.USER
+    package_path: Path,
+    *,
+    scope: Scope = Scope.USER,
+    import_shortcuts: bool = True,
 ) -> ActionResult:
     """Synchronize ``pkg.toml`` metadata for one package.
 
@@ -910,6 +913,9 @@ def update_package_config(
         ``current`` junction.
     scope : Scope, default=Scope.USER
         Selected CLI scope, used only for standard banner output.
+    import_shortcuts : bool, default=True
+        Whether ``.lnk`` files under ``_shortcuts`` are added to the
+        configuration and renamed with the ``.lnk.imported`` suffix.
 
     Returns
     -------
@@ -935,9 +941,40 @@ def update_package_config(
             f"Failed to update configuration: {exc}", exit_code=EXIT_MUTATION_ERROR
         )
 
+    shortcut_changed = False
+    shortcuts_dir = identity.version_path / "_shortcuts"
+    if import_shortcuts and shortcuts_dir.is_dir():
+        shortcut_files = [
+            path for path in shortcuts_dir.rglob("*.lnk") if path.is_file()
+        ]
+        if shortcut_files:
+            try:
+                # Render the shortcut tables before changing the source files,
+                # then consume those files only after the TOML replacement succeeds.
+                from gupkg.shortcuts_to_gupkg_toml import (
+                    archive_imported_shortcuts,
+                    import_shortcuts as import_shortcut_tables,
+                )
+
+                rendered, shortcuts = import_shortcut_tables(identity.version_path)
+                write_text_atomic(
+                    identity.version_path / "pkg.toml", rendered, backup=True
+                )
+                archive_imported_shortcuts(shortcuts_dir)
+                log_info(f"Imported and archived {len(shortcuts)} shortcut(s).")
+                shortcut_changed = True
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                return action_failure(
+                    f"Failed to import shortcuts: {exc}", exit_code=EXIT_USER_ERROR
+                )
+            except OSError as exc:
+                return action_failure(
+                    f"Failed to import shortcuts: {exc}", exit_code=EXIT_MUTATION_ERROR
+                )
+
     return ActionResult(
         ok=step_result.ok,
-        changed=step_result.changed,
+        changed=step_result.changed or shortcut_changed,
         warnings=step_result.warnings,
         errors=step_result.errors,
         exit_code=EXIT_SUCCESS if step_result.ok else EXIT_MUTATION_ERROR,
@@ -1238,6 +1275,16 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
     )
 
     parser.add_argument(
+        "--import-shortcuts",
+        choices=["true", "false"],
+        default="true",
+        help=(
+            "Import and archive .lnk files from _shortcuts during config update "
+            "(default: true)"
+        ),
+    )
+
+    parser.add_argument(
         "command",
         nargs="?",
         choices=["install", "upgrade", "config", "tui"],
@@ -1260,6 +1307,11 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
         if args.operation is not None or args.path is not None:
             parser.error("tui does not accept an operation or package path")
         try:
+            # Provision gupkg-owned UI dependencies before importing the
+            # optional interface module into the launcher process.
+            from gupkg.dependencies import ensure_runtime_dependencies
+
+            ensure_runtime_dependencies("tui")
             from gupkg.tui import run_tui
 
             return run_tui()
@@ -1322,7 +1374,11 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
                     package_path, scope=scope, no_checksum=args.no_checksum
                 )
             elif args.operation == "update":
-                result = update_package_config(package_path, scope=scope)
+                result = update_package_config(
+                    package_path,
+                    scope=scope,
+                    import_shortcuts=args.import_shortcuts == "true",
+                )
             elif args.operation == "from-legacy":
                 output_path = Path(args.output).expanduser() if args.output else None
                 result = convert_legacy_config(
@@ -1459,9 +1515,18 @@ def _collection_list(inventory, *, filter_name: str, toml: bool) -> int:
 
 def _run_package_tui(package_path: Path) -> int:
     """Open the existing package operation interface for one selected root."""
-    from gupkg.tui import run_tui
+    try:
+        # Bare and selected-package invocations bypass the explicit ``tui``
+        # command, so they provision the same optional runtime here.
+        from gupkg.dependencies import ensure_runtime_dependencies
 
-    return run_tui(str(package_path))
+        ensure_runtime_dependencies("tui")
+        from gupkg.tui import run_tui
+
+        return run_tui(str(package_path))
+    except RuntimeError as install_error:
+        log_error(f"Could not install a TUI dependency: {install_error}")
+        return EXIT_MUTATION_ERROR
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1537,9 +1602,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not remaining:
         if globals_args.toml:
             return _collection_list(inventory, filter_name="all", toml=True)
-        from gupkg.collection_tui import run_collection_tui
+        try:
+            # Collection mode is also a Textual interface, even though it
+            # presents a selector before opening a package's operation screen.
+            from gupkg.dependencies import ensure_runtime_dependencies
 
-        return run_collection_tui(inventory)
+            ensure_runtime_dependencies("tui")
+            from gupkg.collection_tui import run_collection_tui
+
+            return run_collection_tui(inventory)
+        except RuntimeError as install_error:
+            log_error(f"Could not install a TUI dependency: {install_error}")
+            return EXIT_MUTATION_ERROR
     if remaining[0] in {"install", "upgrade", "config"}:
         log_error("Collection mutations require --package or an explicit package path.")
         return EXIT_USER_ERROR

@@ -75,6 +75,7 @@ def run_tui(package_path: str = "") -> int:
         ("dry-run", "Legacy import: dry run"),
         ("toml", "Include TOML status summary"),
         ("local-deps-autoinstall", "Allow pkg.local dependency installation"),
+        ("import-shortcuts", "Import and archive _shortcuts"),
     )
 
     def action_flags(action: str) -> tuple[tuple[str, str], ...]:
@@ -96,8 +97,10 @@ def run_tui(package_path: str = "") -> int:
             flags = ("no-checksum", "local-deps-autoinstall", "toml")
         elif action == "upgrade-full":
             flags = ("no-checksum", "local-deps-autoinstall", "toml")
-        elif action == "upgrade-install" or action in {"config-check", "config-update"}:
+        elif action == "upgrade-install" or action == "config-check":
             flags = ("toml",)
+        elif action == "config-update":
+            flags = ("import-shortcuts", "toml")
         elif action == "config-from-legacy":
             flags = ("dry-run",)
         else:
@@ -154,7 +157,12 @@ def run_tui(package_path: str = "") -> int:
         if action == "version":
             return ["--version"]
         args = ["--scope", scope]
-        args.extend(f"--{flag}" for flag in selected_flags)
+        args.extend(
+            f"--{flag}" for flag in selected_flags if flag != "import-shortcuts"
+        )
+        if action == "config-update":
+            enabled = "true" if "import-shortcuts" in selected_flags else "false"
+            args.append(f"--import-shortcuts={enabled}")
         if action == "install":
             args.append("install")
         else:
@@ -246,7 +254,9 @@ def run_tui(package_path: str = "") -> int:
             self.action = action
             self.home_screen = home_screen
             self.output = ""
-            self.flags: set[str] = set()
+            self.flags: set[str] = (
+                {"import-shortcuts"} if action == "config-update" else set()
+            )
             scope = detected_scope(home_screen.path)
             self.scope, self.machine_available = scope or ("User", False)
             self.title = home_screen.title
@@ -259,11 +269,6 @@ def run_tui(package_path: str = "") -> int:
             yield Static(self.description, id="description")
             yield Static(self.warning, id="metadata-warning")
             yield OptionList(*self._options(), id="command-options")
-
-        def __init__(self, initial_path: str) -> None:
-            """Store the package path selected by the dispatcher."""
-            super().__init__()
-            self.initial_path = initial_path
 
         def on_mount(self) -> None:
             """Make Run the selected default for every action."""

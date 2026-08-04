@@ -1141,6 +1141,73 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
             )
 
+    def test_config_update_imports_and_archives_shortcuts_by_default(self) -> None:
+        """Config update records _shortcuts entries and archives their source files."""
+        module = load_gupkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ShortcutApp")
+            shortcuts_dir = version_dir / "_shortcuts"
+            shortcuts_dir.mkdir()
+            source = shortcuts_dir / "Launch.lnk"
+            source.write_text("", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "ShortcutApp"
+                version = "1.0.0"
+                localVersion = 1
+                """,
+            )
+
+            payload = {
+                "TargetPath": str(version_dir / "App" / "shortcut-app.exe"),
+                "Arguments": "",
+                "WorkingDirectory": "",
+                "IconLocation": "",
+                "Description": "Launch ShortcutApp",
+            }
+            with mock.patch(
+                "gupkg.shortcuts_to_gupkg_toml.read_windows_shortcut",
+                return_value=payload,
+            ):
+                code, output = self.run_main(
+                    module, ["config", "update", str(version_dir)]
+                )
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            config_text = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertIn('name = "Launch"', config_text)
+            self.assertFalse(source.exists())
+            self.assertTrue(shortcuts_dir.joinpath("Launch.lnk.imported").exists())
+
+    def test_config_update_can_leave_shortcut_sources_unimported(self) -> None:
+        """An explicit false shortcut option leaves _shortcuts files untouched."""
+        module = load_gupkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ShortcutApp")
+            shortcuts_dir = version_dir / "_shortcuts"
+            shortcuts_dir.mkdir()
+            source = shortcuts_dir / "Launch.lnk"
+            source.write_text("", encoding="utf-8")
+            self.write_config(
+                version_dir,
+                """
+                name = "ShortcutApp"
+                version = "1.0.0"
+                localVersion = 1
+                """,
+            )
+
+            code, output = self.run_main(
+                module,
+                ["--import-shortcuts=false", "config", "update", str(version_dir)],
+            )
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            config_text = (version_dir / "pkg.toml").read_text(encoding="utf-8")
+            self.assertNotIn("[[shortcut]]", config_text)
+            self.assertTrue(source.exists())
+
     def test_auto_scope_uses_admin_status_and_portability_policy(self) -> None:
         """Automatic scope selects Machine only for permitted administrator installs."""
         cases = (

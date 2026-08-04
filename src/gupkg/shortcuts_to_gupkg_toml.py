@@ -184,6 +184,7 @@ def main() -> int:
     if not args.no_backup:
         shutil.copy2(config_path, config_path.with_name(config_path.name + ".bak"))
     config_path.write_text(rendered, encoding="utf-8")
+    archive_imported_shortcuts(base_dir / args.shortcuts_dir)
     print(f"Wrote {config_path} ({len(shortcuts)} shortcut(s))")
     return 0
 
@@ -230,6 +231,35 @@ def read_shortcut_directory(
             )
         )
     return entries
+
+
+def archive_imported_shortcuts(shortcuts_dir: Path) -> None:
+    """Rename imported shortcut sources with the ``.lnk.imported`` suffix.
+
+    Parameters
+    ----------
+    shortcuts_dir : Path
+        Directory whose recursively contained ``.lnk`` files were imported.
+
+    Raises
+    ------
+    FileExistsError
+        If archiving would overwrite an already archived shortcut source.
+    OSError
+        If an imported shortcut cannot be renamed.
+    """
+    shortcut_files = sorted(
+        path for path in shortcuts_dir.rglob("*.lnk") if path.is_file()
+    )
+    archived_files = [path.with_suffix(".lnk.imported") for path in shortcut_files]
+    collision = next((path for path in archived_files if path.exists()), None)
+    if collision:
+        raise FileExistsError(f"imported shortcut already exists: {collision}")
+
+    # Archive only after every destination is known to be free, so a collision
+    # cannot leave a partially consumed shortcut directory.
+    for shortcut_file, archived_file in zip(shortcut_files, archived_files):
+        shortcut_file.rename(archived_file)
 
 
 def read_windows_shortcut(shortcut_path: Path) -> dict[str, str]:

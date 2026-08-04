@@ -162,7 +162,7 @@ to make that downloaded version current.
 Run the simple interactive interface:
 
 ```bat
-tui.cmd
+gupkg-tui.cmd
 ```
 
 You can also run `gupkg.cmd tui` directly.
@@ -220,7 +220,9 @@ gupkg.cmd --dry-run config from-legacy C:\OldPackages\Ripgrep
 
 `config check` validates a package without installing it. `config update`
 creates a starter `pkg.toml` when absent or synchronizes its directory-owned
-metadata. `config from-legacy` is a one-time, best-effort migration tool for
+metadata. By default it also imports `.lnk` files under `_shortcuts` and renames
+each source to `.lnk.imported`; use `--import-shortcuts=false` to leave them
+untouched. `config from-legacy` is a one-time, best-effort migration tool for
 older package formats.
 
 All options are accepted by the command parser; the following table notes where
@@ -234,6 +236,7 @@ they have an effect.
 | `--refresh-app` | For `Install`, replaces `App` from `[origin]`, even when it is populated. |
 | `--no-checksum` | Bypasses configured origin or update checksum verification and emits a warning. |
 | `--local-deps-autoinstall` | Allows trusted `pkg.local` update hooks to install missing imports. Hooks otherwise report unavailable dependencies without installing anything. |
+| `--import-shortcuts true\|false` | For `config update`, imports `.lnk` files from `_shortcuts` and archives them as `.lnk.imported`; defaults to `true`. |
 | `--output <path>` | Selects `config from-legacy` output; the default is `<path>\pkg.toml`. |
 | `--dry-run` | For `config from-legacy`, writes generated TOML to standard output without changing files. |
 | `--toml` | Adds `ok`, `changed`, and `status` fields to normal output. |
@@ -519,7 +522,10 @@ TOML, directory-derived metadata, historical-origin consistency, package-local
 origin scripts, and configured update modules without modifying the package.
 
 Use `config update` to create a starter `pkg.toml` or repair metadata while
-keeping runtime settings. It does not populate `App` or install components.
+keeping runtime settings. It imports `_shortcuts` `.lnk` files by default and
+archives each imported source as `.lnk.imported`; pass
+`--import-shortcuts=false` to skip that import. It does not populate `App` or
+install components.
 
 `config from-legacy` is a best-effort migration aid for older JSON-based layouts.
 It recognizes common `opt_pkg.json`, `environment*.json`/`env*.json`,
@@ -536,7 +542,8 @@ python gupkg\shortcuts_to_gupkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
 
 The shortcut importer reads `.lnk` files from `_shortcuts`, converts
 package-owned paths back to package variables, and updates matching
-`[[shortcut]]` tables. Both helpers are migration tools, not the supported
+`[[shortcut]]` tables. After a successful write, it archives each imported
+source as `.lnk.imported`. Both helpers are migration tools, not the supported
 runtime package API.
 
 ## Development

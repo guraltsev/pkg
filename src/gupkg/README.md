@@ -88,7 +88,8 @@ directory into that folder's existing `pkg.toml`.
 The importer reads shortcut fields through Windows Script Host, converts paths
 inside package-owned `App`, `Icons`, and `Shortcuts` directories back to `$App`,
 `$Icons`, and `$Shortcuts`, and rewrites `[[shortcut]]` tables with matching
-names. Other TOML sections are preserved.
+names. Other TOML sections are preserved, and successfully imported sources
+are renamed with the `.lnk.imported` suffix.
 
 Example:
 
