@@ -38,6 +38,37 @@ HELPER_WRAPPER_SCRIPTS = [
 
 class WrapperScriptTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_gupkg_tui_wrapper_opens_the_interactive_command(self) -> None:
+        """The TUI wrapper forwards its arguments to ``gupkg tui``."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "tui-wrapper.log"
+            fake_python = Path(tmpdir) / "fake-python.cmd"
+            fake_python.write_text(
+                f'''@echo off
+> "{log_file}" echo args=%*
+exit /b 0
+''',
+                encoding="ascii",
+            )
+
+            env = os.environ.copy()
+            env["GUPKG_PYTHON"] = str(fake_python)
+            result = subprocess.run(
+                ["cmd", "/c", str(SRC_ROOT / "gupkg-tui.cmd"), "--probe"],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            recorded_args = (
+                log_file.read_text(encoding="utf-8").removeprefix("args=").strip()
+            )
+            self.assertIn("-m gupkg tui --probe", recorded_args)
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_wrapper_scripts_preserve_caller_working_directory(self) -> None:
         """Wrapper scripts preserve caller working directory."""
         for script, forwarded_args in WRAPPER_SCRIPTS:
