@@ -1,38 +1,42 @@
-# Minimal list-first TUI style guide
+# Minimal list-first TUI guide
 
-This guide defines the interaction and visual language used by `pkg tui`. It
-is intentionally suitable for other terminal applications that need to expose
-substantial capability without becoming a dashboard, a pseudo-GUI, or a
-collection of terminal art.
+This guide defines the interaction, visual language, and implementation
+boundaries for `pkg tui`. It is also intended as a reusable approach for small
+Python terminal applications: apply the principles to the application's needs,
+rather than copying its screens verbatim.
 
-The central rule is simple: a terminal UI should look and behave like a short,
-well-ordered list of decisions. The terminal already supplies a window, a
-cursor, scrolling, and keyboard input. Do not redraw those concepts as boxes,
-panels, cards, toolbars, or decorative separators.
+## Purpose and fit
 
-## Goals
+A small TUI is a decision surface, not a desktop application reproduced in a
+terminal. The terminal already provides a window, cursor, scrolling, and
+keyboard input. The application need only make the current context, available
+choices, and result unambiguous.
 
 Use this style when the application:
 
-- has a small number of actions and settings;
+- has a modest number of operations and settings;
 - is primarily keyboard-driven;
 - must work in narrow, short, resized, or remote terminals;
-- should expose the same operations as an existing command line;
-- benefits from showing a small amount of contextual status before an action;
-- should be readable without learning a visual design system.
+- exposes the same operations as an existing command line or Python API; and
+- benefits from a little contextual status before an action.
 
-The desired result is calm and direct. A user should see the current package
-or object, a single list of available choices, and no competing visual chrome.
+It is less suitable for comparing many records, monitoring several live
+signals, manipulating spatial data, or dense text editing. Those tasks may
+justify tables, panes, persistent help, or a richer application model.
 
-## Visual rules
+The central rule is simple: present a short, well-ordered list of decisions.
+The desired result is calm and direct: current object, one list of choices, and
+no competing visual chrome.
+
+## Visual language
 
 ### Use one list per decision
 
-Show actions and settings with one selectable list. The selected item is the
-only necessary indication of focus. Do not place the list inside a panel or
-add a parallel row of buttons.
+Show actions and settings in one selectable list. The selected item is the
+only necessary indication of focus. Do not put the list inside a panel or add a
+parallel row of buttons.
 
-For an operation screen, put the default action first, then settings:
+For an operation screen, put the default action first, then its settings:
 
 ```text
 Run
@@ -42,56 +46,41 @@ Installation Scope: Local
 Skip checksum verification: off
 ```
 
-The separator is content, not decoration. It tells the reader where execution
-ends and editable state begins. Keep it literal and short: `--- Settings ---`.
-Do not add blank rows before or after it.
+The separator is content, not decoration: it distinguishes execution from
+editable state. Keep it literal and short, and do not add blank rows around it.
 
 ### Do not draw frames
 
-Avoid all of the following unless a terminal protocol genuinely requires them:
+Avoid the following unless a terminal protocol genuinely requires them:
 
-- ASCII or Unicode box borders;
+- ASCII or Unicode borders;
 - bordered form fields, cards, panels, dialogs, and tables;
 - headers and footers used only as application chrome;
 - button-like widgets for ordinary actions;
-- large title banners, logos, or repeated product names;
+- large title banners, logos, or repeated product names; and
 - spacer rows used only to make a screen feel less empty.
 
-The selected list row, short section marker, and plain text status are enough.
-If a widget library renders borders by default, explicitly turn borders,
-outlines, and background panels off in the application stylesheet.
+Plain context, a selected list row, short section markers, and text status are
+enough. If a widget library draws borders, outlines, or background panels by
+default, turn them off explicitly.
 
 ### Keep density intentional
 
-Do not add vertical breathing room merely because graphical applications do.
-One line per piece of information is the default. A list should not need a
-large terminal to show its useful choices.
+Use one line per useful piece of information. Add a line only when it changes
+the user's decision: object identity, installed version, one-line description,
+metadata warning, action, setting, or command result. Avoid standalone
+instructions when the list behavior is conventional.
 
-Use a line only when it changes the user's decision:
+Prefer words to status glyphs: use `on` and `off`, `Local` and `Machine`, or
+`unavailable`, rather than checkbox art. Color may reinforce meaning, but it
+must never be the only signal: write `Warning:` even when the line is colored.
 
-- package title and version;
-- installed version;
-- one-line description;
-- metadata conflict warning;
-- action or setting;
-- command result.
-
-Avoid standalone instructional text when the list behavior is conventional.
-Use short labels and predictable keys instead.
-
-### Prefer words to status glyphs
-
-Use `on` and `off`, `Local` and `Machine`, or `unavailable`, rather than
-bracketed checkbox art such as `[x]` and `[ ]`. Text states remain readable in
-monochrome terminals, screen readers, copied output, and low-quality remote
-sessions.
-
-Use color only to reinforce meaning already stated in words. A warning must
-begin with `Warning:` even if it is rendered in a warning color.
+The test is simple: a copied, unstyled, monochrome rendering should still make
+the hierarchy and every important state clear.
 
 ## Information hierarchy
 
-### Context appears before choices
+### Put context before choices
 
 When a screen operates on a package, file, project, or other concrete object,
 show its identity before the list:
@@ -102,72 +91,81 @@ show its identity before the list:
 Warning: metadata conflicts with the directory name.
 ```
 
-Derive the identity from the authoritative source, not from a possibly stale
-display field. For `pkg`, directory identity owns the package name and version;
-`pkg.toml` metadata is checked against it rather than trusted over it.
+Use the authoritative source for identity, not a potentially stale display
+field. In `pkg`, directory identity owns the package name and version;
+`pkg.toml` metadata is checked against it rather than trusted over it. Show a
+warning only when the conflict exists; do not reserve blank space for it.
 
-The warning line appears only when there is a conflict. Do not reserve a blank
-line for absent warnings.
+### Reveal detail progressively
 
-### Descriptions stay one line
+Decision-relevant state stays visible; explanatory detail is available on
+demand; high-volume output gets its own view. Descriptions occupy one terminal
+line and clip overflow with an ellipsis. When more text exists, make that line
+selectable or clickable and open a plain, scrollable full-description view.
+Do not wrap long descriptions above a short action list.
 
-Descriptions should occupy one terminal line. Clip overflow with an ellipsis.
-If additional text exists, make the description line clickable or selectable
-and open a plain full-description view. Do not wrap a long description above a
-short action list, because it moves the actual choices out of view in small
-terminals.
+An operation's output belongs in a dedicated scrollable result view rather than
+between settings or in place of list rows. That view contains only:
 
-### Results are a separate view
+1. a command summary;
+2. a short textual running or completion status; and
+3. scrollable output.
 
-An operation may produce many lines of command output. Run it on a dedicated,
-scrollable result view rather than inserting output between settings or
-replacing list rows with logs.
+Do not add a button bar or footer; returning to the originating list is enough.
 
-The result view contains only:
+## Screen and interaction model
 
-1. the command summary;
-2. a short running/completed status;
-3. the scrollable output.
+A new screen is justified when the user's mode of attention changes, not merely
+because the program has another data type. Most compact applications need only:
 
-Do not add a button bar or footer. Returning to the originating list is enough.
+1. a home view, which establishes context and lists operations;
+2. an operation view, which shows `Run` and its settings;
+3. a temporary value editor for text that cannot comfortably change in a row;
+   and
+4. a result view for progress, completion status, and output.
 
-## Interaction rules
+```text
+context and operations
+        |
+        v
+Run and settings  <-->  temporary value editor
+        |
+        v
+status and output
+```
 
-### Execution is the default
+Avoid screens that merely introduce another screen. Booleans do not need
+dialogs, and two choices do not need submenus.
 
-Every operation list begins with `Run`, and `Run` is highlighted and focused
-when the screen opens. Users who accept the detected/default settings should
-be able to press Enter immediately.
+### Make execution immediate
 
-Settings must be visible and editable, but they must not become the default
-focus or require a preliminary settings submenu.
+Every operation list begins with `Run`; it is highlighted and focused when the
+screen opens. Users who accept the detected settings should be able to press
+Enter immediately. Settings remain visible below it for review and adjustment,
+but must not become the default focus or require a preliminary settings menu.
 
-### Settings edit in place
+Defaults come from the same domain logic as noninteractive calls. The TUI may
+explain a default but must not quietly invent a different one.
 
-Boolean settings toggle between `on` and `off` when selected. A finite choice,
-such as scope, cycles through its permitted values when selected. If a choice
-is not permitted, show that fact directly in the row, for example:
+### Edit settings in place
+
+Selecting a boolean toggles `on` and `off`. Selecting a finite choice cycles
+through its permitted values. If a value is not permitted, show it directly:
 
 ```text
 Installation Scope: Local (Machine unavailable)
 ```
 
-Do not open a submenu simply to change a boolean or a two-value choice.
+Text settings may open a minimal editor containing only the entry. Enter saves
+and returns to the same list; Escape discards and returns. The editor is not a
+navigation section. After an in-place change, retain the selected row so focus
+does not jump.
 
-Text settings, such as paths, may temporarily open a minimal text-entry view.
-That view should contain only the entry itself. Pressing Enter saves and
-returns to the same list; Escape discards and returns. It is an editor, not a
-new navigation section.
+### Keep navigation uniform
 
-### Arrow keys are the primary navigation
-
-The up and down arrows move through the list. Enter activates the selected
-row. Do not require Tab to discover or traverse sections.
-
-Use left and right only when a setting has a meaningful horizontal choice. Do
-not make users memorize chorded shortcuts for ordinary navigation.
-
-Navigation policy:
+Up and Down move through the list, and Enter activates the selected row. Do not
+require Tab, mouse input, or memorized shortcuts for ordinary use. Left and
+right are appropriate only for a setting with a meaningful horizontal choice.
 
 | Context | Escape | `q` |
 | --- | --- | --- |
@@ -175,36 +173,74 @@ Navigation policy:
 | Action/settings list | Return to the main list | Exit the application |
 | Text editor, output, or description | Return one level | Exit the application |
 
-This gives Escape a predictable “go back unless already at home” meaning while
-still allowing a quick exit from the main screen.
+This makes Escape mean “go back unless already at home” while retaining a quick
+exit from anywhere.
 
 ## Responsive behavior
 
-Terminal dimensions are not stable. Users resize windows, attach through SSH,
-change fonts, and run inside split panes. A design that depends on a particular
-height or width is not a terminal design.
+Terminal dimensions are unstable: users resize windows, connect through SSH,
+change fonts, and work in split panes. Build responsive behavior into the
+structure rather than a collection of breakpoints:
 
-Follow these rules:
+- use one vertical reading order;
+- never assign the whole form a fixed height;
+- let the option list take the remaining height and scroll naturally;
+- keep summaries to one clipped line and offer detail separately;
+- make long output scrollable;
+- avoid side-by-side forms and permanently visible help or footers; and
+- keep each operation in one list so focus survives a resize.
 
-- never give a fixed height to the whole form;
-- let the option list consume remaining height and scroll naturally;
-- make long output scrollable rather than attempting to fit it;
-- keep descriptions to one clipped line;
-- avoid side-by-side form layouts that wrap unpredictably;
-- avoid permanently visible help text and footers;
-- keep each operation on one list so that focus remains meaningful after a
-  resize.
+When a terminal is too short, show fewer rows at once; never hide a setting,
+make an operation unreachable, overlap text, or change the navigation model.
+The selected row must remain visible.
 
-If a small terminal cannot show every setting at once, the list should scroll.
-The selected row must remain visible. Never hide settings below a fixed-height
-panel or make an operation unreachable because a form overflowed.
+## Preserve application semantics
+
+The TUI is another way to invoke the application's behavior, not a second
+application. Keep domain rules, validation, defaults, and side effects in the
+existing Python API or CLI path. The TUI gathers intent, translates it to that
+interface, and presents the result.
+
+Prefer a shared application function when one exists. If the CLI is the stable
+integration boundary, launch it as a child process with an argument list;
+neither duplicate its parser nor execute shell text. This keeps interactive and
+scripted behavior aligned and makes command construction inspectable.
+
+Keep framework code at the presentation edge:
+
+```text
+domain or CLI layer
+    validates inputs and performs operations
+
+presentation adapter
+    converts current state into labels and command arguments
+
+TUI screens
+    own temporary interaction state and dispatch user intent
+```
+
+Keep stable option identifiers separate from displayed labels. Store state at
+the narrowest useful level: application context in the home/application object,
+operation flags in the operation view, and unfinished edits in the editor.
+Importing the core package or using its CLI noninteractively should not require
+the TUI framework unless the interface is inseparable from installation.
+
+## Long-running work
+
+Filesystem, subprocess, and network work must not block the terminal event
+loop. Use a framework worker, asynchronous task, background thread, or child
+process as appropriate. Capture command output rather than allowing a child to
+write through the active renderer.
+
+Open the result view before work starts, then transition through explicit text
+states such as `Running`, `Completed`, or `Failed`. Rendering ownership remains
+clear: the TUI owns the terminal; application operations produce data for it to
+display.
 
 ## Textual implementation notes
 
-Textual is useful here as a terminal event loop and selectable-list renderer,
-not as a reason to build a desktop-style interface in a terminal.
-
-Apply a minimal stylesheet like this:
+Textual is useful here for event handling, selectable lists, scrolling, and
+terminal restoration—not as a reason to build a desktop-style interface.
 
 ```tcss
 Screen { padding: 0; }
@@ -222,53 +258,34 @@ OptionList, VerticalScroll { height: 1fr; }
 }
 ```
 
-Important implementation choices:
-
-- Use `OptionList` for both actions and settings.
-- Represent disabled choices as disabled list rows, not hidden logic.
-- Rebuild or refresh option prompts after an in-place setting changes while
-  retaining the selected row.
-- Keep option identifiers separate from displayed text so labels can change
-  without changing command behavior.
-- Run long-lived commands in a worker or child process so the interface stays
-  responsive and terminal output does not corrupt Textual rendering.
-- Capture command output and display it in the result view rather than writing
-  directly to the terminal under the application.
-- Keep optional runtime dependencies provisioned by the application, not by a
-  manual prerequisite the user must remember.
+- Use `OptionList` for actions and settings.
+- Render unavailable choices as disabled rows rather than hiding them.
+- Refresh prompts after an in-place setting change while retaining selection.
+- Run commands outside the UI loop and show captured output in the result view.
+- Provision optional runtime dependencies through the application rather than a
+  prerequisite the user must remember.
 
 ## Review checklist
 
-Before shipping a list-first TUI, verify the following.
+Before shipping, verify the following:
 
-### Appearance
+- Every decorative frame, outline, footer, button bar, and spacer is removed.
+- The screen makes sense as plain monochrome text.
+- The authoritative object identity, conflicts, and unavailable choices are
+  visible.
+- `Run` is first and initially selected; all settings share its list.
+- Up/Down and Enter reach and activate every row; Escape has the documented
+  back/exit behavior.
+- Text edits return to their original list without losing other settings.
+- The same command/API semantics, validation, and defaults serve TUI and CLI.
+- Narrow and short terminals clip or scroll rather than hide controls or
+  overlap fields.
+- Long commands remain responsive and their output has a separate scrollable
+  view.
 
-- Is every frame, outline, footer, button bar, and decorative spacer removed?
-- Is each screen understandable from its plain text alone?
-- Is `Run` first and initially selected?
-- Are all settings visible in the same list as the action?
-- Are warnings explicit words, not color-only indicators?
-
-### Navigation
-
-- Can a user move through every list row with Up/Down and activate it with
-  Enter?
-- Does Escape exit only from the main list and go back everywhere else?
-- Does editing a text value return to the original list without losing other
-  settings?
-- Can the user run an action without entering a settings submenu?
-
-### Responsive behavior
-
-- Does the action remain usable in a narrow terminal and a short split pane?
-- Does long text clip or scroll instead of expanding fixed layouts?
-- Does command output have its own scrollable view?
-- Does resizing preserve the visible focused row and avoid overlapping fields?
-
-### Semantics
-
-- Does displayed identity come from the authoritative object or filesystem?
-- Are conflicting metadata and unavailable choices visible to the user?
-- Are disabled choices visibly unavailable rather than silently ignored?
-- Does the TUI delegate to the same command/API behavior as the noninteractive
-  interface?
+When adapting this guide to another Python application, start by answering:
+what authoritative context must appear first; what is the smallest current list
+of decisions; which action is immediately executable with defaults; which
+values need an editor; and which content needs clipping, scrolling, or a
+dedicated detail view? Choose Textual, prompt_toolkit, urwid, or another
+framework only after that interaction model is clear.
