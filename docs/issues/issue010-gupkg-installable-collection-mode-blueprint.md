@@ -1,4 +1,4 @@
-# Blueprint: rename `pkg` to installable `gupkg` and add collection mode
+# Blueprint: rename `gupkg` to installable `gupkg` and add collection mode
 
 Date: 2026-08-03
 Priority: High
@@ -6,7 +6,7 @@ Change type: Product rename, packaging, package discovery, aggregate CLI, and TU
 
 ## Goal
 
-Turn the source-tree tool currently named `pkg` into an installable Python
+Turn the source-tree tool currently named `gupkg` into an installable Python
 application named `gupkg`, and let one installed copy manage either one package
 or a directory containing many packages.
 
@@ -54,7 +54,7 @@ This design uses the following terms consistently.
 - **Version directory**: an immediate package-root child named
   `v<upstream>.l<local>`, as recognized by the existing layout rules.
 - **Package root**: a directory whose immediate version-directory children
-  contain one or more manifests. It may also contain `current` and `.pkg` or
+  contain one or more manifests. It may also contain `current` and `.gupkg` or
   `.gupkg` manager state.
 - **Collection root**: the directory from which discovery begins, normally the
   caller's current working directory or an explicit `--root` path.
@@ -101,18 +101,18 @@ unrelated hook-API migration.
 
 ### Compatibility window
 
-The installed distribution exposes only `gupkg`, not a second `pkg` console
-script or top-level `pkg` import. A generic `pkg` name is collision-prone and a
+The installed distribution exposes only `gupkg`, not a second `gupkg` console
+script or top-level `gupkg` import. A generic `gupkg` name is collision-prone and a
 permanent alias would leave the rename incomplete.
 
 For one documented transition release, repository launchers may retain:
 
-- `src/pkg.cmd` as a thin deprecated shim that executes `python -m gupkg`;
-- `PKG_PYTHON` and `pkg.python` as deprecated launcher fallbacks after the new
+- `src/gupkg.cmd` as a thin deprecated shim that executes `python -m gupkg`;
+- `GUPKG_PYTHON` and `gupkg.python` as deprecated launcher fallbacks after the new
   `GUPKG_PYTHON` and `gupkg.python` names;
 - a clear warning naming the replacement command.
 
-No compatibility source package named `pkg` should be installed. Tests and
+No compatibility source package named `gupkg` should be installed. Tests and
 package-local code in this repository must move imports to `gupkg`.
 
 ### Private state migration
@@ -122,8 +122,8 @@ New update locks, receipts, work trees, and state live under `.gupkg`.
 State migration must be conservative:
 
 1. Prefer `.gupkg` when it exists.
-2. If only legacy `.pkg` exists, read it for compatibility.
-3. Before the first state-mutating update operation, rename `.pkg` to `.gupkg`
+2. If only legacy `.gupkg` exists, read it for compatibility.
+3. Before the first state-mutating update operation, rename `.gupkg` to `.gupkg`
    atomically within the same package root.
 4. If both directories exist, do not merge or delete either one. Stop the
    mutating operation with an actionable conflict message.
@@ -132,7 +132,7 @@ State migration must be conservative:
 The old per-user virtual environment should not be moved because virtual
 environments can contain absolute paths. `gupkg` creates its own environment
 when package-local dependency auto-installation is used. Documentation may
-tell users that the old `%LOCALAPPDATA%\pkg\dependencies` directory can be
+tell users that the old `%LOCALAPPDATA%\gupkg\dependencies` directory can be
 removed manually after migration, but the application must not delete it.
 
 ## Installation and module execution
@@ -158,10 +158,10 @@ resources, and define this console entry point:
 
 ```toml
 [project.scripts]
-gupkg = "gupkg.cli:main"
+gupkg = "gupkg.gupkg:main"
 ```
 
-The exact facade module may remain `gupkg.gupkg` instead of `gupkg.cli` if that
+The exact facade module may remain `gupkg.gupkg` instead of `gupkg.gupkg` if that
 keeps the current high-level workflow easier to read. There must still be only
 one public `main(argv=None) -> int` command dispatcher.
 
@@ -207,7 +207,7 @@ current opt-in hook behavior.
 
 ### Installed-code execution
 
-The TUI currently launches the adjacent `pkg.py` file. After packaging, child
+The TUI currently launches the adjacent `gupkg.py` file. After packaging, child
 commands must use the installed interpreter and module:
 
 ```text
@@ -457,7 +457,7 @@ for future use.
 ### Boundary and error behavior
 
 - Never follow `current`; it is an activation junction, not another version.
-- Do not descend into `App`, `Icons`, `Shortcuts`, `pkg.local`, `.pkg`, or
+- Do not descend into `App`, `Icons`, `Shortcuts`, `pkg.local`, `.gupkg`, or
   `.gupkg`, because discovery stops at a package root.
 - Do not follow directory symlinks or reparse points encountered below the
   collection root in the first release. A linked path may still be supplied as
@@ -703,11 +703,11 @@ remain explicit and one package cannot affect the next.
 
 The rename must update:
 
-- `src/pkg` to `src/gupkg`;
-- absolute imports from `pkg...` to `gupkg...`;
+- `src/gupkg` to `src/gupkg`;
+- absolute imports from `gupkg...` to `gupkg...`;
 - module docstrings, CLI descriptions, banners, and user-agent strings where
   they identify the application;
-- tests that load `src/pkg/pkg.py` by file path so they exercise the installed
+- tests that load `src/gupkg/gupkg.py` by file path so they exercise the installed
   package interface instead;
 - launchers and documentation;
 - dependency environment and private state paths;
@@ -758,7 +758,7 @@ Update the long-lived documentation in the same implementation change:
 5. Show flat and nested collection layouts.
 6. Document selectors, ambiguity errors, list filters, aggregate summaries, and
    exit behavior.
-7. Update `docs/tui_style_guide.md` examples from `pkg tui` to `gupkg` and add
+7. Update `docs/tui_style_guide.md` examples from `gupkg tui` to `gupkg` and add
    the collection-to-package navigation rule without weakening its list-first
    style.
 8. Update `docs/development_guide.md` with the packaging and discovery domain.
@@ -769,7 +769,7 @@ Update the long-lived documentation in the same implementation change:
 
 Old issue documents are historical records and do not need a mechanical
 rename. Add a short architecture note only where an open issue would otherwise
-direct new implementation to the obsolete `src/pkg` path.
+direct new implementation to the obsolete `src/gupkg` path.
 
 ## Test strategy
 
@@ -786,7 +786,7 @@ Add integration coverage proving:
 - console and module invocations preserve the caller's working directory;
 - the TUI child-command builder uses the installed module rather than an
   adjacent source file;
-- the deprecated repository `pkg.cmd`, if retained, delegates and warns.
+- the deprecated repository `gupkg.cmd`, if retained, delegates and warns.
 
 These tests protect the reason for packaging: managed programs no longer need
 a source copy.
@@ -862,9 +862,9 @@ scope for permanent tests.
 Protect:
 
 - new update state is written to `.gupkg`;
-- read-only operations can inspect legacy `.pkg` without renaming it;
+- read-only operations can inspect legacy `.gupkg` without renaming it;
 - the first mutation migrates a lone legacy state directory;
-- simultaneous `.pkg` and `.gupkg` directories stop mutation without deleting
+- simultaneous `.gupkg` and `.gupkg` directories stop mutation without deleting
   or merging user data;
 - the legacy per-user virtual environment is never deleted or moved.
 
@@ -937,7 +937,7 @@ This change does not add:
 - remote package repositories or dependency resolution between programs;
 - marker-file configuration beyond presence;
 - automatic migration of `pkg.toml`, `pkg.local`, or hook API names;
-- permanent installed aliases named `pkg`;
+- permanent installed aliases named `gupkg`;
 - a generic provider, scanner, menu, or command framework.
 
 ## Acceptance criteria

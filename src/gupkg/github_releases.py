@@ -105,7 +105,7 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
         api_url,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "pkg-github-release-check/1",
+            "User-Agent": "gupkg-github-release-check/1",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
@@ -115,7 +115,7 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"Could not read the latest GitHub release: {exc}") from exc
 
-    # GitHub tags commonly carry a cosmetic "v" prefix while pkg stores the
+    # GitHub tags commonly carry a cosmetic "v" prefix while gupkg stores the
     # upstream portion without the version-directory marker.
     if not isinstance(release, dict):
         raise RuntimeError("GitHub latest release response must be an object")

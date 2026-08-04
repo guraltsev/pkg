@@ -1,7 +1,7 @@
-# Blueprint: simplify `pkg.py` by removing internal representation layers
+# Blueprint: simplify `gupkg.py` by removing internal representation layers
 
 > **Architecture note:** The single-file constraint in this blueprint has been
-> superseded. Runtime domains now live directly in `src/pkg/`; see
+> superseded. Runtime domains now live directly in `src/gupkg/`; see
 > `docs/development_guide.md`. The behavioral simplification goals remain
 > useful historical context.
 
@@ -16,14 +16,14 @@ This blueprint is for a focused simplification pass on the repository.
 It is not a rewrite, not a feature expansion, and not a re-architecture into more modules.
 The repo already has the right outer shape in the ways that matter:
 
-- one main implementation file: `pkg.py`
+- one main implementation file: `gupkg.py`
 - explicit top-level action dispatch in `main()`
 - one canonical config file shape: `pkg.toml`
 - behavior-oriented tests
 
 The problem is narrower and more specific:
 
-`pkg.py` still carries too much **internal representation machinery** for a tool whose runtime flow is fixed and whose configuration format is already stable.
+`gupkg.py` still carries too much **internal representation machinery** for a tool whose runtime flow is fixed and whose configuration format is already stable.
 
 The goal of this change is to make the codebase better match the intended project style:
 
@@ -41,7 +41,7 @@ The goal of this change is to make the codebase better match the intended projec
 
 The main issue is not merely that there are “too many dataclasses.”
 
-The core issue is that `pkg.py` still preserves an **internal model layer** that does not buy enough correctness, encapsulation, or flexibility to justify its complexity.
+The core issue is that `gupkg.py` still preserves an **internal model layer** that does not buy enough correctness, encapsulation, or flexibility to justify its complexity.
 
 This shows up as:
 
@@ -78,9 +78,9 @@ This blueprint intentionally avoids unrelated cleanup. It is not trying to touch
 
 This blueprint is based on direct repo inspection.
 
-### 1. Large passive dataclass block at the start of `pkg.py`
+### 1. Large passive dataclass block at the start of `gupkg.py`
 
-The beginning of `pkg.py` contains a large run of enums/dataclasses, including:
+The beginning of `gupkg.py` contains a large run of enums/dataclasses, including:
 
 - `StepResult`
 - `ActionResult`
@@ -144,7 +144,7 @@ If that documentation is left unchanged, future contributors will naturally rebu
 
 These constraints apply throughout the implementation.
 
-1. Keep **one main implementation file**: `pkg.py`.
+1. Keep **one main implementation file**: `gupkg.py`.
 2. Do **not** split the logic into more runtime modules.
 3. Do **not** add plugin systems, registries, base classes, or generic handler abstractions.
 4. Do **not** rewrite behavior that is already working and unrelated to the representation problem.
@@ -198,7 +198,7 @@ Passive helper definitions should not consume most of the documentation attentio
 
 ### In scope
 
-- simplify `pkg.py` internal data representations
+- simplify `gupkg.py` internal data representations
 - reduce or remove unnecessary dataclasses
 - remove fixed-flow generic step abstractions
 - simplify config normalization / validation flow
@@ -546,7 +546,7 @@ The detailed explanation should instead live on functions that coordinate behavi
 ### Documentation principle
 
 The documentation should help future maintainers preserve simplicity.
-It should not accidentally invite them to rebuild a mini-framework inside `pkg.py`.
+It should not accidentally invite them to rebuild a mini-framework inside `gupkg.py`.
 
 ### Exit criteria
 
@@ -713,7 +713,7 @@ It also ensures that later phases are built on already-simplified inputs.
 
 The refactor is complete when all of the following are true:
 
-1. `pkg.py` remains the single main implementation file.
+1. `gupkg.py` remains the single main implementation file.
 2. The removed wrapper/dataclass layer is gone or materially reduced to only justified core types.
 3. No replacement abstraction layer has been introduced under different names.
 4. Runtime config is represented in one canonical normalized form close to `pkg.toml`.
@@ -731,7 +731,7 @@ Before merging, explicitly check:
 - Did we truly remove the abstraction, or only rename it?
 - Does every remaining class represent a durable concept or final result rather than short-lived glue?
 - Is any function still converting between two internal shapes that could simply be one shape?
-- Can a maintainer now understand install flow by reading one top-down section of `pkg.py`?
+- Can a maintainer now understand install flow by reading one top-down section of `gupkg.py`?
 - Do the docstrings explain coordination logic rather than defending internal scaffolding?
 - Did we avoid touching unrelated parts of the repo?
 

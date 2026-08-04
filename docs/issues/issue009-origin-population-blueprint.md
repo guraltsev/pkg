@@ -1,8 +1,8 @@
 # Blueprint: populate `App` from package origin
 
 > **Architecture note:** The single-file constraint in this blueprint has been
-> superseded. Origin behavior now lives in `src/pkg/origin.py`, while
-> `src/pkg/pkg.py` retains the high-level action workflow.
+> superseded. Origin behavior now lives in `src/gupkg/origin.py`, while
+> `src/gupkg/gupkg.py` retains the high-level action workflow.
 
 Date: 2026-07-08
 Priority: High
@@ -10,7 +10,7 @@ Change type: Feature design
 
 ## Goal
 
-Allow `pkg` to install a package version even when the version directory does
+Allow `gupkg` to install a package version even when the version directory does
 not already contain a populated `App/` directory.
 
 The feature adds an explicit origin step before the existing component install
@@ -39,7 +39,7 @@ explicit CLI option clears `App/` and repopulates it from origin.
 
 ## Definitions
 
-For this feature, **pkg root** means the resolved package version directory:
+For this feature, **gupkg root** means the resolved package version directory:
 
 ```text
 <PackageName>/<version>.l<localVersion>/
@@ -111,7 +111,7 @@ Fields:
 - `extractSubdir`: Optional relative path inside the extracted archive whose
   contents should become the contents of `App/`.
 
-If `extractSubdir` is omitted, `pkg` copies the contents of the archive root
+If `extractSubdir` is omitted, `gupkg` copies the contents of the archive root
 into `App/`.
 
 The blueprint intentionally does not use a `stripRoot` flag. `extractSubdir`
@@ -135,7 +135,7 @@ script = "scripts/populate-app.ps1"
 
 Fields:
 
-- `script`: Required for script origin mode. Path is relative to the pkg root,
+- `script`: Required for script origin mode. Path is relative to the gupkg root,
   meaning the version directory containing `pkg.toml`.
 
 `script` and `url` are mutually exclusive. A config that declares both is
@@ -184,7 +184,7 @@ Implementation guidance:
 
 Preferred policy:
 
-- `pkg Install` should reject top-level `downloadURL` as non-canonical once this
+- `gupkg Install` should reject top-level `downloadURL` as non-canonical once this
   feature lands.
 - migration helper scripts may read old `downloadURL` and write `[origin].url`.
 
@@ -204,7 +204,7 @@ Behavior:
 - If `App/` is missing, origin population runs.
 - If `App/` exists and is empty, origin population runs.
 - If `App/` exists and is non-empty, origin population is skipped by default.
-- If `--refresh-app` is passed, `pkg` deletes the existing `App/` directory and
+- If `--refresh-app` is passed, `gupkg` deletes the existing `App/` directory and
   repopulates it from origin.
 
 Add a checksum override:
@@ -348,23 +348,23 @@ handled by simple zip extraction.
 
 The script contract:
 
-- path is relative to pkg root, meaning the resolved version directory
+- path is relative to gupkg root, meaning the resolved version directory
 - working directory is the script's containing directory
 - stdin receives enriched JSON
-- stdout/stderr are streamed or captured into normal `pkg` logging
+- stdout/stderr are streamed or captured into normal `gupkg` logging
 - exit code `0` means success
 - any nonzero exit code fails install before component installation
 - script must populate `App/`
 
-After a successful script exit, `pkg` must verify that `App/` exists and is
+After a successful script exit, `gupkg` must verify that `App/` exists and is
 non-empty unless the design later adds an explicit `allowEmptyApp` flag. Do not
 add that flag in the first implementation.
 
 Script paths must be validated:
 
-- resolve relative to pkg root
+- resolve relative to gupkg root
 - reject absolute paths
-- reject parent traversal outside pkg root
+- reject parent traversal outside gupkg root
 - require the file to exist
 - require one of the supported extensions
 
@@ -550,7 +550,7 @@ Protect:
 - `PkgVars.App` points to the resolved version directory's `App/`
 - script working directory is the script's containing directory
 - nonzero script exit fails install before component installation
-- script path escaping pkg root is rejected
+- script path escaping gupkg root is rejected
 - unsupported script extension is rejected
 - successful script must leave `App/` non-empty
 
@@ -591,7 +591,7 @@ instead of top-level `downloadURL`.
 
 ## Implementation notes for an LLM developer
 
-Keep the implementation inside `src/pkg/pkg.py`. This repo intentionally keeps main
+Keep the implementation inside `src/gupkg/gupkg.py`. This repo intentionally keeps main
 runtime behavior in one Python file.
 
 Suggested local functions:
@@ -622,7 +622,7 @@ The feature is complete when:
 6. Zip extraction rejects unsafe archive paths.
 7. `sha256` checksum is enforced when present.
 8. `--no-checksum` skips checksum verification with a warning.
-9. `[origin].script` runs relative to the pkg root and receives enriched JSON
+9. `[origin].script` runs relative to the gupkg root and receives enriched JSON
    with `PkgVars`.
 10. Script origin verifies that `App/` exists and is non-empty after success.
 11. Existing component install semantics remain repair-oriented.

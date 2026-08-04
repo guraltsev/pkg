@@ -1,4 +1,4 @@
-# `pkg` targeted cleanup and hardening blueprint
+# `gupkg` targeted cleanup and hardening blueprint
 
 ## Purpose
 
@@ -6,7 +6,7 @@ This handoff is for a narrow cleanup, not a rewrite.
 
 The repo already matches the intended architecture in the important ways:
 
-- one main implementation file: `pkg.py`
+- one main implementation file: `gupkg.py`
 - labeled sections inside that file
 - one canonical `pkg.toml` schema
 - direct install pipeline with very little indirection
@@ -24,7 +24,7 @@ The job is to fix the actual correctness bugs, remove one piece of unnecessary a
 Keep these constraints in mind for every change:
 
 1. **Keep the main implementation in one file**.
-   - Do not split `pkg.py`.
+   - Do not split `gupkg.py`.
    - Keep the existing section markers.
 
 2. **Keep the code direct**.
@@ -68,8 +68,8 @@ This blueprint assumes the following decisions are already made:
 
 Current source:
 
-- `sync_config_metadata_text()` in `pkg.py:3007-3114`
-- the current line matcher at `pkg.py:3041`
+- `sync_config_metadata_text()` in `gupkg.py:3007-3114`
+- the current line matcher at `gupkg.py:3041`
 
 Current behavior:
 
@@ -95,10 +95,10 @@ This is a core-cause problem because the code is trying to do line-level TOML su
 
 Current source:
 
-- `PackageManager.install()` in `pkg.py:3260-3403`
-- effective portability is computed before config inconsistency repair at `pkg.py:3300-3309`
-- metadata inconsistency repair happens later at `pkg.py:3311-3351`
-- the mismatch detector already knows about stale `only_portable` at `pkg.py:2764-2772`
+- `PackageManager.install()` in `gupkg.py:3260-3403`
+- effective portability is computed before config inconsistency repair at `gupkg.py:3300-3309`
+- metadata inconsistency repair happens later at `gupkg.py:3311-3351`
+- the mismatch detector already knows about stale `only_portable` at `gupkg.py:2764-2772`
 
 Observed symptom already reproducible in the current repo:
 
@@ -114,13 +114,13 @@ This is a core-cause problem because policy is being derived from stale owned me
 
 Current source:
 
-- shortcut expansion and final path construction: `pkg.py:1278-1362`
-- wrapper expansion and final path construction: `pkg.py:1987-2077`
+- shortcut expansion and final path construction: `gupkg.py:1278-1362`
+- wrapper expansion and final path construction: `gupkg.py:1987-2077`
 - docs currently describe these as simple `name` fields:
   - `docs/configuration.md:46-55`
   - `docs/configuration.md:73-78`
 - extended help is even stricter than the code for shortcut names:
-  - `pkg.py:2248-2266`
+  - `gupkg.py:2248-2266`
 
 This is **not** a bug to remove. The implementation clearly allows output-path-like names on purpose. The gap is that the docs and runtime messaging do not explain it.
 
@@ -128,15 +128,15 @@ This is **not** a bug to remove. The implementation clearly allows output-path-l
 
 Current source:
 
-- `Reporter` class: `pkg.py:357-397`
-- `PackageManager` stores one: `pkg.py:3217-3223`
+- `Reporter` class: `gupkg.py:357-397`
+- `PackageManager` stores one: `gupkg.py:3217-3223`
 - many parts of the code still call `print()` directly anyway, for example:
-  - `pkg.py:1549-1567`
-  - `pkg.py:1653-1657`
-  - `pkg.py:1718-1746`
-  - `pkg.py:1833-1860`
-  - `pkg.py:2053-2075`
-  - `pkg.py:3631-3643`
+  - `gupkg.py:1549-1567`
+  - `gupkg.py:1653-1657`
+  - `gupkg.py:1718-1746`
+  - `gupkg.py:1833-1860`
+  - `gupkg.py:2053-2075`
+  - `gupkg.py:3631-3643`
 - `docs/api.md` currently presents `Reporter` as public API: `docs/api.md:14-18`
 
 This is not a useful abstraction boundary. It is extra plumbing plus direct `print()` side effects.
@@ -145,17 +145,17 @@ This is not a useful abstraction boundary. It is extra plumbing plus direct `pri
 
 Current source:
 
-- `pkg.cmd` documents interpreter priority and forwards `--python`:
-  - `pkg.cmd:7-11`
-  - `pkg.cmd:29-30`
-  - `pkg.cmd:61-89`
-  - `pkg.cmd:146-155`
-- `pkg.py` intentionally accepts hidden `--python`:
-  - `pkg.py:3547-3550`
+- `gupkg.cmd` documents interpreter priority and forwards `--python`:
+  - `gupkg.cmd:7-11`
+  - `gupkg.cmd:29-30`
+  - `gupkg.cmd:61-89`
+  - `gupkg.cmd:146-155`
+- `gupkg.py` intentionally accepts hidden `--python`:
+  - `gupkg.py:3547-3550`
 - current test name groups it with removed compatibility flags:
-  - `tests/test_pkg_pure.py:554-563`
+  - `tests/test_gupkg_pure.py:554-563`
 - an old closed plan still suggests it could be removed:
-  - `docs/issues/_closed/issue005-pkg_part1_compatibility_legacy_alias_plan.md:435-446`
+  - `docs/issues/_closed/issue005-gupkg_part1_compatibility_legacy_alias_plan.md:435-446`
 
 The code already proves it is a supported repo-level launcher contract. The risky part is that the surrounding docs/tests still make it look disposable.
 
@@ -177,7 +177,7 @@ Do not broaden beyond that.
 
 ## Phase 1: Add regression tests first
 
-Use the existing `unittest` style in `tests/test_pkg_pure.py`. Do not switch the test suite to a different style.
+Use the existing `unittest` style in `tests/test_gupkg_pure.py`. Do not switch the test suite to a different style.
 
 ### 1A. Add a regression test for `#` inside a metadata string
 
@@ -269,8 +269,8 @@ Suggested names:
 
 ### Files to touch
 
-- `pkg.py`
-- `tests/test_pkg_pure.py`
+- `gupkg.py`
+- `tests/test_gupkg_pure.py`
 
 ### Do not do
 
@@ -334,8 +334,8 @@ This is acceptable because it is small, direct, and local to the exact bug surfa
 
 ### Files to touch
 
-- `pkg.py`
-- `tests/test_pkg_pure.py`
+- `gupkg.py`
+- `tests/test_gupkg_pure.py`
 - `docs/architecture.md` (execution flow description)
 
 ### Do not do
@@ -391,11 +391,11 @@ This should be a small movement of code, not a redesign.
 
 ### Files to touch
 
-- `pkg.py`
+- `gupkg.py`
 - `README.md`
 - `docs/configuration.md`
 - `docs/architecture.md` or `docs/review.md` only if needed
-- `tests/test_pkg_pure.py`
+- `tests/test_gupkg_pure.py`
 
 ### Important: behavior to preserve
 
@@ -427,7 +427,7 @@ Document that:
 
 Add a concise note under config behavior or variable rules describing the same behavior.
 
-#### `pkg.py` extended help (`EXTENDED_HELP`)
+#### `gupkg.py` extended help (`EXTENDED_HELP`)
 
 Fix the current mismatch where shortcut `name` is described as a simple file name only.
 
@@ -485,10 +485,10 @@ Keep it plain and explicit, for example:
 
 ### Files to touch
 
-- `pkg.py`
+- `gupkg.py`
 - `docs/api.md`
 - `docs/architecture.md`
-- `tests/test_pkg_pure.py`
+- `tests/test_gupkg_pure.py`
 
 ### Required outcome
 
@@ -531,7 +531,7 @@ If the logging setup starts becoming more complicated than the output code it re
 
 Remove `reporter` plumbing from these areas:
 
-- `InstallStep` type alias at `pkg.py:1200`
+- `InstallStep` type alias at `gupkg.py:1200`
 - `PackageMetadata.update_config()`
 - `ShortcutInstaller.install_shortcuts()`
 - `EnvironmentVariableManager.install_environment_variables()`
@@ -571,26 +571,26 @@ Keep the current human-facing style:
 
 ### Files to touch
 
-- `pkg.py`
+- `gupkg.py`
 - `README.md`
 - `docs/architecture.md`
-- `tests/test_pkg_pure.py`
-- optionally `docs/issues/_closed/issue005-pkg_part1_compatibility_legacy_alias_plan.md`
+- `tests/test_gupkg_pure.py`
+- optionally `docs/issues/_closed/issue005-gupkg_part1_compatibility_legacy_alias_plan.md`
 
 ### Important: do not change the launcher contract
 
-Do **not** remove hidden `--python` from `pkg.py`.
+Do **not** remove hidden `--python` from `gupkg.py`.
 
-Do **not** change `pkg.cmd` interpreter-selection behavior unless that is the explicit main goal of a future refactor.
+Do **not** change `gupkg.cmd` interpreter-selection behavior unless that is the explicit main goal of a future refactor.
 
 This work item is about protection and documentation, not behavior change.
 
 ### Required code comment
 
-Add an inline comment above the hidden argparse entry in `pkg.py` explaining that:
+Add an inline comment above the hidden argparse entry in `gupkg.py` explaining that:
 
-- `pkg.cmd` forwards `--python`
-- the hidden arg is intentionally accepted by `pkg.py`
+- `gupkg.cmd` forwards `--python`
+- the hidden arg is intentionally accepted by `gupkg.py`
 - it exists as part of the repo-level bootstrap/install contract
 - it should not be removed casually during cleanup
 
@@ -598,20 +598,20 @@ Add an inline comment above the hidden argparse entry in `pkg.py` explaining tha
 
 #### `README.md`
 
-Add a short section such as `Bootstrap interpreter selection` documenting the priority order already implemented in `pkg.cmd`:
+Add a short section such as `Bootstrap interpreter selection` documenting the priority order already implemented in `gupkg.cmd`:
 
 1. `--python <exe-or-command>`
-2. `PKG_PYTHON`
-3. `pkg.python`
+2. `GUPKG_PYTHON`
+3. `gupkg.python`
 4. fallback to `python` on `PATH`
 
-#### `pkg.py` extended help
+#### `gupkg.py` extended help
 
 Keep `--python` hidden from normal `--help` if desired, but mention it in `--help-extended` because it matters operationally.
 
 #### `docs/architecture.md`
 
-Add a short note that `pkg.cmd` and hidden `pkg.py --python` together form the bootstrap path for systems where Python is not already discoverable in the usual way.
+Add a short note that `gupkg.cmd` and hidden `gupkg.py --python` together form the bootstrap path for systems where Python is not already discoverable in the usual way.
 
 ### Test cleanup
 
@@ -638,7 +638,7 @@ Add a short note there or update that section so future grep-based cleanup does 
 
 This is the intended touch set.
 
-### `pkg.py`
+### `gupkg.py`
 
 Required changes:
 
@@ -654,7 +654,7 @@ Keep the current section layout.
 
 Do not split the file.
 
-### `tests/test_pkg_pure.py`
+### `tests/test_gupkg_pure.py`
 
 Add/update tests for:
 
@@ -669,7 +669,7 @@ Add/update tests for:
 Update:
 
 - path-like `shortcut.name` / `bin.name` behavior
-- bootstrap interpreter selection (`--python`, `PKG_PYTHON`, `pkg.python`, PATH fallback)
+- bootstrap interpreter selection (`--python`, `GUPKG_PYTHON`, `gupkg.python`, PATH fallback)
 
 ### `docs/configuration.md`
 
@@ -694,7 +694,7 @@ Update:
 - remove `Reporter` from the public/shared API list
 - keep the rest of the public API list accurate after signature simplification
 
-### Optional: `docs/issues/_closed/issue005-pkg_part1_compatibility_legacy_alias_plan.md`
+### Optional: `docs/issues/_closed/issue005-gupkg_part1_compatibility_legacy_alias_plan.md`
 
 Add a small note near the old `--python` discussion so future cleanup does not treat that section as current guidance.
 
@@ -704,7 +704,7 @@ Add a small note near the old `--python` discussion so future cleanup does not t
 
 These are out of scope for this task unless they become unavoidable while editing the exact touched lines.
 
-1. Do not split `pkg.py` into modules.
+1. Do not split `gupkg.py` into modules.
 2. Do not redesign the runtime config model.
 3. Do not reintroduce legacy config aliases.
 4. Do not change package-variable expansion semantics.
@@ -766,10 +766,10 @@ Expected result:
 
 Confirm all of these remain true:
 
-- `pkg.py --help` does not show `--python`
-- `pkg.py --help-extended` documents bootstrap interpreter selection
+- `gupkg.py --help` does not show `--python`
+- `gupkg.py --help-extended` documents bootstrap interpreter selection
 - `main([... "--python", ...])` parses
-- `pkg.cmd` docs still match the actual priority order
+- `gupkg.cmd` docs still match the actual priority order
 
 ## Definition of done
 

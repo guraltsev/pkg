@@ -6,7 +6,7 @@ validated, and prepared for an atomic commit by the public action coordinator.
 
 Implementation Approach
 -----------------------
-Persistent timing state and temporary work paths live below ``.pkg`` in the
+Persistent timing state and temporary work paths live below ``.gupkg`` in the
 package root. Hook modules use isolated import names and disabled bytecode
 writes, while staged version trees are checked before activation.
 """
@@ -48,7 +48,7 @@ from .github_releases import check_update as check_github_release
 
 def _update_paths(root: Path) -> Dict[str, Path]:
     """Return the manager-owned paths used by package update operations."""
-    base = root / ".pkg"
+    base = root / ".gupkg"
     return {
         "base": base,
         "work": base / "work",
@@ -56,8 +56,6 @@ def _update_paths(root: Path) -> Dict[str, Path]:
         "state": base / "state" / "update.toml",
         "receipts": base / "receipts",
     }
-
-
 def _toml_value(value: Any) -> str:
     """Render the limited scalar values persisted by update state."""
     if isinstance(value, bool):
@@ -110,7 +108,7 @@ def _load_package_module(identity: PackageIdentity, reference: str, pycache: Pat
     local_root = (identity.version_path / "pkg.local").resolve()
     if not path.exists():
         raise ConfigValidationError(f"Package-local module does not exist: {reference}")
-    name = f"_pkg_local_{hashlib.sha256((str(path) + str(path.stat().st_mtime_ns)).encode()).hexdigest()[:16]}"
+    name = f"_gupkg_local_{hashlib.sha256((str(path) + str(path.stat().st_mtime_ns)).encode()).hexdigest()[:16]}"
     spec = importlib.util.spec_from_file_location(
         name, path, submodule_search_locations=[str(local_root)]
     )

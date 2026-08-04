@@ -11,7 +11,7 @@ import sys
 from types import ModuleType
 from unittest import mock
 
-from pkg.dependencies import (
+from gupkg.dependencies import (
     MissingLocalDependencyError,
     ensure_dependency,
     run_with_missing_dependencies,
@@ -19,8 +19,8 @@ from pkg.dependencies import (
 
 
 def test_missing_runtime_dependency_is_installed_automatically() -> None:
-    """A pkg-owned feature provisions its missing dependency before continuing."""
-    dependency = "pkg_test_runtime_dependency"
+    """A gupkg-owned feature provisions its missing dependency before continuing."""
+    dependency = "gupkg_test_runtime_dependency"
     sys.modules.pop(dependency, None)
 
     def install(module_name: str) -> None:
@@ -28,7 +28,7 @@ def test_missing_runtime_dependency_is_installed_automatically() -> None:
         sys.modules[module_name] = ModuleType(module_name)
 
     try:
-        with mock.patch("pkg.dependencies.install_missing_dependency", side_effect=install):
+        with mock.patch("gupkg.dependencies.install_missing_dependency", side_effect=install):
             ensure_dependency(dependency)
         assert dependency in sys.modules
     finally:
@@ -37,7 +37,7 @@ def test_missing_runtime_dependency_is_installed_automatically() -> None:
 
 def test_missing_hook_dependency_is_reported_without_installing() -> None:
     """A package-local hook reports an unavailable import by default."""
-    dependency = "pkg_test_dependency"
+    dependency = "gupkg_test_dependency"
     sys.modules.pop(dependency, None)
 
     def hook() -> str:
@@ -48,7 +48,7 @@ def test_missing_hook_dependency_is_reported_without_installing() -> None:
         assert module_name == dependency
         sys.modules[module_name] = ModuleType(module_name)
 
-    with mock.patch("pkg.dependencies.install_missing_dependency", side_effect=install) as installer:
+    with mock.patch("gupkg.dependencies.install_missing_dependency", side_effect=install) as installer:
         try:
             run_with_missing_dependencies(hook)
         except MissingLocalDependencyError as error:
@@ -61,7 +61,7 @@ def test_missing_hook_dependency_is_reported_without_installing() -> None:
 
 def test_missing_hook_dependency_installs_after_explicit_opt_in() -> None:
     """An opted-in package-local hook retries after its import is installed."""
-    dependency = "pkg_test_dependency"
+    dependency = "gupkg_test_dependency"
     sys.modules.pop(dependency, None)
 
     def hook() -> str:
@@ -73,7 +73,7 @@ def test_missing_hook_dependency_installs_after_explicit_opt_in() -> None:
         sys.modules[module_name] = ModuleType(module_name)
 
     try:
-        with mock.patch("pkg.dependencies.install_missing_dependency", side_effect=install):
+        with mock.patch("gupkg.dependencies.install_missing_dependency", side_effect=install):
             assert run_with_missing_dependencies(hook, autoinstall=True) == "updated"
     finally:
         sys.modules.pop(dependency, None)

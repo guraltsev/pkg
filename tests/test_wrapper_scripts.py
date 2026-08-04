@@ -24,14 +24,14 @@ WRAPPER_SCRIPTS = [
     (SRC_ROOT / "update.cmd", ["--pause", "upgrade", "download"]),
     (SRC_ROOT / "refresh-app.cmd", ["--refresh-app", "--pause", "install"]),
     (
-        SRC_ROOT / "legacy_to_pkg_toml.cmd",
+        SRC_ROOT / "legacy_to_gupkg_toml.cmd",
         ["config", "from-legacy"],
     ),
 ]
 HELPER_WRAPPER_SCRIPTS = [
     (
-        SRC_ROOT / "shortcuts_to_pkg_toml.cmd",
-        SRC_ROOT / "pkg" / "shortcuts_to_pkg_toml.py",
+        SRC_ROOT / "shortcuts_to_gupkg_toml.cmd",
+        SRC_ROOT / "gupkg" / "shortcuts_to_gupkg_toml.py",
     ),
 ]
 
@@ -57,7 +57,7 @@ exit /b 0
                     )
 
                     env = os.environ.copy()
-                    env["PKG_PYTHON"] = str(fake_python)
+                    env["GUPKG_PYTHON"] = str(fake_python)
                     result = subprocess.run(
                         ["cmd", "/c", str(script)],
                         cwd=str(version_dir),
@@ -74,7 +74,7 @@ exit /b 0
                     recorded_cwd = lines[0].removeprefix("cwd=")
                     recorded_args = lines[1].removeprefix("args=")
                     self.assertEqual(Path(recorded_cwd), version_dir)
-                    self.assertIn(str(SRC_ROOT / "pkg" / "pkg.py"), recorded_args)
+                    self.assertIn(str(SRC_ROOT / "gupkg" / "gupkg.py"), recorded_args)
                     for arg in forwarded_args:
                         self.assertIn(arg, recorded_args)
 

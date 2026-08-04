@@ -54,14 +54,14 @@ That fixture demonstrates the exact kind of drift the install path should reject
 - canonicalized raw dict
 - warnings
 
-Code: `pkg.py:2938-2965`
+Code: `gupkg.py:2938-2965`
 
 But `PackageMetadata.load_config()` discards the raw dict:
 
 - `config, _raw_data, warnings = ...`
 - returns `package_config_to_dict(config, self.identity)`
 
-Code: `pkg.py:3359-3389`
+Code: `gupkg.py:3359-3389`
 
 `package_config_to_dict()` then substitutes directory-derived metadata for the file-authored metadata:
 
@@ -69,18 +69,18 @@ Code: `pkg.py:3359-3389`
 - `version = identity.version`
 - `localVersion = identity.local_version`
 
-Code: `pkg.py:2857-2890`
+Code: `gupkg.py:2857-2890`
 
 `Install` validates consistency against that reconstructed dict:
 
 - `config_data, load_warnings = metadata.load_config(...)`
 - `inconsistencies = metadata.check_metadata_consistency(config_data)`
 
-Code: `pkg.py:3929-3958`
+Code: `gupkg.py:3929-3958`
 
 `check_metadata_consistency()` also contains a second, weaker version of the same mistake: when passed a `PackageConfig`, it again synthesizes metadata from directory identity instead of from file-authored data.
 
-Code: `pkg.py:2893-2935`
+Code: `gupkg.py:2893-2935`
 
 ## Root cause
 
@@ -102,10 +102,10 @@ That is the core source of the bug.
 
 Touch only these areas:
 
-- `read_runtime_config()` — `pkg.py:2938-2965`
-- `check_metadata_consistency()` — `pkg.py:2893-2935`
-- `PackageMetadata.load_config()` — `pkg.py:3359-3389`
-- `PackageManager.install()` — `pkg.py:3929-3958`
+- `read_runtime_config()` — `gupkg.py:2938-2965`
+- `check_metadata_consistency()` — `gupkg.py:2893-2935`
+- `PackageMetadata.load_config()` — `gupkg.py:3359-3389`
+- `PackageManager.install()` — `gupkg.py:3929-3958`
 - tests that cover mismatch handling and `--fix-config`
 
 Do **not** touch:

@@ -94,7 +94,7 @@ def populate_app_from_git_origin(
     """Populate ``App/`` with the exact commit at a configured Git ref."""
     app_path = identity.version_path / "App"
     with tempfile.TemporaryDirectory(
-        prefix=".pkg-origin-", dir=str(identity.version_path)
+        prefix=".gupkg-origin-", dir=str(identity.version_path)
     ) as temp_root_name:
         prepared_app = Path(temp_root_name) / "App.new"
 
@@ -152,7 +152,7 @@ def populate_app_from_zip_origin(
     """Populate ``App/`` from a downloaded zip archive."""
     app_path = identity.version_path / "App"
     with tempfile.TemporaryDirectory(
-        prefix=".pkg-origin-", dir=str(identity.version_path)
+        prefix=".gupkg-origin-", dir=str(identity.version_path)
     ) as temp_root_name:
         temp_root = Path(temp_root_name)
         archive_path = temp_root / "origin.zip"
@@ -286,7 +286,7 @@ def _replace_app_directory(
             "Refusing to replace App outside the package version directory"
         )
 
-    backup_path = Path(tempfile.mkdtemp(prefix=".pkg-old-App-", dir=str(version_path)))
+    backup_path = Path(tempfile.mkdtemp(prefix=".gupkg-old-App-", dir=str(version_path)))
     backup_path.rmdir()
     if app_path.exists():
         if _app_contains_entries(app_path):

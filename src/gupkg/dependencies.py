@@ -1,10 +1,10 @@
-"""Install pkg runtime dependencies while protecting package-local hooks.
+"""Install gupkg runtime dependencies while protecting package-local hooks.
 
-The ``pkg`` runtime installs its declared third-party dependencies into an
+The ``gupkg`` runtime installs its declared third-party dependencies into an
 isolated user environment without changing the interpreter that launches
-``pkg``. Package-local hooks do not install imports by default: callers must
+``gupkg``. Package-local hooks do not install imports by default: callers must
 explicitly opt in before their missing modules can be installed into
-``%LOCALAPPDATA%\\pkg\\dependencies`` and makes that environment available to
+``%LOCALAPPDATA%\\gupkg\\dependencies`` and makes that environment available to
 the current process. It prefers ``uv`` when it is on ``PATH`` and otherwise
 uses the environment's ``pip``.
 """
@@ -23,20 +23,20 @@ from typing import Any
 
 
 class MissingLocalDependencyError(RuntimeError):
-    """Report a package-local dependency that pkg deliberately did not install."""
+    """Report a package-local dependency that gupkg deliberately did not install."""
 
 
-# Keep each optional pkg feature's trusted dependencies explicit and auditable.
+# Keep each optional gupkg feature's trusted dependencies explicit and auditable.
 _RUNTIME_DEPENDENCIES = {"tui": ("textual",)}
 
 
 def ensure_runtime_dependencies(feature: str) -> None:
-    """Make every declared dependency for one pkg feature importable.
+    """Make every declared dependency for one gupkg feature importable.
 
     Parameters
     ----------
     feature : str
-        Name of the pkg feature whose declared dependencies are required.
+        Name of the gupkg feature whose declared dependencies are required.
     """
     for module_name in _RUNTIME_DEPENDENCIES.get(feature, ()):
         ensure_dependency(module_name)
@@ -93,12 +93,12 @@ def run_with_missing_dependencies(
 
 
 def ensure_dependency(module_name: str) -> None:
-    """Make one runtime dependency importable by the current pkg process.
+    """Make one runtime dependency importable by the current gupkg process.
 
     Parameters
     ----------
     module_name : str
-        Top-level Python import required by pkg itself.
+        Top-level Python import required by gupkg itself.
 
     Raises
     ------
@@ -110,7 +110,7 @@ def ensure_dependency(module_name: str) -> None:
 
 
 def install_missing_dependency(module_name: str) -> None:
-    """Install one importable dependency into pkg's per-user environment.
+    """Install one importable dependency into gupkg's per-user environment.
 
     Parameters
     ----------
@@ -127,9 +127,9 @@ def install_missing_dependency(module_name: str) -> None:
     python = _environment_python(environment)
 
     # Create the reusable environment before selecting an installer so pip is
-    # always isolated from the Python interpreter that launched pkg.
+    # always isolated from the Python interpreter that launched gupkg.
     if not python.exists():
-        print(f"[pkg] Creating dependency environment: {environment}")
+        print(f"[gupkg] Creating dependency environment: {environment}")
         venv.EnvBuilder(with_pip=True).create(environment)
 
     # Make already installed dependencies immediately importable on retries.
@@ -138,7 +138,7 @@ def install_missing_dependency(module_name: str) -> None:
         return
 
     # uv resolves and installs faster when available; pip remains a portable
-    # fallback that operates only inside pkg's user-owned virtual environment.
+    # fallback that operates only inside gupkg's user-owned virtual environment.
     uv = shutil.which("uv")
     command = (
         [uv, "pip", "install", "--python", str(python), distribution]
@@ -146,7 +146,7 @@ def install_missing_dependency(module_name: str) -> None:
         else [str(python), "-m", "pip", "install", distribution]
     )
     installer = "uv" if uv else "pip"
-    print(f"[pkg] Installing missing dependency with {installer}: {distribution}")
+    print(f"[gupkg] Installing missing dependency with {installer}: {distribution}")
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         raise RuntimeError(
@@ -165,8 +165,8 @@ def _dependency_environment() -> Path:
     """Return the user-owned virtual environment used by package-local hooks."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / "pkg" / "dependencies"
-    return Path.home() / "AppData" / "Local" / "pkg" / "dependencies"
+        return Path(local_app_data) / "gupkg" / "dependencies"
+    return Path.home() / "AppData" / "Local" / "gupkg" / "dependencies"
 
 
 def _environment_python(environment: Path) -> Path:

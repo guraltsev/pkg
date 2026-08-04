@@ -18,7 +18,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 HOOK_PATH = (
     ROOT
-    / "pkgs"
+    / "gupkgs"
     / "vscode"
     / "vbootstrap.l1"
     / "pkg.local"

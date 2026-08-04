@@ -1,7 +1,7 @@
 # Minimal list-first TUI guide
 
 This guide defines the interaction, visual language, and implementation
-boundaries for `pkg tui`. It is also intended as a reusable approach for small
+boundaries for `gupkg tui`. It is also intended as a reusable approach for small
 Python terminal applications: apply the principles to the application's needs,
 rather than copying its screens verbatim.
 
@@ -92,7 +92,7 @@ Warning: metadata conflicts with the directory name.
 ```
 
 Use the authoritative source for identity, not a potentially stale display
-field. In `pkg`, directory identity owns the package name and version;
+field. In `gupkg`, directory identity owns the package name and version;
 `pkg.toml` metadata is checked against it rather than trusted over it. Show a
 warning only when the conflict exists; do not reserve blank space for it.
 

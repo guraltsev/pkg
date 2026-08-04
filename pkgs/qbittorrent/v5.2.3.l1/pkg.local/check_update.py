@@ -56,7 +56,7 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     # Read the stable download endpoint because SourceForge publishes the
     # selected installer filename in its response without requiring browser JS.
     request = urllib.request.Request(
-        _LATEST_DOWNLOAD, headers={"User-Agent": "pkg-qbittorrent-update-check/1"}
+        _LATEST_DOWNLOAD, headers={"User-Agent": "gupkg-qbittorrent-update-check/1"}
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

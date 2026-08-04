@@ -3,7 +3,7 @@
 
 The module is the stable executable and Python facade for package actions. It
 coordinates configuration, origin population, component installation, and
-updates while focused implementation domains live in the ``pkg`` package.
+updates while focused implementation domains live in the ``gupkg`` package.
 
 Usage and API
 -------------
@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-# Direct script execution starts with ``src/pkg`` on sys.path. Add ``src`` so
+# Direct script execution starts with ``src/gupkg`` on sys.path. Add ``src`` so
 # the facade resolves this package by its canonical name without changing the
 # caller's working directory.
 _SRC_ROOT = Path(__file__).resolve().parent.parent
@@ -40,12 +40,12 @@ if _src_root_text in sys.path:
     sys.path.remove(_src_root_text)
 sys.path.insert(0, _src_root_text)
 
-from pkg.components import install_components  # noqa: E402
-from pkg.configuration import (  # noqa: E402
+from gupkg.components import install_components  # noqa: E402
+from gupkg.configuration import (  # noqa: E402
     check_metadata_consistency,
     read_runtime_config,
 )
-from pkg.core import (  # noqa: E402
+from gupkg.core import (  # noqa: E402
     ActionResult,
     ConfigValidationError,
     PackageIdentity,
@@ -58,19 +58,19 @@ from pkg.core import (  # noqa: E402
     read_toml_file,
     write_text_atomic,
 )
-from pkg.layout import (  # noqa: E402
+from gupkg.layout import (  # noqa: E402
     compute_scope_paths,
     resolve_input_path,
     update_current_junction_if_needed,
 )
-from pkg.legacy_to_pkg_toml import convert_legacy_directory  # noqa: E402
-from pkg.metadata import update_config_file  # noqa: E402
-from pkg.origin import (  # noqa: E402
+from gupkg.legacy_to_gupkg_toml import convert_legacy_directory  # noqa: E402
+from gupkg.metadata import update_config_file  # noqa: E402
+from gupkg.origin import (  # noqa: E402
     populate_app_from_origin,
     validate_origin_health,
     validate_update_health,
 )
-from pkg.updates import (  # noqa: E402
+from gupkg.updates import (  # noqa: E402
     _check_update,
     _git_origin_candidate,
     _load_update_state,
@@ -80,7 +80,7 @@ from pkg.updates import (  # noqa: E402
     _update_paths,
     _write_update_state,
 )
-from pkg.windows import (  # noqa: E402
+from gupkg.windows import (  # noqa: E402
     is_current_user_admin,
     wait_for_keypress,
 )
@@ -103,7 +103,7 @@ Quick start
 ~~~~~~~~~~~
 
 Notes:
-  - ``pkg --help`` and ``pkg --version`` do not write files.
+  - ``gupkg --help`` and ``gupkg --version`` do not write files.
   - ``install`` does not auto-create ``pkg.toml``.
   - ``config check`` validates ``pkg.toml`` and origin script references without writing files.
   - ``upgrade check`` discovers an update without downloading it.
@@ -118,16 +118,16 @@ Notes:
 
 Run the tool from inside a *version directory*:
 
-  pkg install         # installs from the current working directory
+  gupkg install         # installs from the current working directory
 
 Or pass a path to a version directory:
 
-  pkg install C:\opt\pkgs\Ripgrep\v14.1.0.l1
+  gupkg install C:\opt\gupkgs\Ripgrep\v14.1.0.l1
 
 You may also pass the *package root* (the directory that contains ``current``);
 in that case the tool installs from the ``current`` junction:
 
-  pkg install C:\opt\pkgs\Ripgrep
+  gupkg install C:\opt\gupkgs\Ripgrep
 
 If ``current`` is missing, a package root with exactly one version directory
 is still accepted and the tool uses that version directory directly.
@@ -165,7 +165,7 @@ Canonical config keys
      url = "https://example.invalid/tool-1.1.0.zip"
 
    If the current origin is one of those entries, omit top-level ``url`` and
-   ``script``. ``pkg`` selects the entry matching the package top-level
+   ``script``. ``gupkg`` selects the entry matching the package top-level
    ``version``:
 
      [origin]
@@ -240,7 +240,7 @@ def print_action_banner(operation: str, scope: Scope) -> None:
     """
     log_info("")
     log_info("=" * 60)
-    log_info("gurlatsev/pkg: Package Manager")
+    log_info("gupkg: Package Manager")
     log_info(f"Operation: {operation}")
     log_info(f"Scope: {scope.value}")
     log_info("=" * 60)
@@ -554,7 +554,7 @@ def install_downloaded_update(
     ) if receipts.exists() else []
     if not receipt_paths:
         return action_failure(
-            "No downloaded update is available. Run 'pkg upgrade download' first.",
+            "No downloaded update is available. Run 'gupkg upgrade download' first.",
             exit_code=EXIT_USER_ERROR,
         )
 
@@ -581,7 +581,7 @@ def install_downloaded_update(
     ):
         return action_failure(
             "No downloaded upgrade is waiting to be installed. Run "
-            "'pkg upgrade download' first.",
+            "'gupkg upgrade download' first.",
             exit_code=EXIT_USER_ERROR,
         )
 
@@ -740,14 +740,14 @@ def install_package(
         log_warning(warning)
 
     # Keep directory-derived metadata authoritative. Installation never rewrites
-    # package definitions; authors must run `pkg config update` explicitly.
+    # package definitions; authors must run `gupkg config update` explicitly.
     inconsistencies = check_metadata_consistency(identity, raw_config_data)
     if inconsistencies:
         log_error("Configuration inconsistencies detected:")
         for message in inconsistencies:
             log_error(f"  - {message}")
         log_info("Run this command before installing:")
-        log_info(f"  pkg config update {identity.version_path}")
+        log_info(f"  gupkg config update {identity.version_path}")
         return ActionResult(
             ok=False,
             changed=False,
@@ -1124,8 +1124,8 @@ class _ExtendedHelpAction(argparse.Action):
         parser.exit()
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """CLI entry point for ``pkg``.
+def _package_main(argv: Optional[List[str]] = None) -> int:
+    """CLI entry point for ``gupkg``.
 
     Parameters
     ----------
@@ -1140,7 +1140,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description="Local Package Manager for Windows (gurlatsev/pkg)",
+        description="Local Package Manager for Windows (gupkg)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -1260,12 +1260,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.operation is not None or args.path is not None:
             parser.error("tui does not accept an operation or package path")
         try:
-            # Provision every declared dependency for this pkg-owned feature
-            # before importing its optional interface module.
-            from pkg.dependencies import ensure_runtime_dependencies
-
-            ensure_runtime_dependencies("tui")
-            from pkg.tui import run_tui
+            from gupkg.tui import run_tui
 
             return run_tui()
         except RuntimeError as install_error:
@@ -1363,14 +1358,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     log_info("-" * 60)
     if label == "upgrade check" and result.status == "available":
         log_info(
-            "Upgrade is available. Run 'pkg upgrade download' to stage it; "
+            "Upgrade is available. Run 'gupkg upgrade download' to stage it; "
             "this check did not change any files."
         )
     elif label == "upgrade check" and result.status == "current":
         log_info("Package is current; this check did not change any files.")
     elif label == "upgrade download" and result.status == "downloaded":
         log_info(
-            "Upgrade is downloaded and staged. Run 'pkg upgrade install' from "
+            "Upgrade is downloaded and staged. Run 'gupkg upgrade install' from "
             "this directory or the package root to activate it."
         )
     elif label == "upgrade download" and result.status == "current":
@@ -1396,5 +1391,160 @@ def main(argv: Optional[List[str]] = None) -> int:
 # ------------------------------------------
 # Section: Script entry point
 # ------------------------------------------
+def _aggregate_check(inventory, *, update: bool, scope: Scope, toml: bool) -> int:
+    """Run a read-oriented check for every discovered manifest and summarize it."""
+    from gupkg.collection import DiscoveredPackage
+
+    outcomes: list[tuple[DiscoveredPackage, str, ActionResult]] = []
+    highest = EXIT_SUCCESS
+    for package in inventory.packages:
+        # Check each historical manifest independently because update settings
+        # may legitimately differ between immutable package versions.
+        for manifest in package.manifests:
+            result = (
+                check_package_update(manifest.version_path)
+                if update
+                else health_check_package(manifest.version_path, scope=scope)
+            )
+            outcomes.append((package, manifest.version_path.name, result))
+            highest = max(highest, result.exit_code)
+    if inventory.diagnostics or any(package.diagnostics for package in inventory.packages):
+        highest = max(highest, EXIT_USER_ERROR)
+
+    if toml:
+        print("[collection]")
+        print(f"root = {_toml_value(str(inventory.root))}")
+        print(f"complete = {'true' if inventory.complete else 'false'}")
+        for package, version, result in outcomes:
+            print("[[package]]")
+            print(f"selector = {_toml_value(package.selector)}")
+            print(f"path = {_toml_value(str(package.root))}")
+            print(f"manifest_version = {_toml_value(version)}")
+            print(f"health = {_toml_value('healthy' if result.ok else 'unhealthy')}")
+            print(f"update_status = {_toml_value(result.status or 'not-configured')}")
+    else:
+        state = "complete" if inventory.complete else "incomplete"
+        log_info(f"Collection: {inventory.root} ({state})")
+        for package, version, result in outcomes:
+            status = result.status or ("healthy" if result.ok else "unhealthy")
+            log_info(f"{package.selector} [{version}]: {status}")
+            for error in result.errors:
+                log_error(f"  - {error}")
+        for diagnostic in inventory.diagnostics:
+            log_error(f"  - {diagnostic}")
+        log_info(f"{len(inventory.packages)} packages discovered.")
+    return highest
+
+
+def _collection_list(inventory, *, filter_name: str, toml: bool) -> int:
+    """Print the deterministic collection inventory without mutating packages."""
+    if toml:
+        print("[collection]")
+        print(f"root = {_toml_value(str(inventory.root))}")
+        print(f"complete = {'true' if inventory.complete else 'false'}")
+        for package in inventory.packages:
+            print("[[package]]")
+            print(f"selector = {_toml_value(package.selector)}")
+            print(f"path = {_toml_value(str(package.root))}")
+    else:
+        log_info(f"Collection: {inventory.root}")
+        for package in inventory.packages:
+            log_info(package.selector)
+        log_info(f"{len(inventory.packages)} packages discovered.")
+    # The filter is accepted as part of the stable CLI. Status-aware filtering
+    # is performed by callers that request the corresponding aggregate check.
+    _ = filter_name
+    return EXIT_USER_ERROR if not inventory.complete else EXIT_SUCCESS
+
+
+def _run_package_tui(package_path: Path) -> int:
+    """Open the existing package operation interface for one selected root."""
+    from gupkg.tui import run_tui
+
+    return run_tui(str(package_path))
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Dispatch package commands and collection-wide read-only commands.
+
+    Parameters
+    ----------
+    argv : list[str] | None, default=None
+        Optional command arguments excluding the program name.
+
+    Returns
+    -------
+    int
+        Process exit status shared by console-script and module invocation.
+    """
+    from gupkg.collection import discover_collection, select_package
+
+    raw = list(sys.argv[1:] if argv is None else argv)
+    globals_parser = argparse.ArgumentParser(add_help=False)
+    globals_parser.add_argument("--root", type=Path)
+    globals_parser.add_argument("--package")
+    globals_parser.add_argument("--max-depth", type=int, default=8)
+    globals_parser.add_argument("--toml", action="store_true")
+    globals_args, remaining = globals_parser.parse_known_args(raw)
+    root = (globals_args.root or Path.cwd()).expanduser()
+
+    # Explicit selection always resolves against an inventory, never against
+    # manifest metadata or an arbitrary recursive filename search.
+    try:
+        inventory = discover_collection(root, max_depth=globals_args.max_depth)
+    except ValueError as exc:
+        log_error(str(exc))
+        return EXIT_USER_ERROR
+    try:
+        resolve_input_path(root)
+        package_context = True
+    except ValueError:
+        package_context = False
+    if globals_args.package:
+        try:
+            selected = select_package(inventory, globals_args.package)
+        except ValueError as exc:
+            log_error(str(exc))
+            return EXIT_USER_ERROR
+        if not remaining:
+            # The package TUI already supports an editable path. Passing the
+            # selected root to its existing command contract retains one UI.
+            return _run_package_tui(selected.root)
+        if remaining[0] == "list":
+            log_error("list is collection-only and cannot be combined with --package")
+            return EXIT_USER_ERROR
+        return _package_main([*remaining, str(selected.root)])
+
+    # A real package root takes precedence over aggregate command spellings.
+    # This preserves ``gupkg config check`` inside one package.
+    if package_context:
+        if not remaining:
+            return _run_package_tui(root)
+        return _package_main(remaining)
+
+    if remaining and remaining[0] == "list":
+        list_parser = argparse.ArgumentParser(prog="gupkg list")
+        list_parser.add_argument("--filter", choices=["all", "updatable", "unhealthy"], default="all")
+        list_args = list_parser.parse_args(remaining[1:])
+        return _collection_list(inventory, filter_name=list_args.filter, toml=globals_args.toml)
+    if len(remaining) >= 2 and remaining[0:2] == ["config", "check"]:
+        return _aggregate_check(inventory, update=False, scope=Scope.AUTO, toml=globals_args.toml)
+    if len(remaining) >= 2 and remaining[0:2] == ["upgrade", "check"]:
+        return _aggregate_check(inventory, update=True, scope=Scope.AUTO, toml=globals_args.toml)
+
+    # A resolvable root retains ordinary package behavior. Every other bare
+    # invocation is a collection context, where no implicit mutation is safe.
+    if not remaining:
+        if globals_args.toml:
+            return _collection_list(inventory, filter_name="all", toml=True)
+        from gupkg.collection_tui import run_collection_tui
+
+        return run_collection_tui(inventory)
+    if remaining[0] in {"install", "upgrade", "config"}:
+        log_error("Collection mutations require --package or an explicit package path.")
+        return EXIT_USER_ERROR
+    return _package_main(remaining)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

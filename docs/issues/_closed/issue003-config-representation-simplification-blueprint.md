@@ -1,4 +1,4 @@
-# Blueprint: simplify config/orchestration representations without splitting `pkg.py`
+# Blueprint: simplify config/orchestration representations without splitting `gupkg.py`
 
 Date: 2026-04-25
 Priority: Medium
@@ -35,7 +35,7 @@ The large-file issue is secondary. The real problem is that the code carries mor
 
 ### File and class size
 
-`pkg.py` currently has:
+`gupkg.py` currently has:
 
 - 4312 lines
 - 31 classes
@@ -43,10 +43,10 @@ The large-file issue is secondary. The real problem is that the code carries mor
 
 Large classes include:
 
-- `WindowsPlatform`: `pkg.py:2526-2984` (459 lines)
-- `PackageMetadata`: `pkg.py:2985-3832` (848 lines)
-- `PackageManager`: `pkg.py:3833-4131` (299 lines)
-- `PATHManager`: `pkg.py:2121-2311` (191 lines)
+- `WindowsPlatform`: `gupkg.py:2526-2984` (459 lines)
+- `PackageMetadata`: `gupkg.py:2985-3832` (848 lines)
+- `PackageManager`: `gupkg.py:3833-4131` (299 lines)
+- `PATHManager`: `gupkg.py:2121-2311` (191 lines)
 
 The file being large is acceptable for this project. The issue is that some of that size comes from compatibility wrappers and extra indirection that no longer pull their weight.
 
@@ -54,12 +54,12 @@ The file being large is acceptable for this project. The issue is that some of t
 
 The following methods exist but have no internal callers in the repo:
 
-- `_fill_from_directory()` — `pkg.py:3023-3031`
-- `_fill_current()` — `pkg.py:3033-3041`
-- `_validate_config_dict()` — `pkg.py:3224-3307`
-- `_metadata_sync_payload()` — `pkg.py:3322-3330`
-- `_create_starter_config_text()` — `pkg.py:3332-3345`
-- `_locate_metadata_container()` — `pkg.py:3347-3357`
+- `_fill_from_directory()` — `gupkg.py:3023-3031`
+- `_fill_current()` — `gupkg.py:3033-3041`
+- `_validate_config_dict()` — `gupkg.py:3224-3307`
+- `_metadata_sync_payload()` — `gupkg.py:3322-3330`
+- `_create_starter_config_text()` — `gupkg.py:3332-3345`
+- `_locate_metadata_container()` — `gupkg.py:3347-3357`
 
 These are classic examples of “preserve old surface just in case” code. That conflicts with the stated preference against future-proofing.
 
@@ -73,11 +73,11 @@ These are classic examples of “preserve old surface just in case” code. That
 - `reporter`
 - `force`
 
-Code: `pkg.py:418-435`
+Code: `gupkg.py:418-435`
 
 But the current step functions mostly use only `context.reporter`, while other data is already available through `metadata`.
 
-Code: `pkg.py:2431-2514`
+Code: `gupkg.py:2431-2514`
 
 ### `WindowsPlatform` is largely a delegate facade
 
@@ -89,7 +89,7 @@ Code: `pkg.py:2431-2514`
 - `update_current_junction_if_needed()` -> `JunctionManager...`
 - `install_steps()` -> `INSTALL_STEPS`
 
-Code: `pkg.py:2526-2605`
+Code: `gupkg.py:2526-2605`
 
 A small boundary is still useful for tests. The Windows section must be conceptually isolated, but the current shape is more general than the project needs.
 
@@ -176,9 +176,9 @@ Use that permission only where it makes a section more self-contained. Do not sh
 
 Do not use this cleanup plan to rewrite these stable areas unless a specific bug demands it:
 
-- variable expansion (`pkg.py:910-994`)
-- atomic file writes (`pkg.py:786-847`)
-- PATH deduplication (`pkg.py:2121-2309`)
+- variable expansion (`gupkg.py:910-994`)
+- atomic file writes (`gupkg.py:786-847`)
+- PATH deduplication (`gupkg.py:2121-2309`)
 - wrapper file content generation
 - shortcut registry/COM primitives in the Windows section
 
@@ -196,7 +196,7 @@ These are not the source of the current large issues.
 - install path uses only the raw canonical dict and `PackageConfig`, not a third compatibility dict
 - dead compatibility methods are removed instead of preserved
 - install steps are easier to read because data flow is more direct
-- the file remains one sectioned `pkg.py`
+- the file remains one sectioned `gupkg.py`
 - no new abstraction layer is added
 
 ## Non-goals

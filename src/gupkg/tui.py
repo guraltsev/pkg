@@ -1,11 +1,11 @@
 """Provide a minimal Textual terminal interface for package operations.
 
 The interface is a plain selectable list: choose an action, then select Run or
-one of its settings. It delegates execution to the established ``pkg`` command.
+one of its settings. It delegates execution to the established ``gupkg`` command.
 
 Usage and API
 -------------
-Run ``pkg tui`` to start the interface. Call ``run_tui()`` when embedding the
+Run ``gupkg tui`` to start the interface. Call ``run_tui()`` when embedding the
 interactive entry point in another Python launcher.
 
 Implementation Approach
@@ -24,8 +24,13 @@ from pathlib import Path
 from typing import ClassVar
 
 
-def run_tui() -> int:
+def run_tui(package_path: str = "") -> int:
     """Run the interactive Textual interface.
+
+    Parameters
+    ----------
+    package_path : str, default=""
+        Initially selected package root; an empty value uses the current directory.
 
     Returns
     -------
@@ -60,7 +65,7 @@ def run_tui() -> int:
         ("config-check", "Config: check"),
         ("config-update", "Config: update"),
         ("config-from-legacy", "Config: import from legacy"),
-        ("version", "pkg installer version"),
+        ("version", "gupkg installer version"),
     )
     flag_labels = (
         ("use-defaults", "Use defaults if pkg.toml is invalid"),
@@ -101,9 +106,9 @@ def run_tui() -> int:
 
     def package_summary(path_text: str) -> tuple[str, str, str]:
         """Return package identity, description, and metadata-warning text."""
-        from pkg.configuration import check_metadata_consistency
-        from pkg.core import read_toml_file
-        from pkg.layout import resolve_input_path
+        from gupkg.configuration import check_metadata_consistency
+        from gupkg.core import read_toml_file
+        from gupkg.layout import resolve_input_path
 
         try:
             identity, _ = resolve_input_path(Path(path_text or ".").expanduser())
@@ -132,8 +137,8 @@ def run_tui() -> int:
 
     def detected_scope(path_text: str) -> tuple[str, bool] | None:
         """Return the automatic scope and Machine availability for one package."""
-        from pkg.layout import resolve_input_path
-        from pkg.windows import is_current_user_admin
+        from gupkg.layout import resolve_input_path
+        from gupkg.windows import is_current_user_admin
 
         try:
             identity, _ = resolve_input_path(Path(path_text or ".").expanduser())
@@ -166,10 +171,10 @@ def run_tui() -> int:
 
         BINDINGS: ClassVar = [("escape", "exit", "Exit")]
 
-        def __init__(self) -> None:
+        def __init__(self, initial_path: str) -> None:
             """Resolve the current directory's package summary."""
             super().__init__()
-            self.path = ""
+            self.path = initial_path
             self.title, self.description, self.warning = package_summary(self.path)
 
         def compose(self) -> ComposeResult:
@@ -254,6 +259,11 @@ def run_tui() -> int:
             yield Static(self.description, id="description")
             yield Static(self.warning, id="metadata-warning")
             yield OptionList(*self._options(), id="command-options")
+
+        def __init__(self, initial_path: str) -> None:
+            """Store the package path selected by the dispatcher."""
+            super().__init__()
+            self.initial_path = initial_path
 
         def on_mount(self) -> None:
             """Make Run the selected default for every action."""
@@ -374,7 +384,7 @@ def run_tui() -> int:
             self.app.pop_screen()
 
     class ResultScreen(Screen):
-        """Run one pkg command and show its output in a scrollable view."""
+        """Run one gupkg command and show its output in a scrollable view."""
 
         BINDINGS: ClassVar = [
             ("enter", "main_menu", "Main menu"),
@@ -388,7 +398,7 @@ def run_tui() -> int:
 
         def compose(self) -> ComposeResult:
             """Compose the command summary and plain output."""
-            yield Label("pkg " + " ".join(self.arguments))
+            yield Label("gupkg " + " ".join(self.arguments))
             yield Static("Running...", id="status")
             with VerticalScroll():
                 yield Static("", id="output")
@@ -398,8 +408,8 @@ def run_tui() -> int:
             self.run_worker(self._run_command(), exclusive=True)
 
         async def _run_command(self) -> None:
-            """Run pkg without corrupting Textual's terminal rendering."""
-            command = [sys.executable, str(Path(__file__).with_name("pkg.py")), *self.arguments]
+            """Run gupkg without corrupting Textual's terminal rendering."""
+            command = [sys.executable, "-m", "gupkg", *self.arguments]
             completed = await asyncio.to_thread(
                 subprocess.run,
                 command,
@@ -409,7 +419,7 @@ def run_tui() -> int:
                 check=False,
             )
             self.query_one("#output", Static).update(
-                completed.stdout or "(pkg produced no output)"
+                completed.stdout or "(gupkg produced no output)"
             )
             status = (
                 "Completed successfully. Review the result below for the next "
@@ -450,7 +460,7 @@ def run_tui() -> int:
             """Return to the package summary."""
             self.app.pop_screen()
 
-    class PkgApp(App):
+    class GupkgApp(App):
         """Host the package operation lists."""
 
         CSS = """
@@ -472,14 +482,19 @@ def run_tui() -> int:
         """
         BINDINGS: ClassVar = [("q", "quit", "Quit"), ("b", "back", "Back")]
 
+        def __init__(self, initial_path: str) -> None:
+            """Store the package path selected by the dispatcher."""
+            super().__init__()
+            self.initial_path = initial_path
+
         def on_mount(self) -> None:
             """Start at the action list."""
-            self.push_screen(HomeScreen())
+            self.push_screen(HomeScreen(self.initial_path))
 
         def action_back(self) -> None:
             """Return one screen when the current screen does not handle Back."""
             if len(self.screen_stack) > 1:
                 self.pop_screen()
 
-    PkgApp().run()
+    GupkgApp(package_path).run()
     return 0

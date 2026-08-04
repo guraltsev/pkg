@@ -19,11 +19,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from pkg.configuration import normalize_runtime_config
-from pkg.core import PackageIdentity
+from gupkg.configuration import normalize_runtime_config
+from gupkg.core import PackageIdentity
 
 
-PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3.l1"
+PACKAGE = ROOT / "gupkgs" / "qbittorrent" / "v5.2.3.l1"
 CHECKER = PACKAGE / "pkg.local" / "check_update.py"
 UNPACKER = PACKAGE / "pkg.local" / "unpack_app.py"
 

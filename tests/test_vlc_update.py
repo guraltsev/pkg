@@ -13,12 +13,12 @@ import tomllib
 from pathlib import Path
 from unittest import mock
 
-from pkg.configuration import normalize_runtime_config
-from pkg.core import PackageIdentity
+from gupkg.configuration import normalize_runtime_config
+from gupkg.core import PackageIdentity
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "pkgs" / "vlc" / "vbootstrap.l1"
+PACKAGE = ROOT / "gupkgs" / "vlc" / "vbootstrap.l1"
 CHECKER = PACKAGE / "pkg.local" / "check_update.py"
 
 

@@ -573,7 +573,7 @@ def install_components(
 ) -> StepResult:
     """Run the fixed install sequence for one package version.
 
-    The order here is deliberate and intentionally explicit. ``pkg`` does not
+    The order here is deliberate and intentionally explicit. ``gupkg`` does not
     have a pluggable install pipeline, so keeping the sequence inline makes the
     state transitions easier to audit:
 

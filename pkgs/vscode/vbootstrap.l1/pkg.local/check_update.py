@@ -63,7 +63,7 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     # extracts the selected archive after candidate validation.
     request = urllib.request.Request(
         RELEASES_URL,
-        headers={"User-Agent": "pkg-vscode-update-check/1"},
+        headers={"User-Agent": "gupkg-vscode-update-check/1"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

@@ -1,9 +1,16 @@
-# pkg
+# gupkg
 
-`pkg` manages self-contained Windows applications that live on disk rather
+`gupkg` is installable with `python -m pip install .`, `python -m pip install
+-e .`, `pipx install .`, or `uv tool install .`. Run either `gupkg` or
+`python -m gupkg`; both use the same dispatcher. A directory of package roots
+is a collection: `gupkg list`, `gupkg config check`, and `gupkg upgrade check`
+operate across its discovered packages. Use `--package NAME` (or a nested
+selector such as `editors/vscode`) before a mutating command.
+
+`gupkg` manages self-contained Windows applications that live on disk rather
 than in a central package store. A package author puts an application's files,
 its version number, and a small `pkg.toml` definition in one directory. From
-that definition, `pkg` selects the active version and makes the application
+that definition, `gupkg` selects the active version and makes the application
 available to Windows: it can create Start Menu shortcuts, set environment
 variables, add directories to PATH, and generate command-line wrappers. It can
 also fetch application files when they are not already present and stage new
@@ -30,7 +37,7 @@ origin or update source is contacted.
 
 Each application has a **package root**. It contains one or more immutable
 **version directories** and a `current` junction that points to the active
-one. The version directory is the unit that `pkg` installs and updates.
+one. The version directory is the unit that `gupkg` installs and updates.
 
 ```text
 <PackageName>/
@@ -45,7 +52,7 @@ one. The version directory is the unit that `pkg` installs and updates.
 
 `App` is the application payload: the files that actually run. For example,
 `App` might contain `rg.exe`, a portable editor's executable and libraries, or
-a Git checkout. `pkg` never invents a particular application layout inside
+a Git checkout. `gupkg` never invents a particular application layout inside
 `App`; it either starts with the files already there or populates them from the
 configured origin. Shortcuts, PATH entries, environment values, and wrappers
 normally point at files or directories beneath `App`.
@@ -80,7 +87,7 @@ expansion](#variables-and-expansion).
 `Icons` and `Shortcuts` are optional package-owned asset directories. `Icons`
 is a natural place for shortcut icons; `Shortcuts` is available to package
 scripts or configuration that needs package-local shortcut assets. `pkg.local`
-is reserved for trusted Python update-check and unpack hooks. `.pkg`, created
+is reserved for trusted Python update-check and unpack hooks. `.gupkg`, created
 at the package root by update operations, holds manager state, locks, receipts,
 and disposable work files rather than application files.
 
@@ -89,7 +96,7 @@ For example, `v1.2.3.l1` has upstream version `1.2.3` and local revision `1`.
 The package name is the package-root directory name. A name ending in
 `-portable` is portable-only by convention.
 
-You may give `pkg` a version directory, a package root, or its `current`
+You may give `gupkg` a version directory, a package root, or its `current`
 junction. A package root without `current` is accepted only when it contains
 exactly one version directory. Update checks and downloads accept any version
 directory, so a historical definition can provide the update configuration.
@@ -104,14 +111,14 @@ versions are retained.
 From a version directory:
 
 ```bat
-pkg.cmd
+gupkg.cmd
 ```
 
 Or pass a version directory or package root:
 
 ```bat
-pkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
-pkg.cmd C:\Packages\Ripgrep
+gupkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
+gupkg.cmd C:\Packages\Ripgrep
 ```
 
 The default `Auto` scope uses Machine scope for an administrator unless the
@@ -119,8 +126,8 @@ package is portable-only; otherwise it uses User scope. Select a scope
 explicitly when needed:
 
 ```bat
-pkg.cmd --scope User C:\Packages\Ripgrep
-pkg.cmd --scope Machine C:\Packages\Ripgrep
+gupkg.cmd --scope User C:\Packages\Ripgrep
+gupkg.cmd --scope Machine C:\Packages\Ripgrep
 ```
 
 Machine scope requires Administrator privileges. Portable-only packages cannot
@@ -131,7 +138,7 @@ be installed in Machine scope.
 | User | `%APPDATA%\Microsoft\Windows\Start Menu\opt` | `HKCU\Environment` | `%USERPROFILE%\bin` |
 | Machine | `%PROGRAMDATA%\Microsoft\Windows\Start Menu\opt` | `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` | `<SYSTEMDRIVE>\bin` |
 
-During an ordinary install, `pkg`:
+During an ordinary install, `gupkg`:
 
 1. resolves the package and validates `pkg.toml`;
 2. makes the selected version current when appropriate;
@@ -146,7 +153,7 @@ explicitly rebuild `App` from its origin before that repair.
 
 ## Commands and options
 
-`pkg` uses a small verb-based command line. Every update is explicit: check
+`gupkg` uses a small verb-based command line. Every update is explicit: check
 what is available, download it into a new version directory, then choose when
 to make that downloaded version current.
 
@@ -158,24 +165,24 @@ Run the simple interactive interface:
 tui.cmd
 ```
 
-You can also run `pkg.cmd tui` directly.
+You can also run `gupkg.cmd tui` directly.
 
 The interface exposes install, each update stage, and every configuration
 action with the same package path, scope, and applicable flags as the command
 line. It intentionally uses selections and plain output instead of a
-frame-heavy terminal layout. On first use, `pkg` automatically installs its
-Textual dependency into `%LOCALAPPDATA%\pkg\dependencies`; the launcher Python
+frame-heavy terminal layout. On first use, `gupkg` automatically installs its
+Textual dependency into `%LOCALAPPDATA%\gupkg\dependencies`; the launcher Python
 is not modified. `--pause` is omitted because the interface stays open after
 each operation.
 
 ```text
-pkg.cmd [options] <command> [subcommand] [path]
+gupkg.cmd [options] <command> [subcommand] [path]
 ```
 
 ### Install
 
 ```bat
-pkg.cmd install C:\Packages\Tool
+gupkg.cmd install C:\Packages\Tool
 ```
 
 `install` activates the chosen version and applies its package definition. With
@@ -184,10 +191,10 @@ no path it installs the package in the current directory.
 ### Upgrade
 
 ```bat
-pkg.cmd upgrade check C:\Packages\Tool
-pkg.cmd upgrade download C:\Packages\Tool
-pkg.cmd upgrade install C:\Packages\Tool
-pkg.cmd upgrade full C:\Packages\Tool
+gupkg.cmd upgrade check C:\Packages\Tool
+gupkg.cmd upgrade download C:\Packages\Tool
+gupkg.cmd upgrade install C:\Packages\Tool
+gupkg.cmd upgrade full C:\Packages\Tool
 ```
 
 `upgrade check` is read-only and reports either `Available: ...` or `Current: ...`.
@@ -206,9 +213,9 @@ root.
 ### Configuration
 
 ```bat
-pkg.cmd config check C:\Packages\Ripgrep
-pkg.cmd config update C:\Packages\Ripgrep\v14.1.0.l1
-pkg.cmd --dry-run config from-legacy C:\OldPackages\Ripgrep
+gupkg.cmd config check C:\Packages\Ripgrep
+gupkg.cmd config update C:\Packages\Ripgrep\v14.1.0.l1
+gupkg.cmd --dry-run config from-legacy C:\OldPackages\Ripgrep
 ```
 
 `config check` validates a package without installing it. `config update`
@@ -231,7 +238,7 @@ they have an effect.
 | `--dry-run` | For `config from-legacy`, writes generated TOML to standard output without changing files. |
 | `--toml` | Adds `ok`, `changed`, and `status` fields to normal output. |
 | `--pause` | Waits for a keypress before exit. |
-| `--version` | Prints the `pkg` version and exits. |
+| `--version` | Prints the `gupkg` version and exits. |
 | `--help`, `--help-extended` | Prints standard or expanded CLI help and exits. |
 
 Exit status is `0` for success, `2` for a user/configuration error, `3` for a
@@ -241,7 +248,7 @@ The convenience scripts call the same entry point and add `--pause` where
 appropriate. They use the same `install`, `upgrade`, and `config` commands
 documented above.
 
-`pkg.cmd` locates Python in this order: `PKG_PYTHON`, `pkg.python` beside the
+`gupkg.cmd` locates Python in this order: `GUPKG_PYTHON`, `gupkg.python` beside the
 launcher, then `python` from `PATH`.
 
 ## `pkg.toml` reference
@@ -255,7 +262,7 @@ and legacy spellings are errors.
 metadata. Their canonical values come from the directory name and layout.
 `config update` synchronizes those fields while preserving unrelated runtime
 configuration and comments where possible. An install stops on a metadata
-mismatch. Run `pkg config update <version-directory>` before installing to
+mismatch. Run `gupkg config update <version-directory>` before installing to
 synchronize it.
 
 ```toml
@@ -310,7 +317,7 @@ extractSubdir = "tool-portable"
 ```
 
 **Git origin.** Set `mode = "git"`, provide a safe Git URL, and optionally a
-full `refs/...` ref. The ref defaults to `refs/heads/main`. `pkg` resolves the
+full `refs/...` ref. The ref defaults to `refs/heads/main`. `gupkg` resolves the
 ref and checks out that exact commit into `App`.
 
 ```toml
@@ -321,7 +328,7 @@ ref = "refs/heads/main"
 ```
 
 **Script origin.** Supply a package-local `.ps1`, `.cmd`, `.bat`, or `.exe`
-path. It must stay beneath the version directory. `pkg` runs it with its
+path. It must stay beneath the version directory. `gupkg` runs it with its
 directory as the working directory, sends a JSON document on standard input,
 and requires a successful exit status and a non-empty `App`. The JSON contains
 `config`, `identity`, and `PkgVars` (`PkgRoot`, `App`, `Icons`, and
@@ -370,7 +377,7 @@ Each `[[bin]]` table requires `name` and either `content` or `command`:
 name = "tool.cmd"
 content = "@echo off\r\ncall \"$App\\tool.exe\" %*\r\n"
 
-# Or let pkg produce @echo off / call <command>.
+# Or let gupkg produce @echo off / call <command>.
 [[bin]]
 name = "tool.cmd"
 command = "\"$App\\tool.exe\""
@@ -379,7 +386,7 @@ forward_args = true
 ```
 
 `extra_args` and `forward_args` are valid only with `command`; `forward_args`
-defaults to `false`. With command form, `pkg` emits `@echo off`, then `call
+defaults to `false`. With command form, `gupkg` emits `@echo off`, then `call
 <command>`, followed by `extra_args` and `%*` when requested.
 
 Shortcut and wrapper names are expanded before placement. A simple name goes
@@ -402,14 +409,14 @@ expected.
 
 ## Updates
 
-Updates follow **check → download → install**. `pkg upgrade check` only
-discovers a candidate. `pkg upgrade download` stages a complete new version under
-`<package-root>\.pkg\work`, commits it as a new `v<version>.lN` directory,
-and records a receipt. `pkg upgrade install` activates the most recently
+Updates follow **check → download → install**. `gupkg upgrade check` only
+discovers a candidate. `gupkg upgrade download` stages a complete new version under
+`<package-root>\.gupkg\work`, commits it as a new `v<version>.lN` directory,
+and records a receipt. `gupkg upgrade install` activates the most recently
 downloaded version through the regular install workflow.
-`pkg upgrade full` performs those three steps as one explicit command.
+`gupkg upgrade full` performs those three steps as one explicit command.
 Update state, locks, receipts, and disposable work files all live in
-`<package-root>\.pkg`; package repositories should ignore `/.pkg/`.
+`<package-root>\.gupkg`; package repositories should ignore `/.gupkg/`.
 
 Updates are never started or activated automatically. A package administrator
 or a scheduler chooses when to run each explicit upgrade command.
@@ -450,10 +457,10 @@ non-empty `candidateId`, `version`, and `url`. Optional candidate fields are
 `sha256` (64 hex digits), `fileName`, `headers`, and `extractSubdir`. Candidate
 versions must be safe version-directory values and may not go backward.
 
-`pkg` installs every dependency declared by its own optional runtime features
-into `%LOCALAPPDATA%\pkg\dependencies`; the launcher Python is not modified.
+`gupkg` installs every dependency declared by its own optional runtime features
+into `%LOCALAPPDATA%\gupkg\dependencies`; the launcher Python is not modified.
 Trusted package-local hooks never trigger dependency installation by default.
-When a hook needs an unavailable import, `pkg` reports it and stops. Pass
+When a hook needs an unavailable import, `gupkg` reports it and stops. Pass
 `--local-deps-autoinstall` to explicitly allow installation and retrying for
 that command. Installations prefer `uv` and otherwise use that environment's
 `pip`. Trusted package-local hooks are not sandboxed.
@@ -523,8 +530,8 @@ backed up as `pkg.toml.bak`, then incremented suffixes when necessary.
 The standalone helpers remain available from `src`:
 
 ```bat
-python pkg\legacy_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
-python pkg\shortcuts_to_pkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+python gupkg\legacy_to_gupkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
+python gupkg\shortcuts_to_gupkg_toml.py --dir C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 The shortcut importer reads `.lnk` files from `_shortcuts`, converts
@@ -536,4 +543,4 @@ runtime package API.
 
 Implementation and test guidance is in [docs/development_guide.md](docs/development_guide.md).
 The runtime module overview and migration-helper details are in
-[src/pkg/README.md](src/pkg/README.md).
+[src/gupkg/README.md](src/gupkg/README.md).

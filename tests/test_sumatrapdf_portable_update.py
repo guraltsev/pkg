@@ -14,14 +14,14 @@ import tomllib
 from pathlib import Path
 from unittest import mock
 
-from pkg.configuration import normalize_runtime_config
-from pkg.core import ExpansionMode, PackageIdentity, expand_text
+from gupkg.configuration import normalize_runtime_config
+from gupkg.core import ExpansionMode, PackageIdentity, expand_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = (
     ROOT
-    / "pkgs"
+    / "gupkgs"
     / "SumatraPDF-portable"
     / "vbootstrap.l1"
     / "pkg.local"

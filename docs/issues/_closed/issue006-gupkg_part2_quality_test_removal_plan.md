@@ -7,7 +7,7 @@ I searched the repo for tests whose main purpose is to enforce documentation wor
 Result:
 
 - the refactor-hostile quality tests are concentrated in **`tests/test_quality.py`**
-- `tests/test_pkg_pure.py` is behavior-focused and should stay, aside from updates needed when compatibility surfaces are removed
+- `tests/test_gupkg_pure.py` is behavior-focused and should stay, aside from updates needed when compatibility surfaces are removed
 
 `tests/test_quality.py` currently contains **16 tests**. Of those, **13 are superfluous refactor blockers** and should be removed. Three are either behavior checks or direct repo-policy checks that still match the stated project goals.
 
@@ -62,7 +62,7 @@ These are all in `ArchitectureBoundaryTests`.
 
 ### Remove these methods
 
-- `test_pkg_metadata_does_not_restore_removed_private_compatibility_methods` - `tests/test_quality.py:178-198`
+- `test_gupkg_metadata_does_not_restore_removed_private_compatibility_methods` - `tests/test_quality.py:178-198`
 - `test_install_context_wrapper_class_does_not_return` - `tests/test_quality.py:199-204`
 - `test_windows_platform_stays_small` - `tests/test_quality.py:205-230`
 - `test_shared_windows_and_core_sections_begin_with_imports` - `tests/test_quality.py:232-251`
@@ -88,7 +88,7 @@ Examples:
 
 - `test_shared_windows_and_core_sections_begin_with_imports` (`tests/test_quality.py:232-251`) directly conflicts with the project preference to keep imports near the code that uses them.
 - `test_windows_platform_stays_small` (`tests/test_quality.py:205-230`) blocks removing or reshaping `WindowsPlatform` because it encodes one specific refactor snapshot as policy.
-- `test_pkg_metadata_does_not_restore_removed_private_compatibility_methods` (`tests/test_quality.py:178-198`) is an inverse-name blacklist. It does not validate correctness; it just freezes one previous cleanup decision.
+- `test_gupkg_metadata_does_not_restore_removed_private_compatibility_methods` (`tests/test_quality.py:178-198`) is an inverse-name blacklist. It does not validate correctness; it just freezes one previous cleanup decision.
 - the Windows-marker placement tests (`tests/test_quality.py:253-317`) are brittle string searches over source text, not behavior checks.
 
 These are classic "test the code layout, not the behavior" tests.
@@ -113,7 +113,7 @@ This aligns with the stated goal of one main Python file.
 
 ### Keep: section markers exist (optional but reasonable)
 
-- `test_pkg_py_contains_required_section_markers` - `tests/test_quality.py:172-176`
+- `test_gupkg_py_contains_required_section_markers` - `tests/test_quality.py:172-176`
 
 This aligns with the stated goal that the single file stay organized in sections.
 
@@ -173,7 +173,7 @@ The right order is:
 
 ## What to keep testing after these removals
 
-The behavior suite in `tests/test_pkg_pure.py` should remain the main guardrail.
+The behavior suite in `tests/test_gupkg_pure.py` should remain the main guardrail.
 
 After Part 1 lands, update behavior tests so they validate:
 

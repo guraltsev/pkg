@@ -37,7 +37,7 @@ The docs need to say that explicitly so future cleanup work does not accidentall
 
 relative to `<package_root>/current/...`
 
-Code: `pkg.py:892-907`
+Code: `gupkg.py:892-907`
 
 That is a strong signal that install is meant to reassert the active package state through `current`.
 
@@ -47,7 +47,7 @@ When the user installs from a version directory, `resolve_input_path()` records:
 
 - `version_is_current = _current_version_matches(package_root, candidate)`
 
-Code: `pkg.py:1682-1693`
+Code: `gupkg.py:1682-1693`
 
 That value is later surfaced through package identity.
 
@@ -58,7 +58,7 @@ That value is later surfaced through package identity.
 - the junction did not change
 - **and** the target is **not** already current
 
-Code: `pkg.py:4020-4025`
+Code: `gupkg.py:4020-4025`
 
 So when the target version is already current, install continues through the component pipeline even if junction management reports no change.
 
@@ -68,11 +68,11 @@ That matches the desired repair behavior.
 
 `JunctionManager.update_current_junction_if_needed()` skips only when the existing `current` points to a newer version and `--force` is not set.
 
-Code: `pkg.py:1814-1817`
+Code: `gupkg.py:1814-1817`
 
 For same-version targets, it still goes through temporary junction creation and replacement.
 
-Code: `pkg.py:1821-1845`
+Code: `gupkg.py:1821-1845`
 
 Per current project direction, that is **not worth changing**, but it **must be documented**.
 

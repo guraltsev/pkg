@@ -14,9 +14,9 @@ from unittest import mock
 
 import pytest
 
-from pkg.configuration import normalize_runtime_config
-from pkg.core import ConfigValidationError, PackageIdentity
-from pkg import github_releases
+from gupkg.configuration import normalize_runtime_config
+from gupkg.core import ConfigValidationError, PackageIdentity
+from gupkg import github_releases
 
 
 def release_response(*, tag: str = "v1.13.0") -> io.BytesIO:

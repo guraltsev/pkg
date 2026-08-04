@@ -1,4 +1,4 @@
-﻿"""Cover observable package CLI behavior across configuration and installation.
+"""Cover observable package CLI behavior across configuration and installation.
 
 Temporary package trees, TOML parsing, and filesystem output are real. Windows
 registry, junction, shortcut, process, and network boundaries are mocked where
@@ -31,12 +31,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-PKG_PY = SRC_ROOT / "pkg" / "pkg.py"
+GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-def load_pkg_module():
-    spec = importlib.util.spec_from_file_location("pkg_under_test_cli", PKG_PY)
+def load_gupkg_module():
+    spec = importlib.util.spec_from_file_location("gupkg_under_test_cli", GUPKG_PY)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -48,9 +48,9 @@ def load_pkg_module():
 
 
 def runtime_module(name: str) -> ModuleType:
-    """Return one runtime module loaded by the ``pkg.py`` entrypoint."""
+    """Return one runtime module loaded by the ``gupkg.py`` entrypoint."""
 
-    return sys.modules[f"pkg.{name}"]
+    return sys.modules[f"gupkg.{name}"]
 
 
 @contextlib.contextmanager
@@ -63,7 +63,7 @@ def pushd(path: Path):
         os.chdir(cwd)
 
 
-class PkgCliBehaviorTests(unittest.TestCase):
+class GupkgCliBehaviorTests(unittest.TestCase):
     maxDiff = None
 
     def run_main(self, module, args: list[str]) -> tuple[int, str]:
@@ -143,9 +143,9 @@ class PkgCliBehaviorTests(unittest.TestCase):
             msg="Starter config should begin with a comment header.",
         )
         self.assertIn(
-            "pkg",
+            "gupkg",
             header.lower(),
-            msg="Starter config header should identify pkg as the generator.",
+            msg="Starter config header should identify gupkg as the generator.",
         )
         self.assertTrue(
             any(
@@ -174,20 +174,20 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_version_flag_reports_version(self) -> None:
         """Version flag reports version."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         code, output = self.run_main(module, ["--version"])
         self.assertEqual(code, 0)
         self.assertIn(module.__version__, output)
 
     def test_tui_command_delegates_to_the_textual_entrypoint(self) -> None:
         """The tui command starts the optional interactive entrypoint."""
-        module = load_pkg_module()
-        tui = ModuleType("pkg.tui")
+        module = load_gupkg_module()
+        tui = ModuleType("gupkg.tui")
         tui.run_tui = mock.Mock(return_value=0)
 
         with (
-            mock.patch.dict(sys.modules, {"pkg.tui": tui}),
-            mock.patch("pkg.dependencies.ensure_runtime_dependencies"),
+            mock.patch.dict(sys.modules, {"gupkg.tui": tui}),
+            mock.patch("gupkg.dependencies.ensure_runtime_dependencies"),
         ):
             code, _ = self.run_main(module, ["tui"])
 
@@ -195,15 +195,15 @@ class PkgCliBehaviorTests(unittest.TestCase):
         tui.run_tui.assert_called_once_with()
 
     def test_tui_provisions_its_declared_runtime_dependencies(self) -> None:
-        """The tui command provisions its pkg-owned dependencies before launch."""
-        module = load_pkg_module()
-        tui = ModuleType("pkg.tui")
+        """The tui command provisions its gupkg-owned dependencies before launch."""
+        module = load_gupkg_module()
+        tui = ModuleType("gupkg.tui")
         tui.run_tui = mock.Mock(return_value=0)
 
         with (
-            mock.patch.dict(sys.modules, {"pkg.tui": tui}),
+            mock.patch.dict(sys.modules, {"gupkg.tui": tui}),
             mock.patch(
-                "pkg.dependencies.ensure_runtime_dependencies"
+                "gupkg.dependencies.ensure_runtime_dependencies"
             ) as ensure_dependencies,
         ):
             code, _ = self.run_main(module, ["tui"])
@@ -214,7 +214,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_short_help_hides_bootstrap_and_removed_flags(self) -> None:
         """Short help hides bootstrap and removed flags."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         code, help_text = self.run_main(module, ["--help"])
         self.assertEqual(code, 0)
         self.assertNotIn("--action", help_text)
@@ -227,7 +227,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_invalid_install_path_returns_user_error_and_banner(self) -> None:
         """Invalid install path returns user error and banner."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         code, output = self.run_main(
             module, ["install", str(ROOT / "does-not-exist")]
         )
@@ -237,7 +237,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_check_accepts_historical_version_without_current(self) -> None:
         """Update checks use an explicitly selected historical version without current."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -245,8 +245,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
             upstream.mkdir()
             self.run_git(upstream, "init")
             self.run_git(upstream, "checkout", "-b", "main")
-            self.run_git(upstream, "config", "user.name", "Pkg Tests")
-            self.run_git(upstream, "config", "user.email", "pkg-tests@example.invalid")
+            self.run_git(upstream, "config", "user.name", "Gupkg Tests")
+            self.run_git(upstream, "config", "user.email", "gupkg-tests@example.invalid")
             upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
             self.run_git(upstream, "add", "payload.txt")
             self.run_git(upstream, "commit", "-m", "initial")
@@ -291,7 +291,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_config_check_rejects_removed_automatic_update_setting(self) -> None:
         """Config check rejects the removed automatic-update setting."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ManualUpdates")
             self.write_config(
@@ -321,7 +321,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_bootstrap_git_install_creates_populated_timestamped_version(self) -> None:
         """Installing bootstrap-git promotes its origin into an immutable version."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -332,9 +332,9 @@ class PkgCliBehaviorTests(unittest.TestCase):
             # without first populating the template's own App directory.
             self.run_git(upstream, "init")
             self.run_git(upstream, "checkout", "-b", "main")
-            self.run_git(upstream, "config", "user.name", "Pkg Tests")
+            self.run_git(upstream, "config", "user.name", "Gupkg Tests")
             self.run_git(
-                upstream, "config", "user.email", "pkg-tests@example.invalid"
+                upstream, "config", "user.email", "gupkg-tests@example.invalid"
             )
             upstream.joinpath("payload.txt").write_text("one", encoding="utf-8")
             self.run_git(upstream, "add", "payload.txt")
@@ -370,7 +370,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             self.assertIn("Available: v", check_output)
             self.assertIn('status = "available"', check_output)
             self.assertIn(
-                "Upgrade is available. Run 'pkg upgrade download' to stage it; "
+                "Upgrade is available. Run 'gupkg upgrade download' to stage it; "
                 "this check did not change any files.",
                 check_output,
             )
@@ -470,11 +470,11 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_upgrade_install_rejects_a_receipt_for_the_active_version(self) -> None:
         """Upgrade install requires a staged version newer than the active version."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ReceiptApp")
-            receipts = version_dir.parent / ".pkg" / "receipts"
+            receipts = version_dir.parent / ".gupkg" / "receipts"
             receipts.mkdir(parents=True)
             receipts.joinpath("v1.0.0.l1.toml").write_text(
                 "schemaVersion = 1\nversion = \"1.0.0\"\nlocalVersion = 1\n",
@@ -489,19 +489,19 @@ class PkgCliBehaviorTests(unittest.TestCase):
             result.errors,
             [
                 "No downloaded upgrade is waiting to be installed. Run "
-                "'pkg upgrade download' first."
+                "'gupkg upgrade download' first."
             ],
         )
 
     def test_upgrade_install_rejects_a_receipt_older_than_an_installed_version(self) -> None:
         """Upgrade install does not replace a newer installed version."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ReceiptApp")
             newer_version = version_dir.parent / "v3.0.0.l1"
             newer_version.mkdir()
-            receipts = version_dir.parent / ".pkg" / "receipts"
+            receipts = version_dir.parent / ".gupkg" / "receipts"
             receipts.mkdir(parents=True)
             receipts.joinpath("v2.0.0.l1.toml").write_text(
                 "schemaVersion = 1\nversion = \"2.0.0\"\nlocalVersion = 1\n",
@@ -519,7 +519,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_module_zip_bootstrap_creates_populated_release_version(self) -> None:
         """Installing a module bootstrap stages and extracts its ZIP release."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "ModuleBootstrap"
@@ -594,7 +594,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_zip_payload_stages_a_direct_executable_release(self) -> None:
         """A ZIP-mode update installs an executable release without archive extraction."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "ExecutableBootstrap"
@@ -661,7 +661,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_github_zip_bootstrap_extracts_and_renames_configured_paths(self) -> None:
         """ZIP mappings select archive contents and rename the staged executable."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "GithubBootstrap"
@@ -764,7 +764,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_config_creates_documented_starter_file_when_missing(self) -> None:
         """Update config creates documented starter file when missing."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
@@ -774,18 +774,18 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            pkg_toml = version_dir / "pkg.toml"
-            self.assertTrue(pkg_toml.exists())
+            gupkg_toml = version_dir / "pkg.toml"
+            self.assertTrue(gupkg_toml.exists())
             self.assert_documented_starter_config(
-                pkg_toml.read_text(encoding="utf-8"),
+                gupkg_toml.read_text(encoding="utf-8"),
                 name="NoConfigApp",
                 version="0.9.0",
                 local_version=1,
             )
 
     def test_convert_legacy_action_writes_canonical_toml(self) -> None:
-        """Config from-legacy writes canonical TOML through the main pkg CLI."""
-        module = load_pkg_module()
+        """Config from-legacy writes canonical TOML through the main gupkg CLI."""
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "LegacyApp" / "v2.3.4.l5"
             version_dir.mkdir(parents=True)
@@ -817,7 +817,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_convert_legacy_dry_run_emits_only_parseable_toml(self) -> None:
         """Config from-legacy dry-run emits parseable TOML without writing output."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "DryLegacy" / "v1.0.0.l2"
             version_dir.mkdir(parents=True)
@@ -850,7 +850,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_config_default_path_uses_caller_current_directory(self) -> None:
         """Update config default path uses caller current directory."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "DotApp")
 
@@ -864,7 +864,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Update config uses the only version directory when current is missing."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
@@ -874,10 +874,10 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            pkg_toml = version_dir / "pkg.toml"
-            self.assertTrue(pkg_toml.exists())
+            gupkg_toml = version_dir / "pkg.toml"
+            self.assertTrue(gupkg_toml.exists())
             self.assert_documented_starter_config(
-                pkg_toml.read_text(encoding="utf-8"),
+                gupkg_toml.read_text(encoding="utf-8"),
                 name="NoConfigApp",
                 version="0.9.0",
                 local_version=1,
@@ -887,7 +887,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Update config rejects an ambiguous package root without current."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "AmbiguousApp"
             (package_root / "v1.0.0.l1").mkdir(parents=True)
@@ -902,7 +902,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_config_syncs_metadata_and_preserves_existing_content(self) -> None:
         """Update config syncs metadata and preserves existing content."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "MismatchApp")
             version_dir = package_root / "v2.0.0.l3"
@@ -912,8 +912,8 @@ class PkgCliBehaviorTests(unittest.TestCase):
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            pkg_toml = version_dir / "pkg.toml"
-            updated = pkg_toml.read_text(encoding="utf-8")
+            gupkg_toml = version_dir / "pkg.toml"
+            updated = gupkg_toml.read_text(encoding="utf-8")
             backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
             parsed = tomllib.loads(updated)
 
@@ -928,7 +928,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Update config syncs metadata without validating runtime entries."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "BrokenWriteApp", "v1.0.0.l2")
             self.write_config(
@@ -961,7 +961,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_config_preserves_hash_inside_quoted_metadata_string(self) -> None:
         """Update config preserves hash inside quoted metadata string."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "C#Tool")
             self.write_config(
@@ -991,7 +991,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Install without config uses defaults without writing or creating bin."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
@@ -1012,7 +1012,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Install uses the only version directory when current is missing."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
@@ -1038,7 +1038,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_install_rejects_legacy_config_aliases_with_actionable_error(self) -> None:
         """Install rejects legacy config aliases with actionable error."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "AliasApp")
             self.write_config(
@@ -1063,7 +1063,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_install_aborts_on_metadata_mismatch_before_mutations(self) -> None:
         """Install aborts on metadata mismatch before mutations."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "MismatchApp")
             version_dir = package_root / "v2.0.0.l3"
@@ -1081,7 +1081,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
             junction_mock.assert_not_called()
             components_mock.assert_not_called()
             self.assertIn("Configuration inconsistencies detected", output)
-            self.assertIn(f"pkg config update {version_dir}", output)
+            self.assertIn(f"gupkg config update {version_dir}", output)
             self.assertIn(
                 'name = "MismatchApp-OLD"',
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
@@ -1090,7 +1090,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_install_accepts_package_name_that_differs_only_by_case(self) -> None:
         """Package-directory and configured names compare case-insensitively."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "CaseSensitiveApp")
             self.write_config(
@@ -1119,7 +1119,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_update_config_uses_the_package_directory_name_case(self) -> None:
         """Config update writes the package directory's exact name spelling."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "CaseSensitiveApp")
             self.write_config(
@@ -1151,7 +1151,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
         for case, is_admin, only_portable, expected_scope in cases:
             with self.subTest(case=case):
-                module = load_pkg_module()
+                module = load_gupkg_module()
                 with tempfile.TemporaryDirectory() as tmpdir:
                     package_name = (
                         f"AutoScope-{case}-portable"
@@ -1192,7 +1192,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_shortcut_creation_failure_makes_install_fail(self) -> None:
         """Shortcut creation failure makes install fail."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ShortcutFailureApp")
             self.write_config(
@@ -1226,7 +1226,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Unresolved path variable makes install fail before registry write."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "BadPathApp")
             version_dir = package_root / "v1.0.0.l1"
@@ -1244,7 +1244,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Unresolved shortcut variable makes install fail before shortcut creation."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ShortcutApp")
             self.write_config(
@@ -1275,7 +1275,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_bin_name_outside_default_root_is_allowed_but_warned(self) -> None:
         """Bin name outside default root is allowed but warned."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "WarnBinApp")
             self.write_config(
@@ -1313,7 +1313,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_shortcut_name_outside_default_root_is_allowed_but_warned(self) -> None:
         """Shortcut name outside default root is allowed but warned."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "WarnShortcutApp")
             self.write_config(
@@ -1358,7 +1358,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
         self,
     ) -> None:
         """Bin wrapper content keeps shell variables and expands braced env."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "PwshScriptApp")
             self.write_config(
@@ -1408,7 +1408,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     ) -> None:
         """Command-form wrappers add fixed arguments and forward caller arguments."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "CommandBinApp")
             self.write_config(
@@ -1452,7 +1452,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_bin_content_rejects_command_form_options(self) -> None:
         """Custom wrapper content cannot be combined with generated-wrapper options."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ContentBinApp")
             self.write_config(
@@ -1479,7 +1479,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
 
     def test_install_updates_existing_wrapper_file(self) -> None:
         """Install updates existing wrapper file."""
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "WrapperRepairApp")
             env = self.user_env(tmpdir)
@@ -1529,7 +1529,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_install_rejects_top_level_download_url(self) -> None:
         """Install rejects the removed top-level downloadURL schema."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "OldDownloadApp")
             self.write_config(
@@ -1553,7 +1553,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     ) -> None:
         """Install downloads a zip origin into a missing App before installing components."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"tool/tool.exe": "payload"})
         checksum = hashlib.sha256(archive).hexdigest()
 
@@ -1599,7 +1599,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_install_skips_zip_origin_when_app_is_already_populated(self) -> None:
         """Install does not download origin when App already contains entries."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "SkipOriginApp")
             (version_dir / "App").mkdir()
@@ -1643,7 +1643,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_install_selects_versioned_origin_matching_package_version(self) -> None:
         """Install uses the versioned origin entry matching the package version."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"selected.exe": "selected"})
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1688,7 +1688,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_refresh_app_replaces_existing_app_from_zip_origin(self) -> None:
         """--refresh-app replaces existing App contents from a zip origin."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"new.exe": "new"})
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1734,7 +1734,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_install_fails_when_selected_origin_version_has_no_source(self) -> None:
         """Install fails only when an incomplete versioned origin is used."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "IncompleteCurrentOriginApp")
             self.write_config(
@@ -1761,7 +1761,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_checksum_mismatch_aborts_without_app_mutation(self) -> None:
         """Checksum mismatch fails before replacing an existing App directory."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"new.exe": "new"})
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1801,7 +1801,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_unsafe_zip_path_aborts_without_app_mutation(self) -> None:
         """Unsafe archive paths are rejected before App is replaced."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"../escape.exe": "bad"})
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1840,7 +1840,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_no_checksum_allows_install_with_warning(self) -> None:
         """--no-checksum skips configured checksum verification and warns."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         archive = self.zip_bytes({"tool.exe": "payload"})
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1883,7 +1883,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_script_origin_receives_payload_and_working_directory(self) -> None:
         """Script origin receives enriched JSON on stdin and runs from the script directory."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ScriptOriginApp")
             script_dir = version_dir / "scripts"
@@ -1941,7 +1941,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_accepts_valid_origin_history(self) -> None:
         """Config check validates origin history without downloading or installing."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "HealthyOriginApp")
             script_dir = version_dir / "scripts"
@@ -1977,7 +1977,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_accepts_origin_history_without_sources(self) -> None:
         """Config check accepts version-only origin history entries."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "VersionOnlyOriginApp")
             self.write_config(
@@ -2006,7 +2006,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_rejects_duplicate_origin_history_versions(self) -> None:
         """Config check reports duplicate versioned origin entries."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "DuplicateOriginApp")
             self.write_config(
@@ -2037,7 +2037,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_rejects_missing_package_version_origin_history(self) -> None:
         """Config check reports origin history that lacks the package version."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "MissingSelectedOriginApp")
             self.write_config(
@@ -2067,7 +2067,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_rejects_top_level_origin_version(self) -> None:
         """Config check rejects removed top-level [origin].version syntax."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "OldSelectorOriginApp")
             self.write_config(
@@ -2097,7 +2097,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_health_check_rejects_bad_origin_script_reference(self) -> None:
         """Config check reports package-local script reference problems."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "BadScriptOriginApp")
             self.write_config(
@@ -2123,7 +2123,7 @@ class PkgCliBehaviorTests(unittest.TestCase):
     def test_newer_current_skip_also_skips_origin_population(self) -> None:
         """A preserved newer current skips origin population and component install."""
 
-        module = load_pkg_module()
+        module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "NewerCurrentApp")
             self.write_config(

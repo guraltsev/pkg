@@ -1,6 +1,6 @@
 """Provide shared models, logging, version handling, expansion, and atomic I/O.
 
-The module contains dependency-light values and utilities used across the pkg
+The module contains dependency-light values and utilities used across the gupkg
 runtime. Filesystem writes use same-directory temporary files so replacements
 remain atomic on the destination volume.
 
@@ -47,7 +47,7 @@ class ConfigValidationError(ValueError):
 
 
 class Scope(Enum):
-    """Installation scope supported by ``pkg``.
+    """Installation scope supported by ``gupkg``.
 
     ``AUTO`` selects machine scope for administrators when the package permits
     it and user scope otherwise. ``USER`` targets per-user configuration
@@ -243,7 +243,7 @@ class _DynamicStdoutHandler(logging.Handler):
             self.handleError(record)
 
 
-_LOGGER = logging.getLogger("pkg.stdout")
+_LOGGER = logging.getLogger("gupkg.stdout")
 for _existing_handler in list(_LOGGER.handlers):
     _LOGGER.removeHandler(_existing_handler)
     try:
@@ -641,11 +641,11 @@ def expand_text(
 
     # Package variables intentionally resolve through ``<package>/current`` so
     # repair installs keep targeting the active package view.
-    pkg_base = identity.package_root / "current"
-    pkg_map = {
-        "App": str(pkg_base / "App"),
-        "Icons": str(pkg_base / "Icons"),
-        "Shortcuts": str(pkg_base / "Shortcuts"),
+    gupkg_base = identity.package_root / "current"
+    gupkg_map = {
+        "App": str(gupkg_base / "App"),
+        "Icons": str(gupkg_base / "Icons"),
+        "Shortcuts": str(gupkg_base / "Shortcuts"),
         "version": identity.version,
     }
     out: List[str] = []
@@ -671,8 +671,8 @@ def expand_text(
                 continue
             var_name = source[i + 2 : closing]
             token = source[i : closing + 1]
-            if var_name in pkg_map:
-                out.append(pkg_map[var_name])
+            if var_name in gupkg_map:
+                out.append(gupkg_map[var_name])
             elif var_name in os.environ:
                 out.append(os.environ[var_name])
             else:
@@ -687,8 +687,8 @@ def expand_text(
                 j += 1
             var_name = source[i + 1 : j]
             token = source[i:j]
-            if var_name in pkg_map:
-                out.append(pkg_map[var_name])
+            if var_name in gupkg_map:
+                out.append(gupkg_map[var_name])
             else:
                 out.append(token)
                 if mode == ExpansionMode.GENERAL:

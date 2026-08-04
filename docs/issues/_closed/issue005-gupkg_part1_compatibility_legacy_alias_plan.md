@@ -4,18 +4,18 @@
 
 Inspected:
 
-- `pkg.py`
-- `helper_scripts/legacy_to_pkg_toml.py`
-- `pkg.cmd`
+- `gupkg.py`
+- `helper_scripts/legacy_to_gupkg_toml.py`
+- `gupkg.cmd`
 - `README.md`
 - `docs/api.md`
 - `docs/configuration.md`
-- `tests/test_pkg_pure.py`
+- `tests/test_gupkg_pure.py`
 - `tests/test_quality.py`
 
 Excluded from the core inventory:
 
-- `.gitconfig/gitconfig.py` (repo-maintenance tooling, not `pkg` runtime behavior)
+- `.gitconfig/gitconfig.py` (repo-maintenance tooling, not `gupkg` runtime behavior)
 
 ## Executive summary
 
@@ -35,21 +35,21 @@ The highest-value simplification is to choose **one canonical `pkg.toml` schema*
 
 ## 1. Explicit alias code and old-shape config handling
 
-### In `pkg.py`
+### In `gupkg.py`
 
 The main alias machinery is concentrated in these definitions:
 
-- `TOP_LEVEL_CONFIG_KEY_ALIASES` - `pkg.py:2667-2686`
-- `MAIN_TABLE_KEY_ALIASES` - `pkg.py:2687-2699`
-- `ENVIRONMENT_KEY_ALIASES` - `pkg.py:2700`
-- `BIN_KEY_ALIASES` - `pkg.py:2701`
-- `SHORTCUT_KEY_ALIASES` - `pkg.py:2702-2716`
-- `PATH_ENTRY_KEY_ALIASES` - `pkg.py:2717`
-- `OWNED_METADATA_KEY_ALIASES` - `pkg.py:2720-2725`
-- `PackageMetadata._canonicalize_dict_keys()` - `pkg.py:3005-3037`
-- `PackageMetadata._canonicalize_config_dict()` - `pkg.py:3057-3169`
-- `_find_existing_metadata_key()` - `pkg.py:3419-3442`
-- `_sync_text_metadata()` alias-preserving regex replacement - `pkg.py:3482-3499`
+- `TOP_LEVEL_CONFIG_KEY_ALIASES` - `gupkg.py:2667-2686`
+- `MAIN_TABLE_KEY_ALIASES` - `gupkg.py:2687-2699`
+- `ENVIRONMENT_KEY_ALIASES` - `gupkg.py:2700`
+- `BIN_KEY_ALIASES` - `gupkg.py:2701`
+- `SHORTCUT_KEY_ALIASES` - `gupkg.py:2702-2716`
+- `PATH_ENTRY_KEY_ALIASES` - `gupkg.py:2717`
+- `OWNED_METADATA_KEY_ALIASES` - `gupkg.py:2720-2725`
+- `PackageMetadata._canonicalize_dict_keys()` - `gupkg.py:3005-3037`
+- `PackageMetadata._canonicalize_config_dict()` - `gupkg.py:3057-3169`
+- `_find_existing_metadata_key()` - `gupkg.py:3419-3442`
+- `_sync_text_metadata()` alias-preserving regex replacement - `gupkg.py:3482-3499`
 
 What these aliases support today:
 
@@ -61,7 +61,7 @@ What these aliases support today:
 
 ### Evidence that alias support is not just passive
 
-- The behavior is encoded in tests: `tests/test_pkg_pure.py:349-375` intentionally feeds an alias-heavy config and asserts that it normalizes successfully.
+- The behavior is encoded in tests: `tests/test_gupkg_pure.py:349-375` intentionally feeds an alias-heavy config and asserts that it normalizes successfully.
 - The documentation advertises alias support: `docs/configuration.md:40` and `docs/configuration.md:49`.
 
 ### Evidence that alias support is already causing real complexity / bugs
@@ -82,19 +82,19 @@ Duplicate keys differing only by case/alias in config: 'only_portable' and 'port
 
 That behavior comes directly from the alias machinery:
 
-- top-level map treats `portable` as `only_portable` - `pkg.py:2682-2684`
-- `[[main]]` map keeps `portable` as `portable` - `pkg.py:2696-2698`
-- normalization runs through `_canonicalize_config_dict()` and flattens `main` into the top level - `pkg.py:3074-3097`
-- `normalize_runtime_config()` canonicalizes twice - `pkg.py:2756-2761`
+- top-level map treats `portable` as `only_portable` - `gupkg.py:2682-2684`
+- `[[main]]` map keeps `portable` as `portable` - `gupkg.py:2696-2698`
+- normalization runs through `_canonicalize_config_dict()` and flattens `main` into the top level - `gupkg.py:3074-3097`
+- `normalize_runtime_config()` canonicalizes twice - `gupkg.py:2756-2761`
 
 So the alias system is not only complexity; it already creates contradictory state.
 
-### Associated alias code outside `pkg.py`
+### Associated alias code outside `gupkg.py`
 
-`helper_scripts/legacy_to_pkg_toml.py` carries a second alias-normalization surface:
+`helper_scripts/legacy_to_gupkg_toml.py` carries a second alias-normalization surface:
 
-- shortcut key aliases - `helper_scripts/legacy_to_pkg_toml.py:151-165`
-- top-level aliases - `helper_scripts/legacy_to_pkg_toml.py:283-296`
+- shortcut key aliases - `helper_scripts/legacy_to_gupkg_toml.py:151-165`
+- top-level aliases - `helper_scripts/legacy_to_gupkg_toml.py:283-296`
 
 This means the repo currently maintains **two separate alias systems**.
 
@@ -116,7 +116,7 @@ This means the repo currently maintains **two separate alias systems**.
    - Make metadata sync always write canonical key names.
 
 3. **Update every in-repo config, fixture, example, and test to canonical names only.**
-   - Remove alias-heavy test coverage from `tests/test_pkg_pure.py:349-375`.
+   - Remove alias-heavy test coverage from `tests/test_gupkg_pure.py:349-375`.
    - Update `docs/configuration.md` to remove alias claims.
 
 4. **Do not replace alias maps with a smaller alias map.**
@@ -130,18 +130,18 @@ The code still supports the old `[[main]]` wrapper shape even though the starter
 
 ### Where `[[main]]` is supported
 
-- top-level alias map includes `main` - `pkg.py:2685`
-- `PackageMetadata._canonicalize_config_dict()` flattens `main` into the top level - `pkg.py:3080-3097`
-- `is_metadata_only_config_text()` accepts an optional `[[main]]` wrapper - `pkg.py:3327-3349`
-- `locate_metadata_container()` explicitly searches for `main` - `pkg.py:3403-3416`
-- `_sync_text_metadata()` has `[[main]]` parsing logic - `pkg.py:3464-3480`
-- the legacy converter script emits `[[main]]` - `helper_scripts/legacy_to_pkg_toml.py:333-341`
+- top-level alias map includes `main` - `gupkg.py:2685`
+- `PackageMetadata._canonicalize_config_dict()` flattens `main` into the top level - `gupkg.py:3080-3097`
+- `is_metadata_only_config_text()` accepts an optional `[[main]]` wrapper - `gupkg.py:3327-3349`
+- `locate_metadata_container()` explicitly searches for `main` - `gupkg.py:3403-3416`
+- `_sync_text_metadata()` has `[[main]]` parsing logic - `gupkg.py:3464-3480`
+- the legacy converter script emits `[[main]]` - `helper_scripts/legacy_to_gupkg_toml.py:333-341`
 
 ### Why this is legacy, not a core feature
 
 `create_starter_config()` already writes canonical top-level metadata:
 
-- `pkg.py:3567-3578`
+- `gupkg.py:3567-3578`
 
 So the repo's own current output format no longer needs `[[main]]`.
 
@@ -150,7 +150,7 @@ So the repo's own current output format no longer needs `[[main]]`.
 1. Stop accepting `[[main]]` in the runtime parser.
 2. Stop special-casing `[[main]]` in `UpdateConfig`.
 3. Remove `locate_metadata_container()` and the `main`-related branches in `_sync_text_metadata()`.
-4. Delete the `[[main]]` output from `helper_scripts/legacy_to_pkg_toml.py` by deleting that script entirely (see legacy-script section below).
+4. Delete the `[[main]]` output from `helper_scripts/legacy_to_gupkg_toml.py` by deleting that script entirely (see legacy-script section below).
 5. Update any existing fixtures or user configs to top-level metadata before landing the cleanup.
 
 Once `[[main]]` is gone, a large chunk of config normalization and metadata-sync complexity disappears automatically.
@@ -163,7 +163,7 @@ The repo still supports plain `$VAR` environment expansion in general config fie
 
 ### Evidence
 
-- `expand_text()` explicitly supports plain `$VAR` in `ExpansionMode.GENERAL` - `pkg.py:897-980`, especially `pkg.py:905-907` and `pkg.py:959-975`
+- `expand_text()` explicitly supports plain `$VAR` in `ExpansionMode.GENERAL` - `gupkg.py:897-980`, especially `gupkg.py:905-907` and `gupkg.py:959-975`
 - `README.md:83-85` explicitly describes plain `$VAR` support as compatibility behavior
 - `docs/configuration.md:87-90` documents the same split between `${VAR}` and plain `$VAR`
 
@@ -194,11 +194,11 @@ This is a small but meaningful simplification because it reduces parser ambiguit
 
 Relevant code:
 
-- `VariableExpander` - `pkg.py:460-506`
+- `VariableExpander` - `gupkg.py:460-506`
 
 Evidence:
 
-- the class docstring explicitly says it is a compatibility wrapper around `expand_text()` - `pkg.py:460-464`
+- the class docstring explicitly says it is a compatibility wrapper around `expand_text()` - `gupkg.py:460-464`
 - repo-wide search found no in-repo call sites beyond its own definition and API documentation
 
 Plan:
@@ -219,26 +219,26 @@ This is the biggest internal simplification target.
 
 ### The current compatibility/facade layer
 
-- `PackageMetadata` explicitly calls itself a "Compatibility facade" - `pkg.py:2953-2954`
-- `PackageMetadata.__init__()` duplicates identity data into many separate fields - `pkg.py:2966-2989`
-- `PackageMetadata.load_config()` stores `runtime_config` but also explodes it back into dict/list shadows - `pkg.py:3181-3200`
-- `package_config_to_dict()` converts `PackageConfig` back into a plain dict - `pkg.py:2830-2863`
-- `read_runtime_config()` returns both a typed runtime model and a raw dict, and synthesizes a raw dict from defaults when no file exists - `pkg.py:2902-2950`
+- `PackageMetadata` explicitly calls itself a "Compatibility facade" - `gupkg.py:2953-2954`
+- `PackageMetadata.__init__()` duplicates identity data into many separate fields - `gupkg.py:2966-2989`
+- `PackageMetadata.load_config()` stores `runtime_config` but also explodes it back into dict/list shadows - `gupkg.py:3181-3200`
+- `package_config_to_dict()` converts `PackageConfig` back into a plain dict - `gupkg.py:2830-2863`
+- `read_runtime_config()` returns both a typed runtime model and a raw dict, and synthesizes a raw dict from defaults when no file exists - `gupkg.py:2902-2950`
 
 The compatibility shadows are then consumed by the install pipeline:
 
-- `ShortcutInstaller._prepare_shortcut()` rebuilds a `ShortcutSpec` from `metadata.shortcut` dicts - `pkg.py:1871-1893`
-- `EnvironmentVariableManager.install_environment_variables()` consumes `metadata.environment` dicts - `pkg.py:2074-2098`
-- `PATHManager.add_to_path()` is fed `metadata.path` list shadows through `install_extra_path_entries_step()` - `pkg.py:2481-2494`
-- `BinFileCreator.create_wrapper()` consumes `metadata.bin` dicts - `pkg.py:2329-2398` and `pkg.py:2401-2425`
+- `ShortcutInstaller._prepare_shortcut()` rebuilds a `ShortcutSpec` from `metadata.shortcut` dicts - `gupkg.py:1871-1893`
+- `EnvironmentVariableManager.install_environment_variables()` consumes `metadata.environment` dicts - `gupkg.py:2074-2098`
+- `PATHManager.add_to_path()` is fed `metadata.path` list shadows through `install_extra_path_entries_step()` - `gupkg.py:2481-2494`
+- `BinFileCreator.create_wrapper()` consumes `metadata.bin` dicts - `gupkg.py:2329-2398` and `gupkg.py:2401-2425`
 
 ### Evidence that this is compatibility churn, not necessary domain modeling
 
-- `package_config_to_dict()` has only one in-repo call site: `pkg.py:2948`.
-- `PackageMetadata.load_config()` immediately converts the typed runtime config back into dict/list shadows - `pkg.py:3181-3200`.
+- `package_config_to_dict()` has only one in-repo call site: `gupkg.py:2948`.
+- `PackageMetadata.load_config()` immediately converts the typed runtime config back into dict/list shadows - `gupkg.py:3181-3200`.
 - Tests still use those shadow surfaces directly:
-  - `tests/test_pkg_pure.py:471` accesses `metadata.bin[0]["content"]`
-  - `tests/test_pkg_pure.py:502` assigns `metadata.shortcut = [...]`
+  - `tests/test_gupkg_pure.py:471` accesses `metadata.bin[0]["content"]`
+  - `tests/test_gupkg_pure.py:502` assigns `metadata.shortcut = [...]`
 
 ### What should remain after cleanup
 
@@ -288,8 +288,8 @@ This is temporary code for a recent regression, not a permanent product feature.
 
 Evidence:
 
-- `is_metadata_only_config_text()` says it only exists to identify a recent regression - `pkg.py:3315-3360`
-- `PackageMetadata.update_config()` has a dedicated branch that upgrades metadata-only files to a starter template - `pkg.py:3221-3233`
+- `is_metadata_only_config_text()` says it only exists to identify a recent regression - `gupkg.py:3315-3360`
+- `PackageMetadata.update_config()` has a dedicated branch that upgrades metadata-only files to a starter template - `gupkg.py:3221-3233`
 
 ### Plan
 
@@ -304,7 +304,7 @@ Evidence:
 
 Evidence:
 
-- `PackageMetadata.update_config()` still deletes `pkg.json` as a legacy format - `pkg.py:3218` and `pkg.py:3251-3258`
+- `PackageMetadata.update_config()` still deletes `pkg.json` as a legacy format - `gupkg.py:3218` and `gupkg.py:3251-3258`
 
 ### Plan
 
@@ -314,22 +314,22 @@ Evidence:
 
 ### 6.3 Legacy JSON conversion script
 
-`helper_scripts/legacy_to_pkg_toml.py` is legacy from top to bottom.
+`helper_scripts/legacy_to_gupkg_toml.py` is legacy from top to bottom.
 
 Evidence:
 
-- file docstring explicitly says it converts legacy package config files - `helper_scripts/legacy_to_pkg_toml.py:1-5`
-- it scans for legacy JSON files by name and prefix - `helper_scripts/legacy_to_pkg_toml.py:99-137`
-- it rewrites legacy shortcut keys - `helper_scripts/legacy_to_pkg_toml.py:140-179`
-- it rewrites legacy package-variable spellings - `helper_scripts/legacy_to_pkg_toml.py:206-232`
-- it reads `opt_pkg.json` and related JSON files - `helper_scripts/legacy_to_pkg_toml.py:279-310`
-- it still emits `[[main]]` - `helper_scripts/legacy_to_pkg_toml.py:333-341`
+- file docstring explicitly says it converts legacy package config files - `helper_scripts/legacy_to_gupkg_toml.py:1-5`
+- it scans for legacy JSON files by name and prefix - `helper_scripts/legacy_to_gupkg_toml.py:99-137`
+- it rewrites legacy shortcut keys - `helper_scripts/legacy_to_gupkg_toml.py:140-179`
+- it rewrites legacy package-variable spellings - `helper_scripts/legacy_to_gupkg_toml.py:206-232`
+- it reads `opt_pkg.json` and related JSON files - `helper_scripts/legacy_to_gupkg_toml.py:279-310`
+- it still emits `[[main]]` - `helper_scripts/legacy_to_gupkg_toml.py:333-341`
 
 ### Plan
 
-1. Delete `helper_scripts/legacy_to_pkg_toml.py`.
+1. Delete `helper_scripts/legacy_to_gupkg_toml.py`.
 2. Remove any docs or tests that mention it. Repo-wide search found no production callers; the only in-repo reference is from `tests/test_quality.py:11-14`.
-3. Do not replace it with a smaller converter inside `pkg.py`; that would reintroduce the same problem.
+3. Do not replace it with a smaller converter inside `gupkg.py`; that would reintroduce the same problem.
 
 ---
 
@@ -339,19 +339,19 @@ Evidence:
 
 Relevant code:
 
-- `TomlReader` - `pkg.py:102-111`
-- `RoundTripBackend` - `pkg.py:115-125`
-- `TextConfigDocument` fallback wrapper - `pkg.py:129-150`
-- `try_import()` - `pkg.py:509-523`
-- `load_toml_reader()` - `pkg.py:694-719`
-- `load_roundtrip_toml_backend(require)` - `pkg.py:722-739`
-- `load_config_document()` - `pkg.py:3363-3387`
-- `sync_document_metadata()` fallback split - `pkg.py:3513-3534`
+- `TomlReader` - `gupkg.py:102-111`
+- `RoundTripBackend` - `gupkg.py:115-125`
+- `TextConfigDocument` fallback wrapper - `gupkg.py:129-150`
+- `try_import()` - `gupkg.py:509-523`
+- `load_toml_reader()` - `gupkg.py:694-719`
+- `load_roundtrip_toml_backend(require)` - `gupkg.py:722-739`
+- `load_config_document()` - `gupkg.py:3363-3387`
+- `sync_document_metadata()` fallback split - `gupkg.py:3513-3534`
 
 Why this belongs in the inventory:
 
-- `TextConfigDocument` explicitly says it keeps the interface compatible with `tomlkit`'s `as_string()` API - `pkg.py:132-135`
-- `load_roundtrip_toml_backend()` explicitly says `require` is a retained compatibility parameter - `pkg.py:725-728`
+- `TextConfigDocument` explicitly says it keeps the interface compatible with `tomlkit`'s `as_string()` API - `gupkg.py:132-135`
+- `load_roundtrip_toml_backend()` explicitly says `require` is a retained compatibility parameter - `gupkg.py:725-728`
 
 ### Plan
 
@@ -375,14 +375,14 @@ If you do **not** want a `tomlkit` dependency, the other simple choice is even m
 
 Relevant code:
 
-- `get_win32com_client()` - `pkg.py:998-1006`
-- `get_shortcut_backend()` - `pkg.py:1024-1031`
-- `create_shortcut_with_pywin32()` - `pkg.py:1065-1087`
-- `create_shortcut_with_powershell()` - `pkg.py:1090-1119`
-- `create_shortcut()` - `pkg.py:1122-1142`
-- `ShortcutInstaller._create_shortcut_with_pywin32()` - `pkg.py:1896-1918`
-- `ShortcutInstaller._create_shortcut_with_powershell()` - `pkg.py:1921-1943`
-- backend selection warning - `pkg.py:1995-1999`
+- `get_win32com_client()` - `gupkg.py:998-1006`
+- `get_shortcut_backend()` - `gupkg.py:1024-1031`
+- `create_shortcut_with_pywin32()` - `gupkg.py:1065-1087`
+- `create_shortcut_with_powershell()` - `gupkg.py:1090-1119`
+- `create_shortcut()` - `gupkg.py:1122-1142`
+- `ShortcutInstaller._create_shortcut_with_pywin32()` - `gupkg.py:1896-1918`
+- `ShortcutInstaller._create_shortcut_with_powershell()` - `gupkg.py:1921-1943`
+- backend selection warning - `gupkg.py:1995-1999`
 
 ### Plan
 
@@ -407,11 +407,11 @@ If your environment strongly prefers `pywin32`, then make `pywin32` required and
 
 Relevant code:
 
-- `WindowsPlatform` - `pkg.py:2524-2578`
-- `DEFAULT_PLATFORM` - `pkg.py:2581`
-- top-level `pause_if_requested()` wrapper - `pkg.py:2584-2591`
-- optional `platform` injection in `PackageMetadata.__init__()` - `pkg.py:2956-2963`
-- optional `platform` injection in `PackageManager.__init__()` - `pkg.py:3626-3644`
+- `WindowsPlatform` - `gupkg.py:2524-2578`
+- `DEFAULT_PLATFORM` - `gupkg.py:2581`
+- top-level `pause_if_requested()` wrapper - `gupkg.py:2584-2591`
+- optional `platform` injection in `PackageMetadata.__init__()` - `gupkg.py:2956-2963`
+- optional `platform` injection in `PackageManager.__init__()` - `gupkg.py:3626-3644`
 
 Why this is near-compatibility rather than core logic:
 
@@ -430,36 +430,36 @@ Why this is near-compatibility rather than core logic:
 
 Relevant code:
 
-- deprecated constructor flag `no_autoupdate_config` - `pkg.py:3626-3656`
-- CLI flag `--no-autoupdate-config` - `pkg.py:4017-4021`
-- hidden `--python` arg - `pkg.py:3990-3994`
+- deprecated constructor flag `no_autoupdate_config` - `gupkg.py:3626-3656`
+- CLI flag `--no-autoupdate-config` - `gupkg.py:4017-4021`
+- hidden `--python` arg - `gupkg.py:3990-3994`
 
 Evidence:
 
-- `PackageManager.__init__()` explicitly labels `no_autoupdate_config` deprecated compatibility - `pkg.py:3641-3642`
-- `--python` is hidden and otherwise unused inside `pkg.py`; it exists to tolerate wrapper forwarding
+- `PackageManager.__init__()` explicitly labels `no_autoupdate_config` deprecated compatibility - `gupkg.py:3641-3642`
+- `--python` is hidden and otherwise unused inside `gupkg.py`; it exists to tolerate wrapper forwarding
 
 Note (superseded by later cleanup): the repo now treats hidden `--python` as an
-intentional bootstrap contract with `pkg.cmd`, not as disposable legacy
+intentional bootstrap contract with `gupkg.cmd`, not as disposable legacy
 compatibility.
 
 ### Plan
 
 1. Delete `no_autoupdate_config` from the constructor.
 2. Delete `--no-autoupdate-config` from the CLI.
-3. Decide whether `pkg.cmd` should keep interpreter-override compatibility. If not, delete hidden `--python` from `pkg.py` too.
+3. Decide whether `gupkg.cmd` should keep interpreter-override compatibility. If not, delete hidden `--python` from `gupkg.py` too.
 
 ### 8.3 Wrapper-side interpreter-selection compatibility
 
 Relevant repo-level code:
 
-- `pkg.cmd` interpreter override and fallback chain - `pkg.cmd:7-12` and `pkg.cmd:29-57`
+- `gupkg.cmd` interpreter override and fallback chain - `gupkg.cmd:7-12` and `gupkg.cmd:29-57`
 
 This is not the core Python package manager, but it is still compatibility logic in the repo.
 
 ### Plan
 
-If you want the repo itself to be simpler, collapse `pkg.cmd` to one straightforward interpreter strategy and remove the wrapper-side override matrix. If you keep it, strip wrapper-only args before invoking `pkg.py` so the Python CLI does not have to carry hidden passthrough flags.
+If you want the repo itself to be simpler, collapse `gupkg.cmd` to one straightforward interpreter strategy and remove the wrapper-side override matrix. If you keep it, strip wrapper-only args before invoking `gupkg.py` so the Python CLI does not have to carry hidden passthrough flags.
 
 ---
 
@@ -474,8 +474,8 @@ These are not the primary target of Part 1, but they are part of the compatibili
 - `docs/configuration.md:40` and `docs/configuration.md:49` - alias and case-insensitive key claims
 - `README.md:83-85` - plain `$VAR` compatibility claim
 - `README.md:114-115` - `tomlkit` fallback claim
-- `tests/test_pkg_pure.py:349-375` - alias support test
-- `tests/test_pkg_pure.py:471` and `tests/test_pkg_pure.py:502` - tests tied to dict-shadow compatibility surfaces
+- `tests/test_gupkg_pure.py:349-375` - alias support test
+- `tests/test_gupkg_pure.py:471` and `tests/test_gupkg_pure.py:502` - tests tied to dict-shadow compatibility surfaces
 
 ---
 
@@ -492,37 +492,37 @@ These are not the primary target of Part 1, but they are part of the compatibili
 
 Touch:
 
-- `pkg.py:2667-3169`
-- `pkg.py:3315-3534`
+- `gupkg.py:2667-3169`
+- `gupkg.py:3315-3534`
 - `docs/configuration.md`
-- `tests/test_pkg_pure.py` alias tests
+- `tests/test_gupkg_pure.py` alias tests
 
 ### Phase 3 - Collapse runtime representations
 
 Touch:
 
-- `pkg.py:2728-2950`
-- `pkg.py:2953-3201`
-- install managers in `pkg.py:1871-2425`
+- `gupkg.py:2728-2950`
+- `gupkg.py:2953-3201`
+- install managers in `gupkg.py:1871-2425`
 - tests that currently poke dict shadows
 
 ### Phase 4 - Remove transitional legacy code
 
 Touch:
 
-- `pkg.py:3203-3262`
-- `pkg.py:3315-3360`
-- delete `helper_scripts/legacy_to_pkg_toml.py`
+- `gupkg.py:3203-3262`
+- `gupkg.py:3315-3360`
+- delete `helper_scripts/legacy_to_gupkg_toml.py`
 
 ### Phase 5 - Remove optional-backend and facade compatibility
 
 Touch:
 
-- TOML loader/update path in `pkg.py:102-150`, `pkg.py:509-523`, `pkg.py:694-739`, `pkg.py:3363-3534`
-- shortcut backend path in `pkg.py:998-1142`, `pkg.py:1896-1999`
-- platform facade path in `pkg.py:2524-2591`, `pkg.py:2956-2963`, `pkg.py:3626-3644`
-- CLI args in `pkg.py:3990-4021`
-- optionally simplify `pkg.cmd`
+- TOML loader/update path in `gupkg.py:102-150`, `gupkg.py:509-523`, `gupkg.py:694-739`, `gupkg.py:3363-3534`
+- shortcut backend path in `gupkg.py:998-1142`, `gupkg.py:1896-1999`
+- platform facade path in `gupkg.py:2524-2591`, `gupkg.py:2956-2963`, `gupkg.py:3626-3644`
+- CLI args in `gupkg.py:3990-4021`
+- optionally simplify `gupkg.cmd`
 
 ---
 

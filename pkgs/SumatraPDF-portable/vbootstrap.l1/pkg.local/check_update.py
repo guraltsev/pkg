@@ -78,7 +78,7 @@ def check_update(context: dict[str, Any]) -> dict[str, Any] | None:
     # Ask the publisher's static download page for the canonical release link
     # instead of constructing a version from an unrelated release feed.
     request = urllib.request.Request(
-        _DOWNLOAD_PAGE, headers={"User-Agent": "pkg-sumatrapdf-update-check/1"}
+        _DOWNLOAD_PAGE, headers={"User-Agent": "gupkg-sumatrapdf-update-check/1"}
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

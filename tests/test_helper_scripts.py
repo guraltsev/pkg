@@ -23,14 +23,14 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-PKG_PY = SRC_ROOT / "pkg" / "pkg.py"
-LEGACY_CONVERTER = SRC_ROOT / "pkg" / "legacy_to_pkg_toml.py"
-SHORTCUT_IMPORTER = SRC_ROOT / "pkg" / "shortcuts_to_pkg_toml.py"
+GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
+LEGACY_CONVERTER = SRC_ROOT / "gupkg" / "legacy_to_gupkg_toml.py"
+SHORTCUT_IMPORTER = SRC_ROOT / "gupkg" / "shortcuts_to_gupkg_toml.py"
 EXAMPLES_ROOT = ROOT / "tests" / "fixtures" / "legacy_examples"
 
 
-def load_pkg_module():
-    spec = importlib.util.spec_from_file_location("pkg_under_test_helper", PKG_PY)
+def load_gupkg_module():
+    spec = importlib.util.spec_from_file_location("gupkg_under_test_helper", GUPKG_PY)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -43,7 +43,7 @@ def load_pkg_module():
 
 def load_shortcut_importer_module():
     spec = importlib.util.spec_from_file_location(
-        "shortcuts_to_pkg_toml_under_test", SHORTCUT_IMPORTER
+        "shortcuts_to_gupkg_toml_under_test", SHORTCUT_IMPORTER
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -79,9 +79,9 @@ class LegacyConverterTests(unittest.TestCase):
         self.assertIsInstance(code, int)
         return code, stdout.getvalue()
 
-    def test_converter_writes_canonical_toml_that_pkg_accepts(self) -> None:
-        """Converter writes canonical toml that pkg accepts."""
-        module = load_pkg_module()
+    def test_converter_writes_canonical_toml_that_gupkg_accepts(self) -> None:
+        """Converter writes canonical toml that gupkg accepts."""
+        module = load_gupkg_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "GoodApp" / "v1.2.3.l1"
@@ -119,15 +119,15 @@ class LegacyConverterTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            pkg_toml = version_dir / "pkg.toml"
+            gupkg_toml = version_dir / "pkg.toml"
             result = self.run_converter(
-                "--dir", str(version_dir), "--output", str(pkg_toml)
+                "--dir", str(version_dir), "--output", str(gupkg_toml)
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-            self.assertTrue(pkg_toml.exists())
+            self.assertTrue(gupkg_toml.exists())
 
-            rendered = pkg_toml.read_text(encoding="utf-8")
+            rendered = gupkg_toml.read_text(encoding="utf-8")
             parsed = tomllib.loads(rendered)
             self.assertNotIn("[[main]]", rendered)
             self.assertEqual(parsed["localVersion"], 1)
@@ -272,14 +272,14 @@ class LegacyConverterTests(unittest.TestCase):
                 json.dumps({"name": "BackupApp", "version": "1.0.0"}),
                 encoding="utf-8",
             )
-            pkg_toml = Path(tmpdir) / "pkg.toml"
+            gupkg_toml = Path(tmpdir) / "pkg.toml"
             original = '# Retain this migration result.\nname = "Previous App"\n'
-            pkg_toml.write_text(original, encoding="utf-8")
-            first_backup = Path(str(pkg_toml) + ".bak")
+            gupkg_toml.write_text(original, encoding="utf-8")
+            first_backup = Path(str(gupkg_toml) + ".bak")
             first_backup.write_text("# Older backup.\n", encoding="utf-8")
 
             result = self.run_converter(
-                "--dir", str(version_dir), "--output", str(pkg_toml)
+                "--dir", str(version_dir), "--output", str(gupkg_toml)
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
@@ -287,17 +287,17 @@ class LegacyConverterTests(unittest.TestCase):
                 first_backup.read_text(encoding="utf-8"), "# Older backup.\n"
             )
             self.assertEqual(
-                Path(str(pkg_toml) + ".bak.1").read_text(encoding="utf-8"), original
+                Path(str(gupkg_toml) + ".bak.1").read_text(encoding="utf-8"), original
             )
             self.assertEqual(
-                tomllib.loads(pkg_toml.read_text(encoding="utf-8"))["name"], "BackupApp"
+                tomllib.loads(gupkg_toml.read_text(encoding="utf-8"))["name"], "BackupApp"
             )
-            self.assertIn(f"Backed up {pkg_toml} to {pkg_toml}.bak.1", result.stdout)
+            self.assertIn(f"Backed up {gupkg_toml} to {gupkg_toml}.bak.1", result.stdout)
 
-    def test_converter_rewrites_legacy_pkg_toml_aliases_to_canonical_schema(
+    def test_converter_rewrites_legacy_gupkg_toml_aliases_to_canonical_schema(
         self,
     ) -> None:
-        """Converter rewrites legacy pkg toml aliases to canonical schema."""
+        """Converter rewrites legacy gupkg toml aliases to canonical schema."""
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "AliasApp" / "v3.4.5.l2"
             version_dir.mkdir(parents=True)

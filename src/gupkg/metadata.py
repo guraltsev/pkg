@@ -40,7 +40,7 @@ def update_config_file(identity: PackageIdentity) -> StepResult:
     intentionally works from explicit inputs only: one package identity and the
     current file contents on disk. Missing configs become documented starter
     templates; existing configs are rewritten only when they already use the
-    canonical top-level metadata keys that ``pkg`` owns.
+    canonical top-level metadata keys that ``gupkg`` owns.
 
     Parameters
     ----------
@@ -99,7 +99,7 @@ def _to_toml_scalar(value: Any) -> str:
 
 
 def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
-    """Return the directory-derived metadata owned by ``pkg``.
+    """Return the directory-derived metadata owned by ``gupkg``.
 
     Parameters
     ----------
@@ -109,7 +109,7 @@ def metadata_sync_payload(identity: PackageIdentity) -> Dict[str, Any]:
     Returns
     -------
     Dict[str, Any]
-        Dictionary containing only metadata fields that ``pkg`` owns.
+        Dictionary containing only metadata fields that ``gupkg`` owns.
 
     """
     return {
@@ -404,9 +404,9 @@ def create_starter_config(identity: PackageIdentity) -> str:
     example_wrapper_command = f'"{example_exe_path}" %*'
 
     lines = [
-        "# Generated automatically by `pkg`.",
+        "# Generated automatically by `gupkg`.",
         "",
-        "# `pkg config update` keeps these fields aligned with the package folder name.",
+        "# `gupkg config update` keeps these fields aligned with the package folder name.",
         f"name = {_to_toml_scalar(metadata['name'])}",
         f"version = {_to_toml_scalar(metadata['version'])}",
         f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
@@ -458,8 +458,8 @@ def create_starter_config(identity: PackageIdentity) -> str:
         '# url = "https://example.invalid/tool-current.zip"',
         "",
         "# Update examples:",
-        "# Use `pkg upgrade check`, `pkg upgrade download`, and",
-        "# `pkg upgrade install` to update explicitly.",
+        "# Use `gupkg upgrade check`, `gupkg upgrade download`, and",
+        "# `gupkg upgrade install` to update explicitly.",
         "#",
         "# Git origin workflow (App is a Git work tree). The update check",
         "# inherits Git mode and ref from [origin]. The ordinary git payload",

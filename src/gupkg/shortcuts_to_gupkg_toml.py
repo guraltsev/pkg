@@ -193,7 +193,7 @@ def main() -> int:
 # ------------------------------------------
 #
 # Python's standard library cannot parse Shell Link files. On Windows, WScript
-# exposes the fields that ``pkg`` needs and keeps this helper dependency-free.
+# exposes the fields that ``gupkg`` needs and keeps this helper dependency-free.
 
 
 def read_shortcut_directory(
@@ -272,7 +272,7 @@ $shortcut = $shell.CreateShortcut([string]$inputObject.ShortcutPath)
 #
 # The importer sees fully expanded absolute paths, current-junction paths, and
 # known package-variable spellings. Convert only package-owned paths back to
-# pkg variables and leave external paths alone.
+# gupkg variables and leave external paths alone.
 
 
 def package_path_context(base_dir: Path) -> list[tuple[Path, str]]:
@@ -343,10 +343,10 @@ def normalize_known_package_variables(value: str) -> str:
         (r"\$AppPath[\\/]+App(?=[\\/]+|$)", "$App"),
         (r"\$AppPath[\\/]+Icons(?=[\\/]+|$)", "$Icons"),
         (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
-        (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
-        (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
+        (r"\$(?:Gupkg_App_Path|GupkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
+        (r"\$(?:Gupkg_Icons_Path|GupkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
         (
-            r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
+            r"\$(?:Gupkg_Shortcuts_Path|GupkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
             "$Shortcuts",
         ),
         (r"\$AppPath(?=[\\/]+|$)", "$App"),

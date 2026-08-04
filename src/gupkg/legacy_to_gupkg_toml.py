@@ -207,10 +207,10 @@ def normalize_legacy_variable_path(value: str) -> str:
         (r"\$AppPath[\\/]+App(?=[\\/]+|$)", "$App"),
         (r"\$AppPath[\\/]+Icons(?=[\\/]+|$)", "$Icons"),
         (r"\$AppPath[\\/]+Shortcuts(?=[\\/]+|$)", "$Shortcuts"),
-        (r"\$(?:Pkg_App_Path|PkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
-        (r"\$(?:Pkg_Icons_Path|PkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
+        (r"\$(?:Gupkg_App_Path|GupkgAppPath|Package_App_Path)(?=[\\/]+|$)", "$App"),
+        (r"\$(?:Gupkg_Icons_Path|GupkgIconsPath|Package_Icons_Path)(?=[\\/]+|$)", "$Icons"),
         (
-            r"\$(?:Pkg_Shortcuts_Path|PkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
+            r"\$(?:Gupkg_Shortcuts_Path|GupkgShortcutsPath|Package_Shortcuts_Path)(?=[\\/]+|$)",
             "$Shortcuts",
         ),
         (r"\$AppPath(?=[\\/]+|$)", "$App"),
@@ -584,7 +584,7 @@ def build_config(base_dir: Path) -> dict[str, Any]:
     return out
 
 
-def render_pkg_toml(cfg: dict[str, Any]) -> str:
+def render_gupkg_toml(cfg: dict[str, Any]) -> str:
     """Render canonical ``pkg.toml`` text for a config dictionary."""
 
     lines = [
@@ -676,10 +676,10 @@ def render_pkg_toml(cfg: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_pkg_toml(path: Path, cfg: dict[str, Any]) -> None:
+def write_gupkg_toml(path: Path, cfg: dict[str, Any]) -> None:
     """Write canonical ``pkg.toml`` text to *path*."""
 
-    path.write_text(render_pkg_toml(cfg), encoding="utf-8")
+    path.write_text(render_gupkg_toml(cfg), encoding="utf-8")
 
 
 def convert_legacy_directory(
@@ -714,7 +714,7 @@ def convert_legacy_directory(
     # destination, so malformed inputs cannot leave partial output.
     cfg = build_config(base_dir)
     if dry_run:
-        print(render_pkg_toml(cfg), end="")
+        print(render_gupkg_toml(cfg), end="")
         return False
 
     # Preserve every previous conversion result under a numbered backup rather
@@ -730,7 +730,7 @@ def convert_legacy_directory(
         shutil.copy2(output_path, backup_path)
         print(f"Backed up {output_path} to {backup_path}")
 
-    write_pkg_toml(output_path, cfg)
+    write_gupkg_toml(output_path, cfg)
     print(f"Wrote {output_path}")
     return True
 

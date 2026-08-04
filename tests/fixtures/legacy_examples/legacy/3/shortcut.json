@@ -2,7 +2,7 @@
     "shortcut": [
         {
             "Name": "Git bash.lnk",
-            "TargetPath": "$Pkg_App_Path\\git-bash.exe",
+            "TargetPath": "$Gupkg_App_Path\\git-bash.exe",
 			"Arguments": "",
             "WorkingDirectory": "",
             "IconLocation": "",
