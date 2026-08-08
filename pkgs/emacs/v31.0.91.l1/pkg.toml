@@ -1,0 +1,41 @@
+name = "emacs"
+version = "31.0.91"
+localVersion = 1
+only_portable = false
+description = "An extensible, customizable, free/libre text editor — and more."
+homepage = "https://www.gnu.org/software/emacs/"
+
+[origin]
+url = "https://alpha.gnu.org/gnu/emacs/pretest/windows/emacs-31/emacs-31.0.91-ucrt64.zip"
+
+[[shortcut]]
+name = "Emacs"
+targetPath = "$App\\bin\\runemacs.exe"
+workingDirectory = "%USERPROFILE%"
+description = "Emacs text editor"
+
+[[shortcut]]
+name = "Emacs (debug init)"
+targetPath = "$App\\bin\\runemacs.exe"
+arguments = "--debug-init"
+workingDirectory = "%USERPROFILE%"
+description = "Emacs text editor (debug)"
+
+[[shortcut]]
+name = "Emacs client"
+targetPath = "$App\\bin\\emacsclientw.exe"
+arguments = "-c -n -a \"\""
+workingDirectory = "%USERPROFILE%"
+description = "Emacs text editor (client)"
+
+[[bin]]
+name = "emacs.cmd"
+content = "@ $App\\bin\\emacs.exe %*"
+
+[[bin]]
+name = "emacsclient.cmd"
+content = "@ $App\\bin\\emacsclient.exe %*"
+
+[[bin]]
+name = "emacsclientw.cmd"
+content = "@ $App\\bin\\emacsclientw.exe %*"
