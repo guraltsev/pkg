@@ -80,6 +80,62 @@ call "$App\src\lt_syntax_regularizer.cmd" %*
 '''
 
 [[bin]]
+name = "mdt_brace_args.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_brace_args.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_full_normalize.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_full_normalize.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_greek_latex2unicode.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_greek_latex2unicode.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_greek_unicode2latex.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_greek_unicode2latex.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_math_dollar2latex.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_math_dollar2latex.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_math_latex2dollar.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_math_latex2dollar.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_sentence_per_line.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_sentence_per_line.cmd" %*
+'''
+
+[[bin]]
+name = "mdt_syntax_regularizer.cmd"
+content = '''
+@echo off
+call "$App\src\mdt_syntax_regularizer.cmd" %*
+'''
+
+[[bin]]
 name = "lt_template.cmd"
 content = '''
 @echo off
