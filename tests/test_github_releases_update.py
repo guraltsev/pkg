@@ -125,6 +125,26 @@ def test_latest_release_expands_version_in_asset_name() -> None:
     assert candidate["fileName"] == "backrest-1.13.0-windows-x86_64.zip"
 
 
+def test_latest_release_strips_a_configured_tag_prefix() -> None:
+    """A publisher tag namespace does not become part of the package version."""
+    context = {
+        "url": "https://github.com/garethgeorge/backrest",
+        "assetName": "backrest_Windows_x86_64.zip",
+        "tagPrefix": "release/",
+        "current": {"version": "1.12.1"},
+    }
+
+    with mock.patch.object(
+        github_releases.urllib.request,
+        "urlopen",
+        return_value=release_response(tag="release/v1.13.0"),
+    ):
+        candidate = github_releases.check_update(context)
+
+    assert candidate is not None
+    assert candidate["version"] == "1.13.0"
+
+
 def test_missing_named_asset_fails_clearly() -> None:
     """A release without the configured asset reports the exact missing name."""
     context = {
@@ -159,6 +179,7 @@ def test_github_check_uses_origin_url_and_requires_asset_name(tmp_path) -> None:
             "check": {
                 "mode": "github",
                 "assetName": "tool_Windows_x86_64.zip",
+                "tagPrefix": "release/",
             },
             "payload": {"mode": "zip"},
         },
@@ -170,6 +191,7 @@ def test_github_check_uses_origin_url_and_requires_asset_name(tmp_path) -> None:
         "mode": "github",
         "url": "https://github.com/owner/tool",
         "assetName": "tool_Windows_x86_64.zip",
+        "tagPrefix": "release/",
     }
     del config["update"]["check"]["assetName"]
     with pytest.raises(ConfigValidationError, match="assetName"):

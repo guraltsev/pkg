@@ -430,6 +430,7 @@ Every update needs `[update.payload]` and normally `[update.check]`:
 [update.check]
 mode = "github"
 assetName = "tool-${version}-windows-x86_64.zip"
+# tagPrefix = "release/" # remove a publisher-specific namespace before parsing
 
 [update.payload]
 mode = "zip"
@@ -445,7 +446,8 @@ extractSubdir = "tool"
   release, removes a conventional leading `v` from its tag, and requires
   exactly one uploaded asset with that name. `${version}` in `assetName`
   expands to the discovered release version. GitHub's SHA-256 asset digest is
-  used when available.
+  used when available. Set `tagPrefix` when the publisher namespaces tags (for
+  example, `release/v1.2.3` with `tagPrefix = "release/"`).
 - `git`: checks `appPath` (default `App`) against `remote` (default `origin`)
   and a full `ref` (default `refs/heads/main`). For a Git origin, `check` may
   be omitted and defaults to that origin's ref; an explicit ref must match it.

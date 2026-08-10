@@ -3,13 +3,15 @@
 The update checker accepts a normal ``https://github.com/owner/repository``
 origin URL, queries GitHub's latest-release REST endpoint, and returns the
 configured release asset as an update candidate. An ``assetName`` may include
-``${version}``, which expands to the latest release version.
+``${version}``, which expands to the latest release version, and ``tagPrefix``
+can remove a publisher-specific tag namespace before version parsing.
 
 Usage and API
 -------------
 Call ``check_update(context)`` with the repository URL, mandatory
-``assetName``, and current package identity. The package update coordinator
-uses this function for ``[update.check].mode = "github"``.
+``assetName``, optional ``tagPrefix``, and current package identity. The
+package update coordinator uses this function for ``[update.check].mode =
+"github"``.
 
 Implementation Approach
 -----------------------
@@ -38,8 +40,9 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     ----------
     context : dict[str, Any]
         Update context containing the origin ``url``, mandatory ``assetName``,
-        and the current package version. ``assetName`` may contain one or more
-        ``${version}`` placeholders for the latest release version.
+        optional ``tagPrefix``, and the current package version. ``assetName``
+        may contain one or more ``${version}`` placeholders for the latest
+        release version.
 
     Returns
     -------
@@ -115,16 +118,30 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"Could not read the latest GitHub release: {exc}") from exc
 
-    # GitHub tags commonly carry a cosmetic "v" prefix while gupkg stores the
-    # upstream portion without the version-directory marker.
+    # Remove a configured publisher namespace before handling the common
+    # cosmetic "v" prefix used by otherwise ordinary version tags.
     if not isinstance(release, dict):
         raise RuntimeError("GitHub latest release response must be an object")
     tag = release.get("tag_name")
     release_id = release.get("id")
     if not isinstance(tag, str) or not tag.strip() or not isinstance(release_id, int):
         raise RuntimeError("GitHub latest release has no valid tag or release ID")
-    version = tag[1:] if re.fullmatch(r"v\d.*", tag, re.IGNORECASE) else tag
-    if context.get("current", {}).get("version") in {tag, version}:
+    tag_prefix = context.get("tagPrefix")
+    if tag_prefix is None:
+        tag_prefix = ""
+    if not isinstance(tag_prefix, str):
+        raise RuntimeError("GitHub tagPrefix must be a string")
+    if tag_prefix and not tag.startswith(tag_prefix):
+        raise RuntimeError(
+            f"GitHub latest release tag {tag!r} does not start with {tag_prefix!r}"
+        )
+    version_tag = tag.removeprefix(tag_prefix)
+    version = (
+        version_tag[1:]
+        if re.fullmatch(r"v\d.*", version_tag, re.IGNORECASE)
+        else version_tag
+    )
+    if context.get("current", {}).get("version") in {tag, version_tag, version}:
         return None
 
     # Substitute the discovered version before selecting one exact uploaded

@@ -266,6 +266,7 @@ def _check_update(
             {
                 "url": check["url"],
                 "assetName": check["assetName"],
+                "tagPrefix": check.get("tagPrefix"),
             }
         )
         callback = check_github_release

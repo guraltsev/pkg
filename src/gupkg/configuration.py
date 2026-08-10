@@ -582,9 +582,9 @@ def normalize_update_config(
     elif mode == "github":
         _validate_exact_keys(
             check,
-            allowed={"mode", "assetName"},
+            allowed={"mode", "assetName", "tagPrefix"},
             context="update.check",
-            ordered_allowed=["mode", "assetName"],
+            ordered_allowed=["mode", "assetName", "tagPrefix"],
         )
         asset_name = check.get("assetName")
         if origin is None or not isinstance(origin.get("url"), str):
@@ -595,11 +595,20 @@ def normalize_update_config(
             raise ConfigValidationError(
                 "[update.check].assetName must be a non-empty string"
             )
+        tag_prefix = check.get("tagPrefix")
+        if tag_prefix is not None and (
+            not isinstance(tag_prefix, str) or not tag_prefix
+        ):
+            raise ConfigValidationError(
+                "[update.check].tagPrefix must be a non-empty string when provided"
+            )
         normalized_check = {
             "mode": "github",
             "url": origin["url"],
             "assetName": asset_name,
         }
+        if tag_prefix is not None:
+            normalized_check["tagPrefix"] = tag_prefix
     elif mode == "module":
         _validate_exact_keys(
             check,
