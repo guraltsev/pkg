@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 import tomllib
@@ -23,7 +24,7 @@ from gupkg.configuration import normalize_runtime_config
 from gupkg.core import PackageIdentity
 
 
-PACKAGE = ROOT / "gupkgs" / "qbittorrent" / "v5.2.3.l1"
+PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3.l1"
 CHECKER = PACKAGE / "pkg.local" / "check_update.py"
 UNPACKER = PACKAGE / "pkg.local" / "unpack_app.py"
 
@@ -37,23 +38,38 @@ def _load_module(path: Path, name: str):
     return module
 
 
-def test_checker_parses_the_latest_sourceforge_installer_filename() -> None:
-    """The latest-download filename supplies a newer 64-bit release candidate."""
+def test_checker_reads_the_windows_installer_from_release_metadata() -> None:
+    """Windows release metadata supplies a newer 64-bit release candidate."""
     checker = _load_module(CHECKER, "qbittorrent_checker")
-    page = b"<main>qbittorrent_5.2.3_x64_setup.exe</main>"
+    metadata = {
+        "platform_releases": {
+            "windows": {
+                "filename": (
+                    "/qbittorrent-win32/qbittorrent-5.2.3/"
+                    "qbittorrent_5.2.3_x64_setup.exe"
+                )
+            }
+        }
+    }
 
     with mock.patch.object(
-        checker.urllib.request, "urlopen", return_value=io.BytesIO(page)
+        checker.urllib.request,
+        "urlopen",
+        return_value=io.BytesIO(json.dumps(metadata).encode("utf-8")),
     ) as urlopen:
         candidate = checker.check_update({"current": {"version": "5.2.2"}})
 
     assert candidate == {
         "candidateId": "qbittorrent:5.2.3:qbittorrent_5.2.3_x64_setup.exe",
         "version": "5.2.3",
-        "url": "https://sourceforge.net/projects/qbittorrent/files/latest/download",
+        "url": (
+            "https://sourceforge.net/projects/qbittorrent/files/"
+            "qbittorrent-win32/qbittorrent-5.2.3/"
+            "qbittorrent_5.2.3_x64_setup.exe/download"
+        ),
         "fileName": "qbittorrent_5.2.3_x64_setup.exe",
     }
-    assert urlopen.call_args.args[0].full_url == checker._LATEST_DOWNLOAD
+    assert urlopen.call_args.args[0].full_url == checker._RELEASE_METADATA
 
 
 def test_unpacker_silently_installs_into_the_staged_app_directory(tmp_path) -> None:

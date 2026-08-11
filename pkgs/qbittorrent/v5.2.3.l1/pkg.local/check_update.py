@@ -1,8 +1,8 @@
 """Discover the latest qBittorrent 64-bit Windows installer.
 
-SourceForge's stable latest-download page contains the selected filename in its
-HTML response. The checker uses that filename to obtain the release version
-and returns the same canonical download URL for the package update workflow.
+SourceForge's release metadata identifies the current Windows installer. The
+checker uses that metadata to obtain the release version and constructs a
+stable download URL for the package update workflow.
 
 Usage and API
 -------------
@@ -12,13 +12,14 @@ available.
 
 Implementation Approach
 -----------------------
-The checker reads the latest-download response and accepts one exact
-``qbittorrent_<version>_x64_setup.exe`` filename. It compares dotted numeric
-versions before exposing the candidate.
+The checker reads SourceForge's platform-specific release metadata, accepts one
+exact ``qbittorrent_<version>_x64_setup.exe`` filename, and compares dotted
+numeric versions before exposing the candidate.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import urllib.request
 from typing import Any
@@ -26,7 +27,10 @@ from typing import Any
 
 PKG_MODULE_API = 1
 
-_LATEST_DOWNLOAD = "https://sourceforge.net/projects/qbittorrent/files/latest/download"
+# SourceForge's metadata endpoint exposes the installer for each supported
+# platform, while the stable file URL resolves the selected installer at use.
+_RELEASE_METADATA = "https://sourceforge.net/projects/qbittorrent/best_release.json"
+_DOWNLOAD_ROOT = "https://sourceforge.net/projects/qbittorrent/files"
 _INSTALLER_NAME = re.compile(
     r"\bqbittorrent_(?P<version>\d+(?:\.\d+)*)_x64_setup\.exe\b",
     re.IGNORECASE,
@@ -50,26 +54,38 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     Raises
     ------
     RuntimeError
-        The latest-download page cannot be read or does not identify exactly
-        one supported installer.
+        The release metadata cannot be read or does not identify exactly one
+        supported installer.
     """
-    # Read the stable download endpoint because SourceForge publishes the
-    # selected installer filename in its response without requiring browser JS.
+    # Read the platform metadata rather than the generic latest-download URL.
+    # That URL now redirects to a source archive, whose binary payload cannot
+    # identify the Windows installer this package needs.
     request = urllib.request.Request(
-        _LATEST_DOWNLOAD, headers={"User-Agent": "gupkg-qbittorrent-update-check/1"}
+        _RELEASE_METADATA, headers={"User-Agent": "gupkg-qbittorrent-update-check/1"}
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            page = response.read().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise RuntimeError(f"Could not read the qBittorrent download page: {exc}") from exc
+            metadata = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Could not read the qBittorrent release metadata: {exc}"
+        ) from exc
+
+    # Select Windows explicitly because the generic SourceForge latest endpoint
+    # chooses the cross-platform source archive instead of this installer.
+    try:
+        filename_path = metadata["platform_releases"]["windows"]["filename"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(
+            "qBittorrent release metadata does not identify a Windows installer"
+        ) from exc
 
     # One exact installer filename makes the version and platform selection
-    # unambiguous even when the page contains unrelated project links.
-    matches = list(dict.fromkeys(_INSTALLER_NAME.findall(page)))
+    # unambiguous even if SourceForge adds surrounding directory information.
+    matches = list(dict.fromkeys(_INSTALLER_NAME.findall(str(filename_path))))
     if len(matches) != 1:
         raise RuntimeError(
-            "qBittorrent latest download must identify exactly one 64-bit installer"
+            "qBittorrent release metadata must identify exactly one 64-bit installer"
         )
     version = matches[0]
     current_version = context.get("current", {}).get("version")
@@ -84,7 +100,7 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     return {
         "candidateId": f"qbittorrent:{version}:{filename}",
         "version": version,
-        "url": _LATEST_DOWNLOAD,
+        "url": f"{_DOWNLOAD_ROOT}{filename_path}/download",
         "fileName": filename,
     }
 

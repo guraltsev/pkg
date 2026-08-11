@@ -20,5 +20,5 @@ mode = "zip"
 
 [[shortcut]]
 name = "Tools\\WinDirStat"
-targetPath = "$App\\WinDirStat.exe"
+targetPath = "$App\\x64\\WinDirStat.exe"
 description = "WinDirStat disk usage statistics viewer"
