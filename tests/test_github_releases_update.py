@@ -99,6 +99,25 @@ def test_current_release_returns_no_candidate() -> None:
     assert candidate is None
 
 
+def test_current_release_repairs_a_missing_application_payload() -> None:
+    """A current version remains downloadable when its App payload is missing."""
+    context = {
+        "url": "https://github.com/garethgeorge/backrest",
+        "assetName": "backrest_Windows_x86_64.zip",
+        "current": {"version": "1.13.0", "appReady": False},
+    }
+
+    with mock.patch.object(
+        github_releases.urllib.request,
+        "urlopen",
+        return_value=release_response(),
+    ):
+        candidate = github_releases.check_update(context)
+
+    assert candidate is not None
+    assert candidate["version"] == "1.13.0"
+
+
 def test_latest_release_expands_version_in_asset_name() -> None:
     """A versioned asset template selects the asset from the latest release."""
     response = release_response()

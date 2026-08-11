@@ -40,15 +40,16 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
     ----------
     context : dict[str, Any]
         Update context containing the origin ``url``, mandatory ``assetName``,
-        optional ``tagPrefix``, and the current package version. ``assetName``
-        may contain one or more ``${version}`` placeholders for the latest
-        release version.
+        optional ``tagPrefix``, and the current package version and payload
+        readiness. ``assetName`` may contain one or more ``${version}``
+        placeholders for the latest release version.
 
     Returns
     -------
     dict[str, str] | None
         Candidate metadata for the selected release asset, or ``None`` when
-        the installed version matches the latest release tag.
+        the installed version matches the latest release tag and its
+        application payload is healthy.
 
     Raises
     ------
@@ -141,7 +142,10 @@ def check_update(context: dict[str, Any]) -> dict[str, str] | None:
         if re.fullmatch(r"v\d.*", version_tag, re.IGNORECASE)
         else version_tag
     )
-    if context.get("current", {}).get("version") in {tag, version_tag, version}:
+    current = context.get("current", {})
+    if current.get("version") in {tag, version_tag, version} and current.get(
+        "appReady", True
+    ):
         return None
 
     # Substitute the discovered version before selecting one exact uploaded

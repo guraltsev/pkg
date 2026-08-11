@@ -29,14 +29,29 @@ from .core import PackageIdentity, StepResult, log_error, log_info, log_warning
 
 
 def _app_contains_entries(app_path: Path) -> bool:
-    """Return whether ``App/`` exists and contains at least one entry."""
-    return app_path.exists() and any(app_path.iterdir())
+    """Return whether one path is a non-empty application directory."""
+    return app_path.is_dir() and any(app_path.iterdir())
+
+
+def app_has_payload(identity: PackageIdentity) -> bool:
+    """Return whether a package version has a non-empty ``App`` directory.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Concrete package version whose payload should be inspected.
+
+    Returns
+    -------
+    bool
+        ``True`` only when ``App`` is a directory containing at least one entry.
+    """
+    return _app_contains_entries(identity.version_path / "App")
 
 
 def app_needs_origin_population(identity: PackageIdentity, refresh_app: bool) -> bool:
     """Return whether the selected package version needs ``App/`` population."""
-    app_path = identity.version_path / "App"
-    return refresh_app or not _app_contains_entries(app_path)
+    return refresh_app or not app_has_payload(identity)
 
 
 def populate_app_from_origin(
@@ -50,13 +65,20 @@ def populate_app_from_origin(
     origin = runtime_config.get("origin")
     app_path = identity.version_path / "App"
     if origin is None:
-        return StepResult(ok=True, changed=False)
+        if app_has_payload(identity):
+            return StepResult(ok=True, changed=False)
+        return StepResult(
+            ok=False,
+            errors=[
+                "App is missing or empty and no [origin] is configured to populate it"
+            ],
+        )
 
     if not app_needs_origin_population(identity, refresh_app):
         log_info("App is already populated; skipping origin population")
         return StepResult(ok=True, changed=False)
 
-    if refresh_app and _app_contains_entries(app_path):
+    if refresh_app and app_has_payload(identity):
         log_info("--refresh-app enabled; clearing App before origin population")
     elif app_path.exists():
         log_info("App is empty; populating from origin...")
@@ -85,6 +107,12 @@ def populate_app_from_origin(
         message = str(exc)
         log_error(message)
         return StepResult(ok=False, changed=False, errors=[message])
+    if not app_has_payload(identity):
+        return StepResult(
+            ok=False,
+            changed=True,
+            errors=["Origin population completed but App is missing or empty"],
+        )
     return StepResult(ok=True, changed=True)
 
 

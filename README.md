@@ -142,7 +142,8 @@ During an ordinary install, `gupkg`:
 
 1. resolves the package and validates `pkg.toml`;
 2. makes the selected version current when appropriate;
-3. populates `App` if an `[origin]` is configured and `App` is missing or empty;
+3. ensures `App` is a non-empty directory, populating it from `[origin]` when
+   possible and otherwise failing the install;
 4. creates declared shortcuts;
 5. writes declared environment variables and PATH additions;
 6. creates declared wrappers and ensures the scope's wrapper directory is on PATH.
@@ -201,14 +202,17 @@ gupkg.cmd upgrade full C:\Packages\Tool
 When it reports an available release, it also tells you to run `upgrade download`;
 the check summary explicitly says that no files were changed.
 `upgrade download` checks again, downloads and verifies the release, and stages
-it as a new version directory without changing `current`. `upgrade install`
+it as a new version directory without changing `current`. A missing or empty
+`App` remains repairable when upstream reports the same version: built-in
+GitHub and Git-origin checks stage a higher local revision with a complete
+payload. `upgrade install`
 activates the most recently downloaded version and applies its shortcuts,
 environment settings, PATH entries, and wrappers. There is no automatic update
 policy or background update action. A successful activation consumes its
 download receipt, so `upgrade install` cannot silently reinstall an old staged
-version; run `upgrade download` before each activation. `upgrade full` checks,
-downloads, and activates an update from the current package directory or package
-root.
+version; run `upgrade download` before each activation. `upgrade full` performs
+one discovery/download pass and then activates the staged result from the
+current package directory or package root.
 
 ### Configuration
 
@@ -305,7 +309,8 @@ Top-level keys are exactly: `name`, `version`, `localVersion`, `description`,
 
 ### Application origins
 
-`[origin]` is optional. It supplies `App` only when `App` is missing or empty,
+`[origin]` is optional only when the version already contains a non-empty
+`App`. It supplies `App` when that directory is missing or empty,
 unless `--refresh-app` is used. An origin is one of the following.
 
 **ZIP origin.** Omit `mode` and supply an HTTP(S) archive URL. `checksum`, when
@@ -456,9 +461,12 @@ extractSubdir = "tool"
   defaults to `stable`.
 
 Module checks must declare `PKG_MODULE_API = 1`. Their context has
-`apiVersion`, `current` identity fields, package/version/App paths, persisted
-state, and `channel`. Return `None` when current, or a mapping with
-non-empty `candidateId`, `version`, and `url`. Optional candidate fields are
+`apiVersion`, `current` identity fields (including `appReady`),
+package/version/App paths, persisted state, and `channel`. Return `None` only
+when the upstream version is current and its payload is healthy. When
+`appReady` is false, return the current candidate again so `upgrade download`
+can stage a repair. Candidate mappings contain non-empty `candidateId`,
+`version`, and `url`. Optional candidate fields are
 `sha256` (64 hex digits), `fileName`, `headers`, and `extractSubdir`. Candidate
 versions must be safe version-directory values and may not go backward.
 

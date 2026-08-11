@@ -21,7 +21,7 @@ from gupkg.core import ExpansionMode, PackageIdentity, expand_text
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = (
     ROOT
-    / "gupkgs"
+    / "pkgs"
     / "SumatraPDF-portable"
     / "vbootstrap.l1"
     / "pkg.local"

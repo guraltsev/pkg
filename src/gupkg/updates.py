@@ -40,6 +40,7 @@ from .metadata import sync_config_metadata_text
 from .origin import (
     _app_contains_entries,
     _copy_directory_contents,
+    app_has_payload,
     copy_zip_extract_mappings,
     safe_extract_zip,
 )
@@ -180,9 +181,11 @@ def _normalize_update_candidate(
     is_bootstrap = identity.version.startswith("bootstrap")
     if not is_bootstrap and comparison < 0:
         raise ConfigValidationError("Update candidate is older than the active version")
+    app_ready = app_has_payload(identity)
     if (
         not is_bootstrap
         and comparison == 0
+        and app_ready
         and candidate_id != state.get("lastCandidateId")
     ):
         raise ConfigValidationError(
@@ -209,19 +212,31 @@ def _check_update(
         app = (identity.version_path / check["appPath"]).resolve()
         if not app.is_relative_to(identity.version_path.resolve()):
             raise ConfigValidationError("Git appPath escapes the version directory")
-        local = subprocess.run(
-            ["git", "-C", str(app), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
         origin = config.get("origin")
         if origin is not None and origin.get("mode") == "git":
             candidate = _git_origin_candidate(identity, config, state)
+            if not app.is_dir():
+                return "available", candidate
+            local = subprocess.run(
+                ["git", "-C", str(app), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             if local == candidate["commit"]:
                 return "current", None
             return "available", candidate
         else:
+            if not app.is_dir():
+                raise ConfigValidationError(
+                    "Git update check cannot inspect a missing App without a Git [origin]"
+                )
+            local = subprocess.run(
+                ["git", "-C", str(app), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             url = subprocess.run(
                 ["git", "-C", str(app), "remote", "get-url", check["remote"]],
                 capture_output=True,
@@ -253,6 +268,7 @@ def _check_update(
             "localVersion": identity.local_version,
             "versionString": identity.version_string,
             "candidateId": state.get("lastCandidateId"),
+            "appReady": app_has_payload(identity),
         },
         "paths": {
             "packageRoot": identity.package_root,

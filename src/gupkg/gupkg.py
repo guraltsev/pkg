@@ -66,6 +66,7 @@ from gupkg.layout import (  # noqa: E402
 from gupkg.legacy_to_gupkg_toml import convert_legacy_directory  # noqa: E402
 from gupkg.metadata import update_config_file  # noqa: E402
 from gupkg.origin import (  # noqa: E402
+    app_has_payload,
     populate_app_from_origin,
     validate_origin_health,
     validate_update_health,
@@ -109,7 +110,7 @@ Notes:
   - ``upgrade check`` discovers an update without downloading it.
   - ``upgrade download`` stages an available update without activating it.
   - ``upgrade install`` activates the most recently downloaded update.
-  - ``upgrade full`` checks, stages, and activates an available update.
+  - ``upgrade full`` discovers once, stages, and activates an available update.
   - ``pkg.local`` hooks do not install missing dependencies unless
     ``--local-deps-autoinstall`` is supplied.
   - ``config update`` creates a documented starter template when ``pkg.toml`` is missing.
@@ -149,8 +150,9 @@ Canonical config keys
 ~~~~~~~~~~~~~~~~~~~~~
 
 1) Origin (optional ``origin`` table)
-   A package can populate a missing or empty ``App/`` before components are
-   installed. Built-in zip origins use:
+   Every concrete installed version needs a non-empty ``App/``. A package can
+   populate a missing or empty directory before components are installed.
+   Built-in zip origins use:
 
      [origin]
      url = "https://example.invalid/tool.zip"
@@ -637,14 +639,8 @@ def full_package_upgrade(
         recommended exit code.
     """
 
-    # Report the initial discovery result before changing package state.
-    check_result = check_package_update(
-        package_path, local_deps_autoinstall=local_deps_autoinstall
-    )
-    if not check_result.ok or check_result.status != "available":
-        return check_result
-
-    # Stage next so activation only runs after a complete new version exists.
+    # Download owns discovery, so a full upgrade contacts the source once and
+    # activates only after a complete staged version has been committed.
     download_result = download_package_update(
         package_path,
         no_checksum=no_checksum,
@@ -656,9 +652,7 @@ def full_package_upgrade(
     # Resolve the receipt from the original package path; it identifies the
     # newly staged version without requiring the caller to change folders.
     install_result = install_downloaded_update(package_path, scope=scope)
-    install_result.warnings = (
-        check_result.warnings + download_result.warnings + install_result.warnings
-    )
+    install_result.warnings = download_result.warnings + install_result.warnings
     return install_result
 
 
@@ -817,6 +811,15 @@ def install_package(
         result = install_downloaded_update(identity.version_path, scope=scope)
         result.warnings = warnings + result.warnings
         return result
+
+    # An install is only meaningful for a concrete application payload. Fail
+    # before junction mutations when no origin can repair the package.
+    if runtime_config.get("origin") is None and not app_has_payload(identity):
+        return action_failure(
+            "App is missing or empty and no [origin] is configured to populate it",
+            exit_code=EXIT_USER_ERROR,
+            warnings=warnings,
+        )
 
     # Update the package-root ``current`` junction unless the caller already
     # targeted it directly. Older installed versions are left intact unless the
@@ -1552,6 +1555,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     globals_parser.add_argument("--toml", action="store_true")
     globals_args, remaining = globals_parser.parse_known_args(raw)
     root = (globals_args.root or Path.cwd()).expanduser()
+    package_args = (["--toml"] if globals_args.toml else []) + remaining
 
     # Explicit selection always resolves against an inventory, never against
     # manifest metadata or an arbitrary recursive filename search.
@@ -1578,14 +1582,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         if remaining[0] == "list":
             log_error("list is collection-only and cannot be combined with --package")
             return EXIT_USER_ERROR
-        return _package_main([*remaining, str(selected.root)])
+        return _package_main([*package_args, str(selected.root)])
+
+    # An explicit path is already an unambiguous package selection. Route it
+    # directly instead of treating the caller's working directory as a
+    # collection whose mutations would require ``--package``.
+    explicit_package_path = (
+        len(remaining) >= 2
+        and remaining[0] == "install"
+        or len(remaining) >= 3
+        and remaining[0] in {"upgrade", "config"}
+    )
+    if explicit_package_path:
+        return _package_main(package_args)
 
     # A real package root takes precedence over aggregate command spellings.
     # This preserves ``gupkg config check`` inside one package.
     if package_context:
         if not remaining:
             return _run_package_tui(root)
-        return _package_main(remaining)
+        return _package_main(package_args)
 
     if remaining and remaining[0] == "list":
         list_parser = argparse.ArgumentParser(prog="gupkg list")

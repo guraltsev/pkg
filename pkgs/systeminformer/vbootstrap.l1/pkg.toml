@@ -1,0 +1,24 @@
+name = "systeminformer"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Free, open-source utility for monitoring system resources, processes, services, and network activity."
+homepage = "https://systeminformer.sourceforge.io/"
+
+[origin]
+url = "https://github.com/winsiderss/systeminformer"
+
+[update]
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "zip"
+# GitHub's System Informer release assets do not publish SHA-256 digests.
+ignore_checksum = true
+
+[[shortcut]]
+name = "Tools\\System Informer"
+targetPath = "$App\\amd64\\SystemInformer.exe"
+description = "System resource and process monitor"

@@ -102,6 +102,9 @@ class GupkgCliBehaviorTests(unittest.TestCase):
     ) -> Path:
         version_dir = Path(tmpdir) / package / version_dir_name
         version_dir.mkdir(parents=True)
+        app_dir = version_dir / "App"
+        app_dir.mkdir()
+        app_dir.joinpath("payload.txt").write_text("payload", encoding="utf-8")
         return version_dir
 
     def write_config(self, version_dir: Path, text: str) -> None:
@@ -492,6 +495,66 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 "'gupkg upgrade download' first."
             ],
         )
+
+    def test_upgrade_download_repairs_missing_app_at_the_same_version(self) -> None:
+        """Download stages a complete local revision when current App is missing."""
+        module = load_gupkg_module()
+        archive = self.zip_bytes({"tool.exe": "restored"})
+        release = json.dumps(
+            {
+                "id": 42,
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {
+                        "name": "tool.zip",
+                        "state": "uploaded",
+                        "browser_download_url": "https://example.invalid/tool.zip",
+                        "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+                    }
+                ],
+            }
+        ).encode()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "RepairDownloadApp")
+            shutil.rmtree(version_dir / "App")
+            self.write_config(
+                version_dir,
+                """
+                name = "RepairDownloadApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                url = "https://github.com/owner/tool"
+
+                [update]
+
+                [update.check]
+                mode = "github"
+                assetName = "tool.zip"
+
+                [update.payload]
+                mode = "zip"
+                """,
+            )
+
+            with mock.patch.object(
+                runtime_module("github_releases").urllib.request,
+                "urlopen",
+                side_effect=[io.BytesIO(release), io.BytesIO(archive)],
+            ):
+                result = module.download_package_update(version_dir)
+
+            repaired_version = version_dir.parent / "v1.0.0.l2"
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertEqual(result.status, "downloaded")
+            self.assertEqual(
+                (repaired_version / "App" / "tool.exe").read_text(
+                    encoding="utf-8"
+                ),
+                "restored",
+            )
 
     def test_upgrade_install_rejects_a_receipt_older_than_an_installed_version(self) -> None:
         """Upgrade install does not replace a newer installed version."""
@@ -995,6 +1058,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
+            (version_dir / "App").mkdir(exist_ok=True)
+            (version_dir / "App" / "payload.txt").write_text(
+                "payload", encoding="utf-8"
+            )
             env = self.user_env(tmpdir)
 
             with mock.patch.dict(os.environ, env, clear=False):
@@ -1016,6 +1083,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "NoConfigApp")
             version_dir = package_root / "v0.9.0.l1"
+            (version_dir / "App").mkdir(exist_ok=True)
+            (version_dir / "App" / "payload.txt").write_text(
+                "payload", encoding="utf-8"
+            )
             env = self.user_env(tmpdir)
 
             with mock.patch.dict(os.environ, env, clear=False):
@@ -1297,6 +1368,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = self.copy_fixture(tmpdir, "BadPathApp")
             version_dir = package_root / "v1.0.0.l1"
+            (version_dir / "App").mkdir(exist_ok=True)
+            (version_dir / "App" / "payload.txt").write_text(
+                "payload", encoding="utf-8"
+            )
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
@@ -1615,6 +1690,32 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("Unsupported legacy key 'downloadURL'", output)
 
+    def test_install_rejects_a_package_without_an_app_or_origin(self) -> None:
+        """Install fails before activation when no application payload exists."""
+
+        module = load_gupkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "MissingPayloadApp")
+            shutil.rmtree(version_dir / "App")
+            self.write_config(
+                version_dir,
+                """
+                name = "MissingPayloadApp"
+                version = "1.0.0"
+                localVersion = 1
+                """,
+            )
+
+            with mock.patch.object(
+                module, "update_current_junction_if_needed"
+            ) as junction_mock:
+                result = module.install_package(version_dir)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
+            self.assertIn("App is missing or empty", result.errors[0])
+            junction_mock.assert_not_called()
+
     def test_install_populates_missing_app_from_zip_origin_before_components(
         self,
     ) -> None:
@@ -1626,6 +1727,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ZipOriginApp")
+            shutil.rmtree(version_dir / "App")
             self.write_config(
                 version_dir,
                 f"""
@@ -1669,7 +1771,6 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "SkipOriginApp")
-            (version_dir / "App").mkdir()
             (version_dir / "App" / "existing.txt").write_text("keep", encoding="utf-8")
             self.write_config(
                 version_dir,
@@ -1715,6 +1816,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "SelectedOriginApp")
+            shutil.rmtree(version_dir / "App")
             self.write_config(
                 version_dir,
                 """
@@ -1760,7 +1862,6 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "RefreshOriginApp")
-            (version_dir / "App").mkdir()
             (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
             self.write_config(
                 version_dir,
@@ -1804,6 +1905,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "IncompleteCurrentOriginApp")
+            shutil.rmtree(version_dir / "App")
             self.write_config(
                 version_dir,
                 """
@@ -1833,7 +1935,6 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ChecksumOriginApp")
-            (version_dir / "App").mkdir()
             (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
             self.write_config(
                 version_dir,
@@ -1873,7 +1974,6 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "UnsafeZipApp")
-            (version_dir / "App").mkdir()
             (version_dir / "App" / "old.exe").write_text("old", encoding="utf-8")
             self.write_config(
                 version_dir,
@@ -1912,6 +2012,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "NoChecksumOriginApp")
+            shutil.rmtree(version_dir / "App")
             self.write_config(
                 version_dir,
                 """
@@ -1953,6 +2054,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = self.make_version_dir(tmpdir, "ScriptOriginApp")
+            shutil.rmtree(version_dir / "App")
             script_dir = version_dir / "scripts"
             script_dir.mkdir()
             script_path = script_dir / "populate.cmd"
