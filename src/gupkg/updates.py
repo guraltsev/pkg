@@ -387,6 +387,7 @@ def _prepare_update(
     write_text_atomic(stage / "pkg.toml", rendered)
     stage_app = stage / "App"
     payload = config["update"]["payload"]
+    artifact: Optional[Path] = None
     if payload["mode"] == "git":
         subprocess.run(
             ["git", "clone", "--no-checkout", candidate["url"], str(stage_app)],
@@ -517,9 +518,65 @@ def _prepare_update(
                 },
                 autoinstall=local_deps_autoinstall,
             )
+    # Run package-authored install steps only after the built-in payload step
+    # has prepared a complete staged application tree.  This keeps custom
+    # mutations transactional: a failing step never touches the live version.
+    _run_install_steps(
+        identity,
+        config["update"]["steps"][1:],
+        candidate,
+        stage,
+        stage_app,
+        artifact,
+        work / "pycache",
+        local_deps_autoinstall=local_deps_autoinstall,
+    )
     if not _app_contains_entries(stage_app):
         raise RuntimeError("Prepared update App directory is missing or empty")
     return new_identity
+
+
+def _run_install_steps(
+    identity: PackageIdentity,
+    steps: list[Dict[str, Any]],
+    candidate: Dict[str, Any],
+    stage_root: Path,
+    stage_app: Path,
+    artifact: Optional[Path],
+    pycache: Path,
+    *,
+    local_deps_autoinstall: bool,
+) -> None:
+    """Run configured package-local post-payload install modules."""
+    for step in steps:
+        module = run_with_missing_dependencies(
+            _load_package_module,
+            identity,
+            step["module"],
+            pycache,
+            autoinstall=local_deps_autoinstall,
+        )
+        callback = getattr(module, "install_step", None)
+        if not callable(callback):
+            raise ConfigValidationError(
+                "Update install-step module must define install_step(context)"
+            )
+
+        # Expose only the staged tree, never the live version.  Modules may
+        # inspect the downloaded artifact when the built-in payload had one.
+        run_with_missing_dependencies(
+            callback,
+            {
+                "apiVersion": 1,
+                "candidate": dict(candidate),
+                "paths": {
+                    "artifact": artifact,
+                    "stageRoot": stage_root,
+                    "stageApp": stage_app,
+                },
+            },
+            autoinstall=local_deps_autoinstall,
+        )
 
 
 def _apply_payload_renames(

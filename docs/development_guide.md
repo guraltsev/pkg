@@ -19,9 +19,11 @@ The runtime package has one-way domain boundaries:
 - `updates` owns state, hook loading, candidate normalization, and staging.
 
 The facade imports only the names needed by its workflows. It does not provide
-compatibility re-exports, a provider framework, or a configurable install
-pipeline. New implementation code should be placed in the module that owns its
-state or side effect. Legacy format conversion remains implemented in
+compatibility re-exports or a provider framework. Update payload preparation
+supports a small declarative sequence of built-in payload and trusted
+package-local module steps; ordinary component installation remains fixed. New
+implementation code should be placed in the module that owns its state or side
+effect. Legacy format conversion remains implemented in
 `legacy_to_gupkg_toml.py`; `gupkg config from-legacy` coordinates its public CLI
 result.
 

@@ -18,6 +18,13 @@ mode = "zip"
 # GitHub's System Informer release assets do not publish SHA-256 digests.
 ignore_checksum = true
 
+[[update.steps]]
+mode = "payload"
+
+[[update.steps]]
+mode = "module"
+module = "pkg.local/remove_settings.py"
+
 [[shortcut]]
 name = "Tools\\System Informer"
 targetPath = "$App\\amd64\\SystemInformer.exe"

@@ -1,8 +1,9 @@
-"""Cover Windows launcher forwarding and caller-directory preservation.
+"""Cover Windows launcher forwarding and script-directory module resolution.
 
-Windows ``cmd`` execution is real while temporary command shims replace the
+Windows ``cmd`` execution is real while a temporary command shim replaces the
 selected Python interpreter. Package behavior and batch-file implementation
-details beyond forwarded arguments are out of scope.
+details beyond forwarded arguments and the launched working directory are out
+of scope.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
+
+
 class WrapperScriptTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_gupkg_tui_wrapper_opens_the_interactive_command(self) -> None:
@@ -49,8 +52,8 @@ exit /b 0
             self.assertIn("-m gupkg tui --probe", recorded_args)
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
-    def test_gupkg_wrapper_preserves_caller_directory_and_arguments(self) -> None:
-        """The repository launcher preserves its caller directory and arguments."""
+    def test_gupkg_wrapper_uses_its_own_directory_and_forwards_arguments(self) -> None:
+        """The repository launcher resolves its module from its own directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             version_dir = Path(tmpdir) / "WrapperApp" / "v1.0.0.l1"
             version_dir.mkdir(parents=True)
@@ -80,7 +83,7 @@ exit /b 0
             lines = log_file.read_text(encoding="utf-8").splitlines()
             recorded_cwd = lines[0].removeprefix("cwd=")
             recorded_args = lines[1].removeprefix("args=")
-            self.assertEqual(Path(recorded_cwd), version_dir)
+            self.assertEqual(Path(recorded_cwd), SRC_ROOT)
             self.assertIn("-m gupkg upgrade check", recorded_args)
 
 

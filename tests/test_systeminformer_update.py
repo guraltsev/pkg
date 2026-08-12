@@ -1,8 +1,8 @@
-"""Cover System Informer's package-local release discovery hook.
+"""Cover System Informer's package-local release discovery and staging hooks.
 
-The GitHub response boundary is mocked while tag parsing, asset selection, and
-candidate construction are real. Downloading and ZIP extraction are outside
-this hook's scope.
+The GitHub response boundary is mocked while tag parsing, asset selection,
+candidate construction, and staged-file cleanup are real. Downloading and ZIP
+extraction are outside this hook's scope.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import importlib.util
 import io
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -24,11 +25,19 @@ HOOK_PATH = (
     / "pkg.local"
     / "check_update.py"
 )
+INSTALL_STEP_PATH = (
+    ROOT
+    / "pkgs"
+    / "systeminformer"
+    / "vbootstrap.l1"
+    / "pkg.local"
+    / "remove_settings.py"
+)
 
 
-def load_update_hook():
-    """Load the System Informer package-local update hook for testing."""
-    spec = importlib.util.spec_from_file_location("systeminformer_update_hook", HOOK_PATH)
+def load_package_module(path: Path, name: str):
+    """Load one System Informer package-local module for testing."""
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -37,6 +46,11 @@ def load_update_hook():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def load_update_hook():
+    """Load the System Informer package-local update hook for testing."""
+    return load_package_module(HOOK_PATH, "systeminformer_update_hook")
 
 
 class SystemInformerUpdateHookTests(unittest.TestCase):
@@ -75,3 +89,20 @@ class SystemInformerUpdateHookTests(unittest.TestCase):
             )
 
         self.assertIsNone(candidate)
+
+    def test_install_step_removes_settings_from_every_supported_architecture(self) -> None:
+        """The staged payload excludes generated settings files for all architectures."""
+        step = load_package_module(INSTALL_STEP_PATH, "systeminformer_install_step")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_path = Path(tmpdir) / "App"
+            for architecture in ("arm64", "amd64", "i386"):
+                settings = app_path / architecture / "SystemInformer.exe.settings.xml"
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_text("generated", encoding="utf-8")
+
+            step.install_step({"paths": {"stageApp": app_path}})
+
+            for architecture in ("arm64", "amd64", "i386"):
+                self.assertFalse(
+                    (app_path / architecture / "SystemInformer.exe.settings.xml").exists()
+                )

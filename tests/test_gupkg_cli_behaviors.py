@@ -655,6 +655,71 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(release_config["localVersion"], 1)
             self.assertFalse((version_dir / "App").exists())
 
+    def test_update_install_module_runs_after_zip_payload_is_staged(self) -> None:
+        """A custom update step can change files unpacked into the new App tree."""
+        module = load_gupkg_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "SteppedBootstrap"
+            version_dir = package_root / "vbootstrap.l1"
+            local_dir = version_dir / "pkg.local"
+            local_dir.mkdir(parents=True)
+            self.write_config(
+                version_dir,
+                """
+                name = "SteppedBootstrap"
+                version = "bootstrap"
+                localVersion = 1
+
+                [update]
+
+                [update.check]
+                mode = "module"
+
+                [update.payload]
+                mode = "zip"
+                ignore_checksum = true
+
+                [[update.steps]]
+                mode = "payload"
+
+                [[update.steps]]
+                mode = "module"
+                module = "pkg.local/remove_marker.py"
+                """,
+            )
+            local_dir.joinpath("check_update.py").write_text(
+                "PKG_MODULE_API = 1\n\ndef check_update(context):\n"
+                "    return {'candidateId': 'release:2.0.0', 'version': '2.0.0', "
+                "'url': 'https://example.invalid/tool.zip'}\n",
+                encoding="utf-8",
+            )
+            local_dir.joinpath("remove_marker.py").write_text(
+                "PKG_MODULE_API = 1\n\ndef install_step(context):\n"
+                "    context['paths']['stageApp'].joinpath('marker.txt').unlink()\n",
+                encoding="utf-8",
+            )
+            archive = self.zip_bytes({"tool.exe": "release payload", "marker.txt": "remove"})
+
+            # Exercise the public bootstrap workflow while holding its network
+            # and Windows-junction boundaries deterministic.
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(module, "is_current_user_admin", return_value=False):
+                    with mock.patch.object(
+                        module, "update_current_junction_if_needed", return_value=True
+                    ):
+                        with mock.patch.object(
+                            runtime_module("updates").urllib.request,
+                            "urlopen",
+                            return_value=io.BytesIO(archive),
+                        ):
+                            result = module.install_package(version_dir)
+
+            release_app = package_root / "v2.0.0.l1" / "App"
+            self.assertTrue(result.ok, msg=result.errors)
+            self.assertTrue((release_app / "tool.exe").exists())
+            self.assertFalse((release_app / "marker.txt").exists())
+
     def test_zip_payload_stages_a_direct_executable_release(self) -> None:
         """A ZIP-mode update installs an executable release without archive extraction."""
         module = load_gupkg_module()

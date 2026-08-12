@@ -531,6 +531,38 @@ after extraction; it cannot overwrite an existing destination. `maxSizeMB` is
 accepted by the current schema for future policy use but is not currently
 enforced.
 
+#### Install steps
+
+The built-in update sequence is a release check followed by the configured
+payload step. Existing packages need no step declaration. To run package-local
+work after that payload has been unpacked, declare the ordered sequence
+explicitly. The first entry must be the built-in `payload` step; each later
+entry is a trusted Python module beneath `pkg.local`.
+
+```toml
+[[update.steps]]
+mode = "payload"
+
+[[update.steps]]
+mode = "module"
+module = "pkg.local/post_install.py"
+```
+
+Install-step modules declare `PKG_MODULE_API = 1` and define
+`install_step(context)`. They receive the candidate and `paths` for the staged
+`stageRoot`, `stageApp`, and downloaded `artifact` (or `None` for Git
+payloads). Steps run in declaration order before the new version is committed,
+so a failure leaves the installed version unchanged.
+
+```python
+PKG_MODULE_API = 1
+
+def install_step(context):
+    context["paths"]["stageApp"].joinpath("unwanted-file.txt").unlink(
+        missing_ok=True
+    )
+```
+
 Versions beginning with `bootstrap` are templates rather than active payloads.
 Installing one with a Git or module update configuration downloads and
 activates the first immutable version, leaving the template itself without an `App`.

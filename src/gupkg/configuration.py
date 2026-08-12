@@ -557,9 +557,9 @@ def normalize_update_config(
         raise ConfigValidationError("'update' must be a table")
     _validate_exact_keys(
         raw_update,
-        allowed={"check", "payload"},
+        allowed={"check", "payload", "steps"},
         context="update",
-        ordered_allowed=["check", "payload"],
+        ordered_allowed=["check", "payload", "steps"],
     )
     check = raw_update.get("check")
     payload = raw_update.get("payload")
@@ -807,7 +807,60 @@ def normalize_update_config(
         normalized_payload["module"] = _validate_package_local_path(
             identity, module, context="update.payload"
         )
-    return {"check": normalized_check, "payload": normalized_payload}
+
+    # The historical check and payload tables remain the built-in update
+    # stages.  An omitted step list therefore retains the established flow.
+    raw_steps = raw_update.get("steps")
+    if raw_steps is None:
+        normalized_steps = [{"mode": "payload"}]
+    else:
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise ConfigValidationError("[[update.steps]] must contain at least one step")
+        normalized_steps = []
+        for index, step in enumerate(raw_steps):
+            context = f"update.steps[{index}]"
+            if not isinstance(step, dict):
+                raise ConfigValidationError(f"[[{context}]] must be a table")
+            step_mode = step.get("mode")
+            if index == 0:
+                _validate_exact_keys(
+                    step,
+                    allowed={"mode"},
+                    context=context,
+                    ordered_allowed=["mode"],
+                )
+                if step_mode != "payload":
+                    raise ConfigValidationError(
+                        "The first [[update.steps]] entry must use mode = 'payload'"
+                    )
+                normalized_steps.append({"mode": "payload"})
+                continue
+            _validate_exact_keys(
+                step,
+                allowed={"mode", "module"},
+                context=context,
+                ordered_allowed=["mode", "module"],
+            )
+            if step_mode != "module":
+                raise ConfigValidationError(
+                    f"[[{context}]].mode must be 'module' after the payload step"
+                )
+            module = step.get("module")
+            if not isinstance(module, str):
+                raise ConfigValidationError(f"[[{context}]].module must be a string")
+            normalized_steps.append(
+                {
+                    "mode": "module",
+                    "module": _validate_package_local_path(
+                        identity, module, context=context
+                    ),
+                }
+            )
+    return {
+        "check": normalized_check,
+        "payload": normalized_payload,
+        "steps": normalized_steps,
+    }
 
 
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
