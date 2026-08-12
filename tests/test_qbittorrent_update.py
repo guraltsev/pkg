@@ -1,4 +1,4 @@
-"""Cover qBittorrent installer release discovery and staged installation.
+"""Cover qBittorrent installer release discovery and staged extraction.
 
 The SourceForge response and installer process boundary are mocked, while the
 package-local update modules and runtime manifest normalization are real.
@@ -27,6 +27,7 @@ from gupkg.core import PackageIdentity
 PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3.l1"
 CHECKER = PACKAGE / "pkg.local" / "check_update.py"
 UNPACKER = PACKAGE / "pkg.local" / "unpack_app.py"
+POPULATOR = PACKAGE / "pkg.local" / "populate_app.py"
 
 
 def _load_module(path: Path, name: str):
@@ -72,8 +73,8 @@ def test_checker_reads_the_windows_installer_from_release_metadata() -> None:
     assert urlopen.call_args.args[0].full_url == checker._RELEASE_METADATA
 
 
-def test_unpacker_silently_installs_into_the_staged_app_directory(tmp_path) -> None:
-    """The installer receives its silent destination as the staged App path."""
+def test_unpacker_extracts_the_installer_into_the_staged_app_directory(tmp_path) -> None:
+    """The installer is unpacked directly into the staged App path."""
     unpacker = _load_module(UNPACKER, "qbittorrent_unpacker")
     artifact = tmp_path / "qbittorrent_5.2.3_x64_setup.exe"
     stage_app = tmp_path / "stage" / "App"
@@ -84,13 +85,39 @@ def test_unpacker_silently_installs_into_the_staged_app_directory(tmp_path) -> N
         )
 
     assert stage_app.is_dir()
-    run.assert_called_once_with(
-        [str(artifact), "/S", f"/D={stage_app}"], check=True
+    command = run.call_args.args[0]
+    assert command.startswith("7z x -y ")
+    assert f"-o{stage_app}" in command
+    assert str(artifact) in command
+    assert run.call_args.kwargs == {"check": True, "shell": True}
+
+
+def test_populator_extracts_the_downloaded_installer_into_app(tmp_path) -> None:
+    """Initial population downloads and extracts the installer without running NSIS."""
+    populator = _load_module(POPULATOR, "qbittorrent_populator")
+    app = tmp_path / "App"
+
+    with mock.patch.object(
+        populator.urllib.request, "urlopen", return_value=io.BytesIO(b"setup")
+    ) as urlopen:
+        with mock.patch.object(populator.subprocess, "run") as run:
+            populator.populate_app(
+                {"identity": {"version": "5.2.3"}, "PkgVars": {"App": str(app)}}
+            )
+
+    assert app.is_dir()
+    assert urlopen.call_args.args[0].endswith(
+        "qbittorrent_5.2.3_x64_setup.exe/download"
     )
+    command = run.call_args.args[0]
+    assert command.startswith("7z x -y ")
+    assert f"-o{app}" in command
+    assert command.endswith("qbittorrent_5.2.3_x64_setup.exe")
+    assert run.call_args.kwargs == {"check": True, "shell": True}
 
 
 def test_manifest_uses_package_local_installer_update_modules() -> None:
-    """The qBittorrent manifest enables the local check and unpack workflow."""
+    """The qBittorrent manifest bootstraps and updates with local modules."""
     identity = PackageIdentity.from_version_path(PACKAGE.parent, PACKAGE, is_current=False)
     config = normalize_runtime_config(
         tomllib.loads((PACKAGE / "pkg.toml").read_text(encoding="utf-8")), identity
@@ -98,3 +125,6 @@ def test_manifest_uses_package_local_installer_update_modules() -> None:
 
     assert config["update"]["check"]["mode"] == "module"
     assert config["update"]["payload"]["mode"] == "module"
+    assert config["origin"]["mode"] == "module"
+    assert config["origin"]["module"] == "pkg.local/populate_app.py"
+    assert (PACKAGE / config["origin"]["module"]).is_file()

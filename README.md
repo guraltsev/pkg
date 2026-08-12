@@ -348,8 +348,19 @@ used.
 script = "scripts\\populate-app.ps1"
 ```
 
-`url` and `script` are mutually exclusive. `mode` is valid only as `git`; ZIP
-and script modes are inferred. Git origins cannot use `checksum` or
+**Module origin.** Supply a package-local Python module beneath `pkg.local`.
+It must declare `PKG_MODULE_API = 1` and define `populate_app(context)`. The
+module receives the same `config`, `identity`, and `PkgVars` mappings as a
+script origin, plus `apiVersion = 1`.
+
+```toml
+[origin]
+module = "pkg.local/populate_app.py"
+```
+
+`url`, `script`, and `module` are mutually exclusive. Set `mode = "module"`
+only when declaring `module`; ZIP, script, and module modes are otherwise
+inferred. Git origins cannot use `checksum` or
 `extractSubdir`.
 
 Use repeated `[[origin.versions]]` tables to record historical sources. Every

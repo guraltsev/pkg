@@ -1,6 +1,6 @@
 """Populate application payloads from declared package origins.
 
-Git, zip, and script origins prepare a complete temporary application tree
+Git, zip, script, and module origins prepare a complete temporary application tree
 before replacing ``App/``. Source refs, checksums, archive paths, and
 package-local script references are validated before the existing payload is
 mutated.
@@ -97,6 +97,10 @@ def populate_app_from_origin(
             populate_app_from_git_origin(identity, origin)
         elif origin["mode"] == "script":
             populate_app_from_script_origin(
+                identity, origin, runtime_config, refresh_app=refresh_app
+            )
+        elif origin["mode"] == "module":
+            populate_app_from_module_origin(
                 identity, origin, runtime_config, refresh_app=refresh_app
             )
         else:
@@ -392,6 +396,45 @@ def populate_app_from_script_origin(
         raise RuntimeError("Origin script completed but App is missing or empty")
 
 
+def populate_app_from_module_origin(
+    identity: PackageIdentity,
+    origin: Dict[str, str],
+    runtime_config: Dict[str, Any],
+    *,
+    refresh_app: bool,
+) -> None:
+    """Run a package-local Python origin module and verify its application tree."""
+    from .updates import _load_package_module
+
+    app_path = identity.version_path / "App"
+    if refresh_app and app_path.exists():
+        resolved_app = app_path.resolve(strict=False)
+        if (
+            resolved_app.parent != identity.version_path.resolve()
+            or resolved_app.name != "App"
+        ):
+            raise RuntimeError(
+                "Refusing to clear App outside the package version directory"
+            )
+        shutil.rmtree(app_path)
+
+    # Package modules share the update-hook loader, including its isolated
+    # namespace and API-version validation, before they can populate App.
+    log_info(f"Running origin module: {origin['module']}")
+    module = _load_package_module(identity, origin["module"], identity.version_path)
+    callback = getattr(module, "populate_app", None)
+    if not callable(callback):
+        raise RuntimeError("Origin module must define populate_app(context)")
+    callback(
+        {
+            "apiVersion": 1,
+            **build_origin_script_payload(identity, runtime_config),
+        }
+    )
+    if not _app_contains_entries(app_path):
+        raise RuntimeError("Origin module completed but App is missing or empty")
+
+
 def _resolve_origin_script_path(identity: PackageIdentity, script: str) -> Path:
     """Resolve and validate a package-local origin script path."""
     return _validate_origin_script_reference(identity, script, context="origin")
@@ -469,6 +512,10 @@ def validate_origin_health(
                 )
             except RuntimeError as exc:
                 errors.append(str(exc))
+        elif item.get("mode") == "module":
+            path = identity.version_path / item.get("module", "")
+            if not path.exists() or not path.is_file():
+                errors.append(f"Origin module does not exist: {item.get('module', '')}")
     return errors
 
 

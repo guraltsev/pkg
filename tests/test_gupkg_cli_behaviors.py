@@ -2107,6 +2107,65 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             run_mock.assert_called_once()
             self.assertTrue((version_dir / "App" / "created.txt").exists())
 
+    def test_module_origin_populates_a_missing_app_with_package_context(self) -> None:
+        """Module origins receive managed paths and populate App before installation."""
+
+        module = load_gupkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            version_dir = self.make_version_dir(tmpdir, "ModuleOriginApp")
+            shutil.rmtree(version_dir / "App")
+            local_dir = version_dir / "pkg.local"
+            local_dir.mkdir()
+            (local_dir / "populate_app.py").write_text(
+                textwrap.dedent(
+                    """
+                    from pathlib import Path
+
+                    PKG_MODULE_API = 1
+
+                    def populate_app(context):
+                        app = Path(context["PkgVars"]["App"])
+                        app.mkdir()
+                        (app / "created.txt").write_text(
+                            context["identity"]["version"], encoding="utf-8"
+                        )
+                    """
+                ),
+                encoding="utf-8",
+            )
+            self.write_config(
+                version_dir,
+                """
+                name = "ModuleOriginApp"
+                version = "1.0.0"
+                localVersion = 1
+
+                [origin]
+                module = "pkg.local/populate_app.py"
+                """,
+            )
+
+            with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
+                with mock.patch.object(
+                    module, "update_current_junction_if_needed", return_value=True
+                ):
+                    with mock.patch.object(
+                        module,
+                        "install_components",
+                        return_value=mock.Mock(
+                            ok=True, changed=False, warnings=[], errors=[]
+                        ),
+                    ):
+                        code, output = self.run_main(
+                            module, ["install", str(version_dir)]
+                        )
+
+            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
+            self.assertEqual(
+                (version_dir / "App" / "created.txt").read_text(encoding="utf-8"),
+                "1.0.0",
+            )
+
     def test_health_check_accepts_valid_origin_history(self) -> None:
         """Config check validates origin history without downloading or installing."""
 

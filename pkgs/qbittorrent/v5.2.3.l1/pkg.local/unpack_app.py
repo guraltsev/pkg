@@ -1,8 +1,8 @@
-"""Install the qBittorrent setup executable into the staged application tree.
+"""Extract the qBittorrent setup executable into the staged application tree.
 
 The qBittorrent Windows release is an NSIS installer rather than a ZIP or
-portable executable. This package-local updater invokes its documented silent
-installation mode with the package manager's staged ``App/`` directory.
+portable executable. This package-local updater uses 7-Zip to unpack its
+embedded files into the package manager's staged ``App/`` directory.
 
 Usage and API
 -------------
@@ -12,9 +12,9 @@ package activation.
 
 Implementation Approach
 -----------------------
-The installer runs once with NSIS's silent and destination arguments. The
-destination argument is last, as required by NSIS, so no files are written
-outside the manager-owned staging directory.
+The installer archive is extracted directly into the staged application tree,
+which avoids executing installer actions or modifying system installation
+state.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ PKG_MODULE_API = 1
 
 
 def unpack_app(context: dict[str, Any]) -> None:
-    """Install the downloaded qBittorrent executable into staged ``App/``.
+    """Extract the downloaded qBittorrent executable into staged ``App/``.
 
     Parameters
     ----------
@@ -39,7 +39,10 @@ def unpack_app(context: dict[str, Any]) -> None:
     artifact = Path(paths["artifact"])
     stage_app = Path(paths["stageApp"])
 
-    # Direct the silent NSIS installation into the new version's isolated App
-    # directory so the package manager can activate it atomically afterward.
+    # Extract the embedded runtime files into the isolated staging tree so
+    # update activation cannot trigger installer-managed system changes.
     stage_app.mkdir(parents=True)
-    subprocess.run([str(artifact), "/S", f"/D={stage_app}"], check=True)
+    command = subprocess.list2cmdline(
+        ["7z", "x", "-y", f"-o{stage_app}", str(artifact)]
+    )
+    subprocess.run(command, check=True, shell=True)

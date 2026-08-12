@@ -214,6 +214,7 @@ def normalize_origin_source(
         "checksum",
         "extractSubdir",
         "script",
+        "module",
     }
     _validate_exact_keys(
         raw_source,
@@ -227,6 +228,7 @@ def normalize_origin_source(
             "checksum",
             "extractSubdir",
             "script",
+            "module",
         ],
     )
 
@@ -243,6 +245,9 @@ def normalize_origin_source(
     script = _normalize_optional_string(
         raw_source.get("script"), field_name=f"{context}.script"
     )
+    module = _normalize_optional_string(
+        raw_source.get("module"), field_name=f"{context}.module"
+    )
     checksum = _normalize_optional_string(
         raw_source.get("checksum"), field_name=f"{context}.checksum"
     )
@@ -251,9 +256,9 @@ def normalize_origin_source(
     )
 
     if mode == "git":
-        if not url or script is not None:
+        if not url or script is not None or module is not None:
             raise ConfigValidationError(
-                f"[{context}] Git origin requires 'url' and cannot declare 'script'"
+                f"[{context}] Git origin requires 'url' and cannot declare 'script' or 'module'"
             )
         if url.startswith("-") or any(ord(character) < 32 for character in url):
             raise ConfigValidationError(f"[{context}].url is not a safe Git URL")
@@ -272,19 +277,30 @@ def normalize_origin_source(
         if origin_version is not None:
             normalized["version"] = origin_version
         return normalized
-    if mode is not None:
-        raise ConfigValidationError(f"[{context}].mode must be 'git' when provided")
+    if mode not in {None, "module"}:
+        raise ConfigValidationError(f"[{context}].mode must be 'git' or 'module' when provided")
     if git_ref is not None:
         raise ConfigValidationError(
             f"[{context}].ref is supported only when mode = 'git'"
         )
 
-    if bool(url) == bool(script):
+    if sum(value is not None for value in (url, script, module)) != 1:
         raise ConfigValidationError(
-            f"[{context}] must declare exactly one of 'url' or 'script'"
+            f"[{context}] must declare exactly one of 'url', 'script', or 'module'"
         )
     if require_version and not origin_version:
         raise ConfigValidationError(f"[{context}].version is required")
+
+    if module is not None:
+        if module.strip() == "":
+            raise ConfigValidationError(f"[{context}].module must not be empty")
+        normalized = {"mode": "module", "module": module}
+        if origin_version is not None:
+            normalized["version"] = origin_version
+        return normalized
+
+    if mode == "module":
+        raise ConfigValidationError(f"[{context}] module origin requires 'module'")
 
     if url:
         parsed_url = urllib.parse.urlparse(url)
@@ -331,6 +347,7 @@ def normalize_origin_history_source(
         "checksum",
         "extractSubdir",
         "script",
+        "module",
     }
     _validate_exact_keys(
         raw_source,
@@ -344,6 +361,7 @@ def normalize_origin_history_source(
             "checksum",
             "extractSubdir",
             "script",
+            "module",
         ],
     )
 
@@ -363,9 +381,12 @@ def normalize_origin_history_source(
     script = _normalize_optional_string(
         raw_source.get("script"), field_name=f"{context}.script"
     )
-    if url and script:
+    module = _normalize_optional_string(
+        raw_source.get("module"), field_name=f"{context}.module"
+    )
+    if sum(value is not None for value in (url, script, module)) > 1:
         raise ConfigValidationError(
-            f"[{context}] cannot declare both 'url' and 'script'"
+            f"[{context}] cannot declare more than one of 'url', 'script', or 'module'"
         )
     if url:
         parsed_url = urllib.parse.urlparse(url)
@@ -378,6 +399,11 @@ def normalize_origin_history_source(
             raise ConfigValidationError(f"[{context}].script must not be empty")
         normalized["mode"] = "script"
         normalized["script"] = script
+    if module is not None:
+        if module.strip() == "":
+            raise ConfigValidationError(f"[{context}].module must not be empty")
+        normalized["mode"] = "module"
+        normalized["module"] = module
 
     checksum = _normalize_optional_string(
         raw_source.get("checksum"), field_name=f"{context}.checksum"
@@ -423,6 +449,7 @@ def normalize_origin_config(
         "checksum",
         "extractSubdir",
         "script",
+        "module",
         "versions",
     }
     _validate_exact_keys(
@@ -436,6 +463,7 @@ def normalize_origin_config(
             "checksum",
             "extractSubdir",
             "script",
+            "module",
             "versions",
         ],
     )
@@ -466,11 +494,13 @@ def normalize_origin_config(
             seen_versions.add(item_version)
             versions.append(normalized_item)
 
-    has_inline_source = bool(raw_origin.get("url")) or bool(raw_origin.get("script"))
+    has_inline_source = any(
+        bool(raw_origin.get(field)) for field in ("url", "script", "module")
+    )
     if has_inline_source:
         current_source = {
             key: raw_origin[key]
-            for key in ("mode", "url", "ref", "checksum", "extractSubdir", "script")
+            for key in ("mode", "url", "ref", "checksum", "extractSubdir", "script", "module")
             if key in raw_origin
         }
         normalized = normalize_origin_source(
@@ -491,7 +521,7 @@ def normalize_origin_config(
         )
 
     raise ConfigValidationError(
-        "[origin] must declare exactly one of 'url' or 'script'"
+        "[origin] must declare exactly one of 'url', 'script', or 'module'"
     )
 
 
@@ -856,6 +886,13 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         )
     )
     normalized_origin = normalize_origin_config(raw.get("origin"), identity.version)
+    if normalized_origin is not None:
+        origin_sources = [normalized_origin, *normalized_origin.get("versions", [])]
+        for origin_source in origin_sources:
+            if origin_source.get("mode") == "module":
+                origin_source["module"] = _validate_package_local_path(
+                    identity, origin_source["module"], context="origin"
+                )
     normalized_update = normalize_update_config(
         raw.get("update"), identity, normalized_origin
     )
