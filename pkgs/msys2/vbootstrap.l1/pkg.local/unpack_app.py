@@ -17,6 +17,7 @@ arguments and runs directly against the staging directory before activation.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -50,3 +51,12 @@ def unpack_app(context: dict[str, Any]) -> None:
         check=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+    # MSYS2 SFX archives contain one msys64 directory. Promote its contents so
+    # $App is the MSYS2 installation directory used by shortcuts and variables.
+    extracted_root = stage_app / "msys64"
+    if not extracted_root.is_dir():
+        raise RuntimeError("MSYS2 SFX archive did not contain an msys64 directory")
+    for entry in extracted_root.iterdir():
+        shutil.move(str(entry), stage_app / entry.name)
+    extracted_root.rmdir()
