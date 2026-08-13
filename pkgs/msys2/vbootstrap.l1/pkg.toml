@@ -1,0 +1,47 @@
+name = "msys2"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "A self-contained MSYS2 environment for Windows."
+homepage = "https://www.msys2.org/"
+
+[update]
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "module"
+
+[[shortcut]]
+name = "MSYS2\\MSYS2 CLang64"
+targetPath = "$App\\clang64.exe"
+workingDirectory = "%USERPROFILE%"
+
+[[shortcut]]
+name = "MSYS2\\MSYS2 CLangARM64"
+targetPath = "$App\\clangarm64.exe"
+workingDirectory = "%USERPROFILE%"
+
+[[shortcut]]
+name = "MSYS2\\MSYS2 MingW64"
+targetPath = "$App\\MingW64.exe"
+workingDirectory = "%USERPROFILE%"
+
+[[shortcut]]
+name = "MSYS2\\MSYS2"
+targetPath = "$App\\msys2.exe"
+workingDirectory = "%USERPROFILE%"
+
+[[shortcut]]
+name = "MSYS2\\MSYS2 UCRT64"
+targetPath = "$App\\UCRT64.exe"
+workingDirectory = "%USERPROFILE%"
+
+[[environment]]
+Name = "MSYS2_INSTALL_PATH"
+Value = "$App"
+
+[[bin]]
+name = "env.cmd"
+content = "@ $App\\usr\\bin\\env.exe %*"

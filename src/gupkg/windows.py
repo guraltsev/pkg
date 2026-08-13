@@ -419,16 +419,24 @@ def broadcast_environment_change() -> None:
         wintypes.LPARAM,
         wintypes.UINT,
         wintypes.UINT,
-        ctypes.POINTER(wintypes.ULONG_PTR),
+        ctypes.POINTER(ctypes.c_size_t),
     ]
     send_message_timeout.restype = wintypes.LPARAM
 
-    result = wintypes.ULONG_PTR(0)
+    # SendMessageTimeoutW writes a DWORD_PTR result. ctypes.c_size_t is the
+    # portable pointer-sized unsigned type, unlike wintypes.ULONG_PTR, which
+    # is absent from some supported Python builds.
+    result = ctypes.c_size_t(0)
+
+    # LPARAM is an integer type, so obtain the Environment string address via
+    # c_void_p rather than casting directly to a non-pointer ctypes type.
+    environment_name = ctypes.c_wchar_p("Environment")
+    environment_lparam = ctypes.cast(environment_name, ctypes.c_void_p).value
     ok = send_message_timeout(
         hwnd_broadcast,
         wm_settingchange,
         0,
-        ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
+        environment_lparam,
         smto_abortifhung,
         5000,
         ctypes.byref(result),
