@@ -363,6 +363,11 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 mode = "git"
                 """,
             )
+            default_config = version_dir / "config.default"
+            default_config.mkdir()
+            default_config.joinpath("settings.ini").write_text(
+                "theme=dark\n", encoding="utf-8"
+            )
 
             # Upgrade checks can inspect a bootstrap template directly without
             # populating App or requiring a current junction.
@@ -414,6 +419,12 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(
                 (new_version / "App" / "payload.txt").read_text(encoding="utf-8"),
                 "one",
+            )
+            self.assertEqual(
+                (new_version / "config.default" / "settings.ini").read_text(
+                    encoding="utf-8"
+                ),
+                "theme=dark\n",
             )
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
@@ -1610,10 +1621,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertIn("$app = Join-Path $PSScriptRoot 'Tool.exe'", written)
             self.assertIn("& $app @args", written)
 
-    def test_bin_command_generates_a_batch_wrapper_with_declared_arguments(
+    def test_bin_target_installs_a_native_shim_with_declared_arguments(
         self,
     ) -> None:
-        """Command-form wrappers add fixed arguments and forward caller arguments."""
+        """Target-form bin entries install a native shim and adjacent configuration."""
 
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1626,9 +1637,9 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 localVersion = 1
 
                 [[bin]]
-                name = "tool.cmd"
-                command = '\"$App\\Tool.exe\"'
-                extra_args = "--fixed value"
+                name = "tool"
+                target = "$App\\\\Tool.exe"
+                arguments = ["--fixed", "value"]
                 forward_args = true
                 """,
             )
@@ -1648,16 +1659,24 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            written = (Path(env["USERPROFILE"]) / "bin" / "tool.cmd").read_text(
-                encoding="ascii"
+            shim_path = Path(env["USERPROFILE"]) / "bin" / "tool.exe"
+            config_path = Path(env["USERPROFILE"]) / "bin" / "tool.config.toml"
+            self.assertEqual(
+                shim_path.read_bytes(),
+                (SRC_ROOT / "gupkg" / "shim" / "shim-console.exe").read_bytes(),
             )
             self.assertEqual(
-                written,
-                f'@echo off\ncall "{version_dir.parent / "current" / "App" / "Tool.exe"}" --fixed value %*\n',
+                tomllib.loads(config_path.read_text(encoding="utf-8")),
+                {
+                    "target": str(version_dir.parent / "current" / "App" / "Tool.exe"),
+                    "forward_arguments": True,
+                    "elevate": False,
+                    "argument": [{"value": "--fixed"}, {"value": "value"}],
+                },
             )
 
-    def test_bin_content_rejects_command_form_options(self) -> None:
-        """Custom wrapper content cannot be combined with generated-wrapper options."""
+    def test_bin_content_rejects_shim_options(self) -> None:
+        """Custom wrapper content cannot be combined with native-shim options."""
 
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1680,9 +1699,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
-            self.assertIn(
-                "cannot be combined with command-form wrapper options", output
-            )
+            self.assertIn("cannot be combined with shim options", output)
 
     def test_install_updates_existing_wrapper_file(self) -> None:
         """Install updates existing wrapper file."""

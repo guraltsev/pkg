@@ -20,14 +20,11 @@
 # iconLocation = "$Icons/myapp.ico,0"
 # description = "Launch My App"
 
-# Example bin entry:
-# $App, $Icons, $Shortcuts gets replaced with the package App directory at install time
+# Example native bin shim:
+# $App, $Icons, $Shortcuts get replaced with package directories at install time.
 # [[bin]]
-# name = "myapp.cmd"
-# content = """
-# @echo off
-# @ $App\app.exe %*
-# """
+# name = "myapp"
+# target = "$App\\app.exe"
 
 name = "qbittorrent"
 version = "5.2.3"

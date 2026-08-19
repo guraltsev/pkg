@@ -14,10 +14,15 @@ mode = "module"
 mode = "zip"
 ignore_checksum = true
 
+[[update.payload.rename]]
+src = "SumatraPDF-${version}-64.exe"
+dest = "SumatraPDF.exe"
+
 [[shortcut]]
 name = "SumatraPDF"
-targetPath = "$App\\SumatraPDF-${version}-64.exe"
+targetPath = "$App\\SumatraPDF.exe"
 
 [[bin]]
-name = "SumatraPDF.cmd"
-content = "@ start \"\" $App\\SumatraPDF-${version}-64.exe %*"
+name = "SumatraPDF"
+target = "$App\\SumatraPDF.exe"
+type = "gui"

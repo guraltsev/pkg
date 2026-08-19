@@ -23,6 +23,5 @@ targetPath = "$App\\resticprofile.exe"
 description = "Restic backup profile manager"
 
 [[bin]]
-name = "resticprofile.cmd"
-command = "\"$App\\resticprofile.exe\""
-forward_args = true
+name = "resticprofile"
+target = "$App\\resticprofile.exe"

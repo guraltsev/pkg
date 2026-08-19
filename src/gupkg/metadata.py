@@ -400,8 +400,7 @@ def create_starter_config(identity: PackageIdentity) -> str:
     example_exe_path = rf"$App\{example_exe}.exe"
     example_icon_path = rf"$Icons\{example_exe}.ico,0"
     example_env_value = rf"${{USERPROFILE}}\{identity.name}"
-    example_wrapper_name = f"{example_wrapper}.cmd"
-    example_wrapper_command = f'"{example_exe_path}" %*'
+    example_wrapper_name = example_wrapper
 
     lines = [
         "# Generated automatically by `gupkg`.",
@@ -504,11 +503,12 @@ def create_starter_config(identity: PackageIdentity) -> str:
         "# [[path]]",
         '# value = "$App"',
         "",
-        "# Example batch wrapper placed in the scope bin directory.",
+        "# Example native executable shim placed in the scope bin directory.",
         "# [[bin]]",
         f"# name = {_to_toml_scalar(example_wrapper_name)}",
-        f"# command = {_to_toml_scalar(example_wrapper_command)}",
-        "# forward_args = true",
-        '# extra_args = "--example"',
+        f"# target = {_to_toml_scalar(example_exe_path)}",
+        '# arguments = ["--example"]',
+        '# type = "console"  # or "gui"',
+        "# forward_args = true  # default",
     ]
     return "\n".join(lines).rstrip() + "\n"

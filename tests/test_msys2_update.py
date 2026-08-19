@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import tomllib
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "pkgs" / "msys2" / "vbootstrap.l1" / "pkg.local" / "check_update.py"
 UNPACKER = ROOT / "pkgs" / "msys2" / "vbootstrap.l1" / "pkg.local" / "unpack_app.py"
 MANIFEST = CHECKER.parents[1] / "pkg.toml"
+NSSWITCH_CONFIGURER = (
+    CHECKER.parents[1] / "config.default" / "configure_nsswitch.py"
+)
 
 
 def _load_checker():
@@ -36,6 +40,15 @@ def _load_checker():
 def _load_unpacker():
     """Load the MSYS2 package-local unpacker as the payload coordinator does."""
     spec = importlib.util.spec_from_file_location("msys2_unpacker", UNPACKER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_nsswitch_configurer():
+    """Load the packaged nsswitch configurator for direct behavior checks."""
+    spec = importlib.util.spec_from_file_location("msys2_nsswitch", NSSWITCH_CONFIGURER)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -96,6 +109,20 @@ def test_bootstrap_manifest_declares_msys2_install_path() -> None:
     assert config["update"]["check"]["mode"] == "module"
     assert config["update"]["payload"]["mode"] == "module"
     assert config["environment"] == [{"Name": "MSYS2_INSTALL_PATH", "Value": "$App"}]
+
+
+def test_nsswitch_configurer_sets_windows_db_home(tmp_path: Path, capsys) -> None:
+    """The packaged configuration command reports its Windows-home update."""
+    configurer = _load_nsswitch_configurer()
+    nsswitch_path = tmp_path / "etc" / "nsswitch.conf"
+    nsswitch_path.parent.mkdir()
+    nsswitch_path.write_text("passwd: files\ndb_home: cygwin\n", encoding="utf-8")
+
+    with mock.patch.dict(os.environ, {"MSYS2_INSTALL_PATH": str(tmp_path)}, clear=False):
+        assert configurer.main() == 0
+
+    assert nsswitch_path.read_text(encoding="utf-8") == "passwd: files\ndb_home: windows\n"
+    assert capsys.readouterr().out == f"Updated db_home to windows in {nsswitch_path}\n"
 
 
 def test_unpacker_promotes_msys64_contents_to_the_app_root(tmp_path: Path) -> None:

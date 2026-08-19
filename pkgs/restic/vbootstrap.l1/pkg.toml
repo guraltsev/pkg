@@ -25,5 +25,5 @@ dest = "restic.exe"
 value = "$App"
 
 [[bin]]
-name = "restic.cmd"
-content = "@ $App\\restic.exe %*"
+name = "restic"
+target = "$App\\restic.exe"

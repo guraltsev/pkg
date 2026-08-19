@@ -24,6 +24,6 @@ iconLocation = "$App\\DB Browser for SQLite.exe"
 description = "DB Browser for SQLite"
 
 [[bin]]
-name = "sqlitebrowser.cmd"
-command = "\"$App\\DB Browser for SQLite.exe\""
-forward_args = true
+name = "sqlitebrowser"
+target = "$App\\DB Browser for SQLite.exe"
+type = "gui"

@@ -74,9 +74,8 @@ Name = "RIPGREP_HOME"
 Value = "$App"
 
 [[bin]]
-name = "rg.cmd"
-command = "\"$App\\rg.exe\""
-forward_args = true
+name = "rg"
+target = "$App\\rg.exe"
 ```
 
 This creates a shortcut to the executable, stores the full `App` path in an
@@ -297,10 +296,9 @@ Value = "$App"
 value = "$App"
 
 [[bin]]
-name = "rg.cmd"
-command = "\"$App\\rg.exe\""
-forward_args = true
-extra_args = "--color=auto"
+name = "rg"
+target = "$App\\rg.exe"
+arguments = ["--color=auto"]
 ```
 
 Top-level keys are exactly: `name`, `version`, `localVersion`, `description`,
@@ -388,25 +386,33 @@ Values are written as expandable Windows registry strings. Each `[[path]]`
 table has one `value`; normalized entries are appended only when they are not
 already present (case-insensitive, ignoring a trailing slash).
 
-Each `[[bin]]` table requires `name` and either `content` or `command`:
+Each `[[bin]]` table normally declares a native executable shim with `name`
+and `target`:
 
 ```toml
-# Write exactly this wrapper content.
 [[bin]]
-name = "tool.cmd"
-content = "@echo off\r\ncall \"$App\\tool.exe\" %*\r\n"
-
-# Or let gupkg produce @echo off / call <command>.
-[[bin]]
-name = "tool.cmd"
-command = "\"$App\\tool.exe\""
-extra_args = "--safe"
-forward_args = true
+name = "tool"
+target = "$App\\tool.exe"
+type = "console"            # default; use "gui" for desktop applications
+arguments = ["--safe"]      # fixed arguments precede caller arguments
+forward_args = true          # default
+elevate = false              # default
+working_dir = "$App"        # optional
 ```
 
-`extra_args` and `forward_args` are valid only with `command`; `forward_args`
-defaults to `false`. With command form, `gupkg` emits `@echo off`, then `call
-<command>`, followed by `extra_args` and `%*` when requested.
+The installed command is `<name>.exe` (an explicit `.exe` suffix is also
+accepted) with a matching `<name>.config.toml`. The launcher invokes `target`
+directly, without a shell. Use `type = "gui"` when the command should not
+create or attach to a console.
+
+When shell behavior or custom file content is necessary, `content` remains an
+explicit escape hatch. It cannot be combined with shim options:
+
+```toml
+[[bin]]
+name = "tool.cmd"
+content = "@echo off\r\ncall \"$App\\tool.cmd\" %*\r\n"
+```
 
 Shortcut and wrapper names are expanded before placement. A simple name goes
 under the scope's default root; nested relative paths are allowed. Absolute
@@ -422,9 +428,8 @@ environment references such as `${USERPROFILE}` expand from the process
 environment and must resolve. `$$` becomes a literal dollar sign.
 
 In normal configuration fields, an unbraced non-package token such as `$NAME`
-is an error. In `[[bin]].content` and generated command wrappers, such tokens
-remain literal so native batch, PowerShell, and shell variables work as
-expected.
+is an error. In `[[bin]].content`, such tokens remain literal so native batch,
+PowerShell, and shell variables work as expected.
 
 ## Updates
 

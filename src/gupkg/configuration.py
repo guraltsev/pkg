@@ -1094,14 +1094,23 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
                 )
             path_entries.append(value)
 
-    bin_entries: List[Dict[str, str]] = []
+    bin_entries: List[Dict[str, Any]] = []
     raw_bin = raw.get("bin")
     if raw_bin is not None:
         if not isinstance(raw_bin, list):
             raise ConfigValidationError(
                 f"'bin' must be a list, got: {type(raw_bin).__name__}"
             )
-        bin_keys = {"name", "content", "command", "forward_args", "extra_args"}
+        bin_keys = {
+            "name",
+            "target",
+            "type",
+            "arguments",
+            "forward_args",
+            "elevate",
+            "working_dir",
+            "content",
+        }
         for index, item in enumerate(raw_bin):
             if not isinstance(item, dict):
                 raise ConfigValidationError(
@@ -1113,55 +1122,87 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
                 context=f"bin[{index}]",
                 ordered_allowed=[
                     "name",
-                    "content",
-                    "command",
+                    "target",
+                    "type",
+                    "arguments",
                     "forward_args",
-                    "extra_args",
+                    "elevate",
+                    "working_dir",
+                    "content",
                 ],
             )
             content = _normalize_required_string(
                 item.get("content"), field_name=f"bin[{index}].content"
             )
-            command = _normalize_required_string(
-                item.get("command"), field_name=f"bin[{index}].command"
+            target = _normalize_required_string(
+                item.get("target"), field_name=f"bin[{index}].target"
             )
-            extra_args = _normalize_required_string(
-                item.get("extra_args"), field_name=f"bin[{index}].extra_args"
+            shim_type = _normalize_optional_string(
+                item.get("type"), field_name=f"bin[{index}].type"
             )
-            forward_args = item.get("forward_args", False)
-            if not isinstance(forward_args, bool):
+            if shim_type and shim_type not in {"console", "gui"}:
                 raise ConfigValidationError(
-                    f"'bin[{index}].forward_args' must be a boolean, got: {type(forward_args).__name__}"
+                    f"'bin[{index}].type' must be 'console' or 'gui', "
+                    f"got: {shim_type!r}"
                 )
-            if "content" in item and any(
-                key in item for key in ("command", "extra_args", "forward_args")
+
+            arguments = item.get("arguments", [])
+            if not isinstance(arguments, list) or any(
+                not isinstance(argument, str) for argument in arguments
             ):
                 raise ConfigValidationError(
-                    f"'bin[{index}].content' cannot be combined with command-form wrapper options"
+                    f"'bin[{index}].arguments' must be an array of strings"
                 )
-            if command:
-                # Build the conventional batch wrapper before applying script-variable
-                # expansion, so declared commands retain the same expansion rules as content.
-                content = f"@echo off\r\ncall {command}"
-                if extra_args:
-                    content += f" {extra_args}"
-                if forward_args:
-                    content += " %*"
-                content += "\r\n"
-            elif extra_args or forward_args:
+
+            forward_args = item.get("forward_args", True)
+            if not isinstance(forward_args, bool):
                 raise ConfigValidationError(
-                    f"'bin[{index}]' may use 'extra_args' and 'forward_args' only with 'command'"
+                    f"'bin[{index}].forward_args' must be a boolean, "
+                    f"got: {type(forward_args).__name__}"
+                )
+            elevate = item.get("elevate", False)
+            if not isinstance(elevate, bool):
+                raise ConfigValidationError(
+                    f"'bin[{index}].elevate' must be a boolean, "
+                    f"got: {type(elevate).__name__}"
+                )
+            working_dir = _normalize_optional_string(
+                item.get("working_dir"), field_name=f"bin[{index}].working_dir"
+            )
+
+            shim_keys = {
+                "target",
+                "type",
+                "arguments",
+                "forward_args",
+                "elevate",
+                "working_dir",
+            }
+            if "content" in item and any(key in item for key in shim_keys):
+                raise ConfigValidationError(
+                    f"'bin[{index}].content' cannot be combined with shim options"
                 )
             if "\n" not in content:
                 content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
-            bin_entries.append(
-                {
-                    "name": _normalize_required_string(
-                        item.get("name"), field_name=f"bin[{index}].name"
-                    ),
-                    "content": content,
-                }
-            )
+            normalized_bin: Dict[str, Any] = {
+                "name": _normalize_required_string(
+                    item.get("name"), field_name=f"bin[{index}].name"
+                )
+            }
+            if "content" in item:
+                normalized_bin["content"] = content
+            else:
+                normalized_bin.update(
+                    {
+                        "target": target,
+                        "type": shim_type or "console",
+                        "arguments": list(arguments),
+                        "forward_args": forward_args,
+                        "elevate": elevate,
+                        "working_dir": working_dir,
+                    }
+                )
+            bin_entries.append(normalized_bin)
 
     return {
         "description": _normalize_optional_string(
@@ -1219,8 +1260,8 @@ def validate_runtime_config(config: Dict[str, Any]) -> None:
         missing = []
         if not wrapper.get("name", "").strip():
             missing.append("name")
-        if wrapper.get("content", "") == "":
-            missing.append("content or command")
+        if wrapper.get("content", "") == "" and wrapper.get("target", "") == "":
+            missing.append("target or content")
         if missing:
             errors.append(f"bin[{index}] missing required key(s): {', '.join(missing)}")
     if errors:

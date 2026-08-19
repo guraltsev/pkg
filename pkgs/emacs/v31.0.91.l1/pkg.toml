@@ -29,13 +29,15 @@ workingDirectory = "%USERPROFILE%"
 description = "Emacs text editor (client)"
 
 [[bin]]
-name = "emacs.cmd"
-content = "@ $App\\bin\\emacs.exe %*"
+name = "emacs"
+target = "$App\\bin\\emacs.exe"
+type = "gui"
 
 [[bin]]
-name = "emacsclient.cmd"
-content = "@ $App\\bin\\emacsclient.exe %*"
+name = "emacsclient"
+target = "$App\\bin\\emacsclient.exe"
 
 [[bin]]
-name = "emacsclientw.cmd"
-content = "@ $App\\bin\\emacsclientw.exe %*"
+name = "emacsclientw"
+target = "$App\\bin\\emacsclientw.exe"
+type = "gui"

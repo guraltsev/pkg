@@ -13,6 +13,7 @@ combines individual outcomes into one install-step result.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -28,6 +29,7 @@ from .core import (
     log_warning,
     write_bytes_atomic,
 )
+from .layout import _warn_if_output_path_is_unusual
 from .windows import (
     broadcast_environment_change,
     create_shortcut,
@@ -36,7 +38,6 @@ from .windows import (
     require_winreg,
     write_registry_value,
 )
-from .layout import _warn_if_output_path_is_unusual
 
 
 def install_shortcuts(
@@ -475,7 +476,7 @@ def ensure_bin_in_path(
 
 
 def install_wrappers(
-    wrapper_entries: List[Dict[str, str]],
+    wrapper_entries: List[Dict[str, Any]],
     identity: PackageIdentity,
     scope_paths: Dict[str, Path],
 ) -> StepResult:
@@ -483,7 +484,7 @@ def install_wrappers(
 
     Parameters
     ----------
-    wrapper_entries : List[Dict[str, str]]
+    wrapper_entries : List[Dict[str, Any]]
         Normalized ``[[bin]]`` rows from the runtime config.
     identity : PackageIdentity
         Package identity used for variable expansion.
@@ -501,7 +502,6 @@ def install_wrappers(
     for wrapper_entry in wrapper_entries:
         raw_name = wrapper_entry.get("name", "")
         try:
-            raw_content = wrapper_entry.get("content", "")
             if not raw_name:
                 raise ValueError("wrapper entry is missing name")
 
@@ -513,45 +513,138 @@ def install_wrappers(
                 )
             expanded_name = name_expansion.value.strip()
 
-            content_expansion = expand_text(raw_content, identity, ExpansionMode.SCRIPT)
-            if content_expansion.unresolved:
-                unresolved = ", ".join(content_expansion.unresolved)
-                raise ValueError(
-                    f"wrapper '{expanded_name or raw_name}' content contains unresolved variable(s): {unresolved}"
-                )
-            expanded_content = content_expansion.value
-
+            # Resolve the output before choosing the raw-file or native-shim
+            # path so both forms retain the same placement and warning rules.
             bin_dir.mkdir(parents=True, exist_ok=True)
-
             wrapper_path = bin_dir / expanded_name
+            if "content" not in wrapper_entry:
+                if wrapper_path.suffix == "":
+                    wrapper_path = wrapper_path.with_suffix(".exe")
+                elif wrapper_path.suffix.lower() != ".exe":
+                    raise ValueError("shim name must have no extension or use .exe")
             _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
             wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
-            extension = wrapper_path.suffix.lower()
-            if extension in (".cmd", ".bat"):
-                try:
-                    desired_bytes = expanded_content.encode("ascii")
-                except UnicodeEncodeError:
-                    log_warning(
-                        f"non-ASCII content in {extension} wrapper; writing UTF-8 with BOM: {wrapper_path.name}"
+            # Content entries intentionally retain the escape hatch for batch,
+            # PowerShell, and other files that require shell-specific behavior.
+            if "content" in wrapper_entry:
+                raw_content = wrapper_entry.get("content", "")
+                content_expansion = expand_text(
+                    raw_content, identity, ExpansionMode.SCRIPT
+                )
+                if content_expansion.unresolved:
+                    unresolved = ", ".join(content_expansion.unresolved)
+                    raise ValueError(
+                        f"wrapper '{expanded_name or raw_name}' content contains "
+                        f"unresolved variable(s): {unresolved}"
                     )
-                    desired_bytes = expanded_content.encode("utf-8-sig")
-            else:
-                desired_bytes = expanded_content.encode("utf-8")
+                expanded_content = content_expansion.value
 
-            existed_before = wrapper_path.exists()
-            if existed_before:
-                try:
-                    if wrapper_path.read_bytes() == desired_bytes:
-                        log_info(f"BIN: up-to-date: {wrapper_path}")
-                        continue
-                except OSError:
-                    pass
+                extension = wrapper_path.suffix.lower()
+                if extension in (".cmd", ".bat"):
+                    try:
+                        desired_bytes = expanded_content.encode("ascii")
+                    except UnicodeEncodeError:
+                        log_warning(
+                            f"non-ASCII content in {extension} wrapper; writing "
+                            f"UTF-8 with BOM: {wrapper_path.name}"
+                        )
+                        desired_bytes = expanded_content.encode("utf-8-sig")
+                else:
+                    desired_bytes = expanded_content.encode("utf-8")
 
-            write_bytes_atomic(wrapper_path, desired_bytes)
-            action = "updated" if existed_before else "created"
-            log_info(f"BIN: {action}: {wrapper_path}")
-            result.changed = True
+                existed_before = wrapper_path.exists()
+                if existed_before:
+                    try:
+                        if wrapper_path.read_bytes() == desired_bytes:
+                            log_info(f"BIN: up-to-date: {wrapper_path}")
+                            continue
+                    except OSError:
+                        pass
+
+                write_bytes_atomic(wrapper_path, desired_bytes)
+                action = "updated" if existed_before else "created"
+                log_info(f"BIN: {action}: {wrapper_path}")
+                result.changed = True
+                continue
+
+            # Expand each shim field independently and reject unresolved values
+            # before either of the paired launcher files is written.
+            expanded_fields: Dict[str, str] = {}
+            for field_name in ("target", "working_dir"):
+                raw_value = wrapper_entry.get(field_name) or ""
+                expansion = expand_text(raw_value, identity, ExpansionMode.GENERAL)
+                if expansion.unresolved:
+                    unresolved = ", ".join(expansion.unresolved)
+                    raise ValueError(
+                        f"shim '{expanded_name}' {field_name} contains unresolved "
+                        f"variable(s): {unresolved}"
+                    )
+                expanded_fields[field_name] = expansion.value
+
+            expanded_arguments: List[str] = []
+            for raw_argument in wrapper_entry.get("arguments", []):
+                expansion = expand_text(
+                    raw_argument, identity, ExpansionMode.GENERAL
+                )
+                if expansion.unresolved:
+                    unresolved = ", ".join(expansion.unresolved)
+                    raise ValueError(
+                        f"shim '{expanded_name}' argument contains unresolved "
+                        f"variable(s): {unresolved}"
+                    )
+                expanded_arguments.append(expansion.value)
+
+            # The executable and adjacent TOML file are the shim's public
+            # installation unit. JSON strings are valid TOML basic strings.
+            config_lines = [
+                f"target = {json.dumps(expanded_fields['target'], ensure_ascii=False)}",
+                "forward_arguments = "
+                + str(wrapper_entry.get("forward_args", True)).lower(),
+                f"elevate = {str(wrapper_entry.get('elevate', False)).lower()}",
+            ]
+            if expanded_fields["working_dir"]:
+                config_lines.append(
+                    "working_dir = "
+                    + json.dumps(expanded_fields["working_dir"], ensure_ascii=False)
+                )
+            for argument in expanded_arguments:
+                config_lines.extend(
+                    [
+                        "",
+                        "[[argument]]",
+                        f"value = {json.dumps(argument, ensure_ascii=False)}",
+                    ]
+                )
+            config_bytes = ("\n".join(config_lines) + "\n").encode("utf-8")
+
+            shim_type = wrapper_entry.get("type", "console")
+            launcher_source = (
+                Path(__file__).with_name("shim") / f"shim-{shim_type}.exe"
+            )
+            launcher_bytes = launcher_source.read_bytes()
+            config_path = wrapper_path.with_name(
+                f"{wrapper_path.stem}.config.toml"
+            )
+
+            # Repair either half independently so reinstalling is idempotent
+            # and also recovers incomplete prior installations.
+            for output_path, desired_bytes in (
+                (wrapper_path, launcher_bytes),
+                (config_path, config_bytes),
+            ):
+                existed_before = output_path.exists()
+                if existed_before:
+                    try:
+                        if output_path.read_bytes() == desired_bytes:
+                            log_info(f"BIN: up-to-date: {output_path}")
+                            continue
+                    except OSError:
+                        pass
+                write_bytes_atomic(output_path, desired_bytes)
+                action = "updated" if existed_before else "created"
+                log_info(f"BIN: {action}: {output_path}")
+                result.changed = True
             continue
 
         except Exception as exc:

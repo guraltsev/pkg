@@ -43,5 +43,5 @@ Name = "MSYS2_INSTALL_PATH"
 Value = "$App"
 
 [[bin]]
-name = "env.cmd"
-content = "@ $App\\usr\\bin\\env.exe %*"
+name = "env"
+target = "$App\\usr\\bin\\env.exe"

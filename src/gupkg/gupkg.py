@@ -203,12 +203,13 @@ Canonical config keys
 4) PATH additions (``path`` list)
    Use repeated ``[[path]]`` tables with the single key ``value``.
 
-5) Bin wrappers (``bin`` list)
-   Each entry has ``name`` and ``content``. ``name`` follows the same output
-   placement rule as shortcuts: it may be a simple name, a nested relative
-   path, or a path-like destination outside the default bin root. Wrapper
-   content uses the script expansion mode so PowerShell variables such as
-   ``$PSScriptRoot`` remain literal unless they are package variables.
+5) Bin commands (``bin`` list)
+   Native shims use ``name`` and ``target`` with optional ``type``,
+   ``arguments``, ``forward_args``, ``elevate``, and ``working_dir``. Use
+   ``content`` instead of ``target`` only to write a raw command or script file
+   when shell behavior is required. Names follow the same placement rule as
+   shortcuts. Raw content uses script expansion mode so PowerShell variables
+   such as ``$PSScriptRoot`` remain literal unless they are package variables.
 
 Output placement notes
 ~~~~~~~~~~~~~~~~~~~~~~

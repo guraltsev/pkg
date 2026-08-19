@@ -17,8 +17,6 @@ url = "git@github.com:guraltsev/overleaf-sync.git"
 mode = "git"
 
 [[bin]]
-name = "overleaf-sync.cmd"
-content = '''
-@echo off
-call "$App\ols.cmd" --store-path "%USERPROFILE%\.olauth" %*
-'''
+name = "overleaf-sync"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\ols.cmd", "--store-path", "%USERPROFILE%\\.olauth"]

@@ -371,12 +371,19 @@ def _prepare_update(
     new_identity = _next_version_identity(identity, candidate)
     stage = work / "version"
     stage.mkdir(parents=True)
-    shutil.copytree(
-        identity.version_path,
-        stage,
-        dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("App", "__pycache__", "*.pyc"),
-    )
+
+    # Preserve the bootstrap package's support tree in its promoted version.
+    # ``App`` is the only generated directory: the selected update payload
+    # replaces it below.  Copying entries individually keeps every other
+    # directory, including empty defaults such as ``config.default``.
+    for source in identity.version_path.iterdir():
+        if source.name == "App":
+            continue
+        destination = stage / source.name
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        else:
+            shutil.copy2(source, destination)
     staged_identity = PackageIdentity.from_version_path(
         identity.package_root,
         stage.with_name(new_identity.version_string),

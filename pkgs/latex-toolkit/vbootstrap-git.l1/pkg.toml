@@ -17,127 +17,91 @@ url = "git@github.com:guraltsev/latex-toolkit.git"
 mode = "git"
 
 [[bin]]
-name = "lt_brace_args.cmd"
-content = '''
-@echo off
-call "$App\src\lt_brace_args.cmd" %*
-'''
+name = "lt_brace_args"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_brace_args.cmd"]
 
 [[bin]]
-name = "lt_eqnum_label.cmd"
-content = '''
-@echo off
-call "$App\src\lt_eqnum_label.cmd" %*
-'''
+name = "lt_eqnum_label"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_eqnum_label.cmd"]
 
 [[bin]]
-name = "lt_full_normalize.cmd"
-content = '''
-@echo off
-call "$App\src\lt_full_normalize.cmd" %*
-'''
+name = "lt_full_normalize"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_full_normalize.cmd"]
 
 [[bin]]
-name = "lt_greek_latex2unicode.cmd"
-content = '''
-@echo off
-call "$App\src\lt_greek_latex2unicode.cmd" %*
-'''
+name = "lt_greek_latex2unicode"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_greek_latex2unicode.cmd"]
 
 [[bin]]
-name = "lt_greek_unicode2latex.cmd"
-content = '''
-@echo off
-call "$App\src\lt_greek_unicode2latex.cmd" %*
-'''
+name = "lt_greek_unicode2latex"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_greek_unicode2latex.cmd"]
 
 [[bin]]
-name = "lt_math_dollar2latex.cmd"
-content = '''
-@echo off
-call "$App\src\lt_math_dollar2latex.cmd" %*
-'''
+name = "lt_math_dollar2latex"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_math_dollar2latex.cmd"]
 
 [[bin]]
-name = "lt_math_latex2dollar.cmd"
-content = '''
-@echo off
-call "$App\src\lt_math_latex2dollar.cmd" %*
-'''
+name = "lt_math_latex2dollar"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_math_latex2dollar.cmd"]
 
 [[bin]]
-name = "lt_sentence-per-line.cmd"
-content = '''
-@echo off
-call "$App\src\lt_sentence-per-line.cmd" %*
-'''
+name = "lt_sentence-per-line"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_sentence-per-line.cmd"]
 
 [[bin]]
-name = "lt_syntax_regularizer.cmd"
-content = '''
-@echo off
-call "$App\src\lt_syntax_regularizer.cmd" %*
-'''
+name = "lt_syntax_regularizer"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_syntax_regularizer.cmd"]
 
 [[bin]]
-name = "mdt_brace_args.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_brace_args.cmd" %*
-'''
+name = "mdt_brace_args"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_brace_args.cmd"]
 
 [[bin]]
-name = "mdt_full_normalize.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_full_normalize.cmd" %*
-'''
+name = "mdt_full_normalize"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_full_normalize.cmd"]
 
 [[bin]]
-name = "mdt_greek_latex2unicode.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_greek_latex2unicode.cmd" %*
-'''
+name = "mdt_greek_latex2unicode"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_greek_latex2unicode.cmd"]
 
 [[bin]]
-name = "mdt_greek_unicode2latex.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_greek_unicode2latex.cmd" %*
-'''
+name = "mdt_greek_unicode2latex"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_greek_unicode2latex.cmd"]
 
 [[bin]]
-name = "mdt_math_dollar2latex.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_math_dollar2latex.cmd" %*
-'''
+name = "mdt_math_dollar2latex"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_math_dollar2latex.cmd"]
 
 [[bin]]
-name = "mdt_math_latex2dollar.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_math_latex2dollar.cmd" %*
-'''
+name = "mdt_math_latex2dollar"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_math_latex2dollar.cmd"]
 
 [[bin]]
-name = "mdt_sentence_per_line.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_sentence_per_line.cmd" %*
-'''
+name = "mdt_sentence_per_line"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_sentence_per_line.cmd"]
 
 [[bin]]
-name = "mdt_syntax_regularizer.cmd"
-content = '''
-@echo off
-call "$App\src\mdt_syntax_regularizer.cmd" %*
-'''
+name = "mdt_syntax_regularizer"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\mdt_syntax_regularizer.cmd"]
 
 [[bin]]
-name = "lt_template.cmd"
-content = '''
-@echo off
-call "$App\src\lt_template.cmd" %*
-'''
+name = "lt_template"
+target = "%COMSPEC%"
+arguments = ["/d", "/c", "$App\\src\\lt_template.cmd"]

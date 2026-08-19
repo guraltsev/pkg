@@ -26,5 +26,5 @@ value = "$App"
 
 
 [[bin]]
-name = "pandoc.cmd"
-content = "@ $App\\pandoc.exe %*"
+name = "pandoc"
+target = "$App\\pandoc.exe"

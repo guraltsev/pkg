@@ -1,9 +1,9 @@
-"""Cover SumatraPDF Portable release discovery and executable path expansion.
+"""Cover SumatraPDF Portable release discovery and installed executable naming.
 
 The SumatraPDF download page boundary is mocked, while the package-local update
-module and normal package-variable expansion are real. Downloading and ZIP
-extraction are covered by the package manager's broader update tests and are
-out of scope.
+module and manifest normalization are real. Downloading, ZIP extraction, and
+the generic payload rename mechanism are covered by the package manager's
+broader update tests and are out of scope.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from gupkg.configuration import normalize_runtime_config
-from gupkg.core import ExpansionMode, PackageIdentity, expand_text
+from gupkg.core import PackageIdentity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,20 +69,24 @@ def test_checker_returns_the_versioned_portable_zip_from_download_page() -> None
     )
 
 
-def test_version_variable_expands_to_the_active_package_version(tmp_path) -> None:
-    """The wrapper executable name follows the immutable release directory version."""
+def test_manifest_renames_the_release_executable_to_a_stable_name(tmp_path) -> None:
+    """The installed shortcut and native shim use the versionless executable."""
     identity = PackageIdentity.from_version_path(
         tmp_path / "SumatraPDF-portable",
         tmp_path / "SumatraPDF-portable" / "v3.6.1.l1",
         is_current=False,
     )
 
-    expansion = expand_text(
-        "$App\\SumatraPDF-${version}-64.exe", identity, ExpansionMode.SCRIPT
+    config = normalize_runtime_config(
+        tomllib.loads(MANIFEST.read_text(encoding="utf-8")), identity
     )
 
-    assert expansion.value.endswith(r"current\App\SumatraPDF-3.6.1-64.exe")
-    assert expansion.unresolved == []
+    assert config["update"]["payload"]["rename"] == [
+        {"src": "SumatraPDF-${version}-64.exe", "dest": "SumatraPDF.exe"}
+    ]
+    assert config["shortcut"][0]["targetPath"] == "$App\\SumatraPDF.exe"
+    assert config["bin"][0]["target"] == "$App\\SumatraPDF.exe"
+    assert config["bin"][0]["type"] == "gui"
 
 
 def test_bootstrap_manifest_uses_the_local_zip_updater() -> None:
