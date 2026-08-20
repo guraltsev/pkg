@@ -23,6 +23,8 @@ Directory identity and result objects cross those boundaries explicitly.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -80,6 +82,13 @@ from gupkg.updates import (  # noqa: E402
     _toml_value,
     _update_paths,
     _write_update_state,
+)
+from gupkg.manager import (  # noqa: E402
+    discover_manager,
+    load_manager_config,
+    scope_id,
+    scope_name,
+    select_target,
 )
 from gupkg.windows import (  # noqa: E402
     is_current_user_admin,
@@ -1533,6 +1542,195 @@ def _run_package_tui(package_path: Path) -> int:
         return EXIT_MUTATION_ERROR
 
 
+def _manager_scope(value: str, *, allow_all: bool = True) -> set[Scope]:
+    """Convert manager's lowercase scope spelling into configured scopes."""
+    choices = {"user": {Scope.USER}, "system": {Scope.MACHINE}}
+    if allow_all:
+        choices["all"] = {Scope.USER, Scope.MACHINE}
+    try:
+        return choices[value]
+    except KeyError as exc:
+        allowed = "user, system, all" if allow_all else "user, system"
+        raise ValueError(f"--scope must be one of: {allowed}") from exc
+
+
+def _manager_targets(inventory, scopes: set[Scope]):
+    """Return targets in stable inventory order for the selected scopes."""
+    return [target for target in inventory.targets if target.scope in scopes]
+
+
+def _manager_update(target) -> ActionResult:
+    """Refresh one target's update state while keeping CLI output suppressed."""
+    manifest = next(
+        (item for item in target.package.manifests if item.version_path.name == target.local_version),
+        None,
+    )
+    if manifest is None:
+        target.update_status = "error"
+        target.diagnostics.append("No manifest is available for the local version")
+        return ActionResult(False, errors=target.diagnostics[-1:], exit_code=EXIT_USER_ERROR)
+    # Update checks are intentionally the only manager read command allowed to
+    # contact an update provider; their ordinary progress belongs outside TOML.
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = check_package_update(manifest.version_path)
+    except (ConfigValidationError, ValueError, OSError) as exc:
+        target.update_status = "error"
+        target.diagnostics.append(str(exc))
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+    except Exception as exc:
+        target.update_status = "error"
+        target.diagnostics.append(str(exc))
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+    if result.status in {"available", "current"}:
+        target.update_status = result.status
+    elif result.ok:
+        target.update_status = "not-configured"
+    else:
+        target.update_status = "error"
+    state = _load_update_state(_update_paths(target.package.root)["state"])
+    candidate_id = state.get("lastCandidateId")
+    for candidate in state.get("candidates", []):
+        if candidate.get("candidateId") == candidate_id:
+            target.candidate_version = candidate.get("version")
+            break
+    target.diagnostics.extend(result.errors)
+    return result
+
+
+def _toml_array(values: list[str]) -> str:
+    """Render a stable TOML string array for manager diagnostics."""
+    return "[" + ", ".join(_toml_value(value) for value in values) + "]"
+
+
+def _manager_toml(inventory, targets, *, complete: bool, upgraded: int = 0,
+                  skipped: int = 0, failed: int = 0) -> None:
+    """Render the issue 011 manager document without interleaved log text."""
+    installed = sum(target.installation_status == "installed" for target in targets)
+    current = sum(target.update_status == "current" for target in targets)
+    print("[manager]")
+    print("schema_version = 1")
+    print(f"config = {_toml_value(str(inventory.config.path))}")
+    print(f"complete = {'true' if complete else 'false'}")
+    for target in targets:
+        print("\n[[target]]")
+        print(f"id = {_toml_value(target.target_id)}")
+        print(f"selector = {_toml_value(target.package.selector)}")
+        print(f"scope = {_toml_value(scope_id(target.scope))}")
+        print(f"path = {_toml_value(str(target.package.root))}")
+        print(f"installation = {_toml_value(target.installation_status)}")
+        print(f"installed_version = {_toml_value(target.installed_version or '')}")
+        print(f"local_version = {_toml_value(target.local_version or '')}")
+        print(f"health = {_toml_value(target.health_status)}")
+        print(f"update = {_toml_value(target.update_status)}")
+        print(f"candidate_version = {_toml_value(target.candidate_version or '')}")
+        print("changed = false")
+        print(f"errors = {_toml_array(target.diagnostics)}")
+        print("warnings = []")
+    print("\n[summary]")
+    print(f"total = {len(targets)}")
+    print(f"installed = {installed}")
+    print(f"upgraded = {upgraded}")
+    print(f"current = {current}")
+    print(f"skipped = {skipped}")
+    print(f"failed = {failed}")
+
+
+def _manager_list(inventory, *, scopes: set[Scope], filter_name: str, toml: bool) -> int:
+    """List manager targets using local state, refreshing only updatable views."""
+    targets = _manager_targets(inventory, scopes)
+    highest = EXIT_SUCCESS
+    if filter_name == "updatable":
+        for target in targets:
+            highest = max(highest, _manager_update(target).exit_code)
+        # Failed checks remain visible so an updatable view does not hide the
+        # reason a candidate could not be established.
+        targets = [target for target in targets if target.update_status in {"available", "error"}]
+    elif filter_name == "installed":
+        targets = [target for target in targets if target.installation_status == "installed"]
+    elif filter_name == "uninstalled":
+        targets = [target for target in targets if target.installation_status == "not-installed"]
+    elif filter_name == "unhealthy":
+        targets = [target for target in targets if target.health_status != "healthy"]
+    complete = all(scope.complete for scope in inventory.scopes if scope.scope in scopes)
+    if not complete:
+        highest = max(highest, EXIT_USER_ERROR)
+    if toml:
+        _manager_toml(inventory, targets, complete=complete, failed=sum(t.update_status == "error" for t in targets))
+    else:
+        log_info(f"Manager: {inventory.config.path}")
+        for target in targets:
+            version = target.installed_version or "-"
+            log_info(f"{target.target_id}  {scope_name(target.scope)}  {target.installation_status} {version}  {target.health_status}  {target.update_status}")
+        log_info(f"{len(targets)} targets selected.")
+    return highest
+
+
+def _manager_doctor(inventory, *, scopes: set[Scope], toml: bool) -> int:
+    """Validate manager roots and every selected manifest without network access."""
+    targets = _manager_targets(inventory, scopes)
+    highest = EXIT_SUCCESS
+    for target in targets:
+        if target.health_status != "healthy":
+            highest = max(highest, EXIT_USER_ERROR)
+        for manifest in target.package.manifests:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = health_check_package(manifest.version_path, scope=target.scope)
+            if not result.ok:
+                target.diagnostics.extend(result.errors)
+                target.health_status = "unhealthy"
+                highest = max(highest, result.exit_code)
+    complete = all(scope.complete for scope in inventory.scopes if scope.scope in scopes)
+    if not complete:
+        highest = max(highest, EXIT_USER_ERROR)
+    if toml:
+        _manager_toml(inventory, targets, complete=complete, failed=sum(t.health_status != "healthy" for t in targets))
+    else:
+        log_info(f"Manager doctor: {inventory.config.path}")
+        for target in targets:
+            log_info(f"{target.target_id}: {target.health_status}")
+            for diagnostic in target.diagnostics:
+                log_error(f"  - {diagnostic}")
+        for scope in inventory.scopes:
+            if scope.scope in scopes:
+                for diagnostic in scope.diagnostics:
+                    log_error(f"  - {diagnostic}")
+    return highest
+
+
+def _manager_check(inventory, *, scopes: set[Scope], toml: bool) -> int:
+    """Refresh update status for all selected targets and aggregate severity."""
+    targets = _manager_targets(inventory, scopes)
+    highest = EXIT_SUCCESS
+    for target in targets:
+        highest = max(highest, _manager_update(target).exit_code)
+    complete = all(scope.complete for scope in inventory.scopes if scope.scope in scopes)
+    if not complete:
+        highest = max(highest, EXIT_USER_ERROR)
+    if toml:
+        _manager_toml(inventory, targets, complete=complete, failed=sum(t.update_status == "error" for t in targets))
+    else:
+        log_info(f"Manager update check: {inventory.config.path}")
+        for target in targets:
+            log_info(f"{target.target_id}: {target.update_status}")
+    return highest
+
+
+def _manager_config_path(raw: list[str], explicit: Path | None) -> tuple[Path | None, bool]:
+    """Resolve exactly ``--config`` or the current directory marker."""
+    if explicit is not None:
+        return explicit, True
+    marker = Path.cwd() / "gupkg-config.toml"
+    return (marker, False) if marker.exists() else (None, False)
+
+
+def _has_explicit_package_path(arguments: list[str]) -> bool:
+    """Recognize package command forms that carry a positional path."""
+    if len(arguments) >= 2 and arguments[0] == "install":
+        return not arguments[1].startswith("-")
+    return len(arguments) >= 3 and arguments[0] in {"upgrade", "config"} and not arguments[2].startswith("-")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Dispatch package commands and collection-wide read-only commands.
 
@@ -1546,17 +1744,87 @@ def main(argv: Optional[List[str]] = None) -> int:
     int
         Process exit status shared by console-script and module invocation.
     """
-    from gupkg.collection import discover_collection, select_package
-
     raw = list(sys.argv[1:] if argv is None else argv)
     globals_parser = argparse.ArgumentParser(add_help=False)
     globals_parser.add_argument("--root", type=Path)
     globals_parser.add_argument("--package")
+    globals_parser.add_argument("--config", type=Path)
     globals_parser.add_argument("--max-depth", type=int, default=8)
     globals_parser.add_argument("--toml", action="store_true")
     globals_args, remaining = globals_parser.parse_known_args(raw)
     root = (globals_args.root or Path.cwd()).expanduser()
     package_args = (["--toml"] if globals_args.toml else []) + remaining
+
+    # An explicit path retains package-local semantics even from a manager
+    # directory; combining it with an unrelated manager config is unsafe.
+    explicit_path = _has_explicit_package_path(remaining)
+    config_path, config_was_explicit = _manager_config_path(raw, globals_args.config)
+    if config_path is not None and explicit_path and config_was_explicit and not globals_args.package:
+        log_error("--config cannot be combined with an unrelated explicit package path")
+        return EXIT_USER_ERROR
+
+    # The manager marker is deliberately fixed to the caller's directory. A
+    # malformed marker is a visible configuration error, never a mode fallback.
+    manager_mode = config_path is not None and not (explicit_path and not config_was_explicit)
+    if manager_mode:
+        try:
+            manager = load_manager_config(config_path)
+            manager_inventory = discover_manager(manager)
+        except (ConfigValidationError, ValueError, OSError) as exc:
+            log_error(str(exc))
+            return EXIT_USER_ERROR
+        if globals_args.package:
+            selector_args = list(remaining)
+            if selector_args and selector_args[0] in {"list", "doctor"}:
+                log_error("--package cannot be combined with manager aggregate commands")
+                return EXIT_USER_ERROR
+            try:
+                target_scope = None
+                if "--scope" in selector_args:
+                    index = selector_args.index("--scope")
+                    target_scope = next(iter(_manager_scope(selector_args[index + 1], allow_all=False)))
+                    del selector_args[index:index + 2]
+                target = select_target(manager_inventory, globals_args.package, target_scope)
+            except (ValueError, IndexError) as exc:
+                log_error(str(exc))
+                return EXIT_USER_ERROR
+            if not selector_args:
+                return _run_package_tui(target.package.root)
+            selected_package_args = (["--toml"] if globals_args.toml else []) + selector_args
+            return _package_main(["--scope", target.scope.value, *selected_package_args, str(target.package.root)])
+
+        command_args = list(remaining)
+        manager_parser = argparse.ArgumentParser(prog="gupkg manager")
+        manager_parser.add_argument("--scope", choices=["user", "system", "all"], default="all")
+        manager_parser.add_argument("--toml", action="store_true")
+        manager_parser.add_argument("--filter", choices=["all", "installed", "uninstalled", "updatable", "unhealthy"], default="all")
+        manager_parser.add_argument("command", nargs="*", help="list, upgrade check, or doctor")
+        try:
+            manager_args = manager_parser.parse_args(command_args)
+            scopes = _manager_scope(manager_args.scope)
+        except SystemExit:
+            raise
+        except ValueError as exc:
+            log_error(str(exc))
+            return EXIT_USER_ERROR
+        if manager_args.command == []:
+            log_error("Manager mode is read-only for now; use 'gupkg list'.")
+            return EXIT_USER_ERROR
+        if manager_args.command == ["list"]:
+            return _manager_list(manager_inventory, scopes=scopes, filter_name=manager_args.filter, toml=globals_args.toml or manager_args.toml)
+        if manager_args.command == ["upgrade", "check"]:
+            return _manager_check(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)
+        if manager_args.command == ["doctor"]:
+            return _manager_doctor(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)
+        log_error("Manager mode supports 'list', 'upgrade check', and 'doctor'.")
+        return EXIT_USER_ERROR
+
+    # Explicit package paths bypass implicit manager discovery and preserve the
+    # existing package parser, including its Auto/User/Machine scope syntax.
+    if explicit_path:
+        return _package_main(package_args)
+
+    from gupkg.collection import discover_collection, select_package
 
     # Explicit selection always resolves against an inventory, never against
     # manifest metadata or an arbitrary recursive filename search.
