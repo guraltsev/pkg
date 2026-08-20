@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -98,6 +99,62 @@ def compute_scope_paths(scope: Scope) -> Dict[str, Path]:
 
 
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+@dataclass(frozen=True)
+class CurrentInspection:
+    """Describe the activation entry owned by one package root."""
+
+    status: str
+    version_path: Path | None = None
+    diagnostics: tuple[str, ...] = field(default_factory=tuple)
+
+
+def inspect_current(package_root: Path) -> CurrentInspection:
+    """Inspect ``current`` without selecting a fallback version directory.
+
+    Parameters
+    ----------
+    package_root : Path
+        Package root whose activation entry should be inspected.
+
+    Returns
+    -------
+    CurrentInspection
+        ``installed`` for a valid activation, ``not-installed`` when the
+        entry is absent, or ``broken`` when an entry exists but is unsafe.
+    """
+    current_path = package_root / "current"
+    if not os.path.lexists(str(current_path)):
+        return CurrentInspection("not-installed")
+    if not is_junction(current_path):
+        return CurrentInspection(
+            "broken", diagnostics=(f'"current" is not a junction: {current_path}',)
+        )
+    target = get_junction_target(current_path)
+    if target is None:
+        return CurrentInspection(
+            "broken", diagnostics=(f'Could not resolve "current": {current_path}',)
+        )
+    try:
+        resolved_root = package_root.resolve()
+        resolved_target = target.resolve()
+        if not resolved_target.is_relative_to(resolved_root):
+            return CurrentInspection(
+                "broken",
+                diagnostics=(f'"current" points outside package root: {target}',),
+            )
+    except OSError as exc:
+        return CurrentInspection("broken", diagnostics=(f"Could not inspect current target: {exc}",))
+    if not resolved_target.is_dir() or not is_version_directory_name(resolved_target.name):
+        return CurrentInspection(
+            "broken", diagnostics=(f'"current" target is not a version directory: {target}',)
+        )
+    if not (resolved_target / "pkg.toml").is_file():
+        return CurrentInspection(
+            "broken", diagnostics=(f'"current" target has no pkg.toml: {resolved_target}',)
+        )
+    return CurrentInspection("installed", resolved_target)
 
 
 def _warn_if_output_path_is_unusual(
