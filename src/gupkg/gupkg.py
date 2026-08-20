@@ -1542,6 +1542,20 @@ def _run_package_tui(package_path: Path) -> int:
         return EXIT_MUTATION_ERROR
 
 
+def _run_manager_tui(manager, inventory) -> int:
+    """Open the fixed-location manager interface for a loaded inventory."""
+    try:
+        from gupkg.dependencies import ensure_runtime_dependencies
+
+        ensure_runtime_dependencies("tui")
+        from gupkg.manager_tui import run_manager_tui
+
+        return run_manager_tui(manager, inventory)
+    except RuntimeError as install_error:
+        log_error(f"Could not install a TUI dependency: {install_error}")
+        return EXIT_MUTATION_ERROR
+
+
 def _manager_scope(value: str, *, allow_all: bool = True) -> set[Scope]:
     """Convert manager's lowercase scope spelling into configured scopes."""
     choices = {"user": {Scope.USER}, "system": {Scope.MACHINE}}
@@ -1808,8 +1822,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             log_error(str(exc))
             return EXIT_USER_ERROR
         if manager_args.command == []:
-            log_error("Manager mode is read-only for now; use 'gupkg list'.")
-            return EXIT_USER_ERROR
+            return _run_manager_tui(manager, manager_inventory)
         if manager_args.command == ["list"]:
             return _manager_list(manager_inventory, scopes=scopes, filter_name=manager_args.filter, toml=globals_args.toml or manager_args.toml)
         if manager_args.command == ["upgrade", "check"]:

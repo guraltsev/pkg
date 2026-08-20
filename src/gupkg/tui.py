@@ -24,13 +24,17 @@ from pathlib import Path
 from typing import ClassVar
 
 
-def run_tui(package_path: str = "") -> int:
+def run_tui(package_path: str = "", *, forced_scope=None) -> int:
     """Run the interactive Textual interface.
 
     Parameters
     ----------
     package_path : str, default=""
         Initially selected package root; an empty value uses the current directory.
+    forced_scope : Scope, optional
+        Manager-selected scope that is displayed and locked for this package
+        operation.  When omitted, package-local automatic scope selection is
+        unchanged.
 
     Returns
     -------
@@ -140,6 +144,8 @@ def run_tui(package_path: str = "") -> int:
 
     def detected_scope(path_text: str) -> tuple[str, bool] | None:
         """Return the automatic scope and Machine availability for one package."""
+        if forced_scope is not None:
+            return (forced_scope.value, False)
         from gupkg.layout import resolve_input_path
         from gupkg.windows import is_current_user_admin
 
@@ -259,6 +265,7 @@ def run_tui(package_path: str = "") -> int:
             )
             scope = detected_scope(home_screen.path)
             self.scope, self.machine_available = scope or ("User", False)
+            self.scope_locked = forced_scope is not None
             self.title = home_screen.title
             self.description = home_screen.description
             self.warning = home_screen.warning
@@ -284,14 +291,16 @@ def run_tui(package_path: str = "") -> int:
                 "upgrade-install",
                 "upgrade-full",
             }:
-                scope = "Machine" if self.scope == "Machine" else "Local"
+                scope = self.scope if self.scope_locked else (
+                    "Machine" if self.scope == "Machine" else "Local"
+                )
                 options.append(
                     Option(
-                        f"Installation Scope: {scope}"
+                        f"Installation Scope: {scope}{' (locked)' if self.scope_locked else ''}"
                         if self.machine_available
-                        else "Installation Scope: Local (Machine unavailable)",
+                        else f"Installation Scope: {scope} (locked)" if self.scope_locked else "Installation Scope: Local (Machine unavailable)",
                         id="scope",
-                        disabled=not self.machine_available,
+                        disabled=self.scope_locked or not self.machine_available,
                     )
                 )
             if self.action == "config-from-legacy":
