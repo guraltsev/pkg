@@ -462,6 +462,23 @@ def is_current_user_admin() -> bool:
         return False
 
 
+def relaunch_elevated(arguments: list[str]) -> bool:
+    """Request one elevated process using an argument vector."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        executable = os.sys.executable
+        params = subprocess.list2cmdline(["-m", "gupkg.gupkg", *arguments])
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", executable, params, os.getcwd(), 1
+        )
+        return result > 32
+    except Exception:
+        return False
+
+
 def wait_for_keypress() -> None:
     """Pause for a keypress using the Windows console when possible.
 

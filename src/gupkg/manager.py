@@ -23,6 +23,7 @@ from pathlib import Path
 from .collection import DiscoveredPackage, Inventory, discover_collection
 from .configuration import read_runtime_config
 from .core import (
+    ActionResult,
     ConfigValidationError,
     PackageIdentity,
     Scope,
@@ -75,6 +76,129 @@ class ManagerInventory:
     config: ManagerConfig
     scopes: list[ManagedScope]
     targets: list[ManagedTarget]
+
+
+@dataclass
+class UpgradePlanEntry:
+    """Record one target's planned batch outcome."""
+
+    target: ManagedTarget
+    outcome: str
+    reason: str | None = None
+    result: ActionResult | None = None
+
+
+@dataclass
+class UpgradePlan:
+    """Contain a deterministic, non-mutating manager upgrade plan."""
+
+    entries: list[UpgradePlanEntry]
+
+
+def plan_upgrade_all(
+    inventory: ManagerInventory,
+    scopes: set[Scope],
+    check_target,
+) -> UpgradePlan:
+    """Plan eligible installed targets without downloading or activating them.
+
+    Parameters
+    ----------
+    inventory : ManagerInventory
+        Fresh manager inventory to evaluate.
+    scopes : set[Scope]
+        Configured scopes selected by the caller.
+    check_target : callable
+        Boundary that refreshes one target's update status and returns an
+        :class:`~gupkg.core.ActionResult`.
+
+    Returns
+    -------
+    UpgradePlan
+        Ordered entries describing skips, failed checks, and eligible targets.
+    """
+    entries: list[UpgradePlanEntry] = []
+    selected_scopes = [scope for scope in inventory.scopes if scope.scope in scopes]
+    complete = all(scope.complete for scope in selected_scopes)
+    for target in _targets_in_upgrade_order(inventory, scopes):
+        if not complete:
+            entries.append(UpgradePlanEntry(target, "skipped", "incomplete"))
+            continue
+        if target.installation_status == "not-installed":
+            entries.append(UpgradePlanEntry(target, "skipped", "uninstalled"))
+            continue
+        if target.installation_status == "broken":
+            entries.append(UpgradePlanEntry(target, "skipped", "broken"))
+            continue
+        if target.health_status != "healthy":
+            entries.append(UpgradePlanEntry(target, "skipped", "unhealthy"))
+            continue
+        result = check_target(target)
+        if target.update_status == "not-configured":
+            entries.append(UpgradePlanEntry(target, "skipped", "not-configured", result))
+        elif not result.ok or target.update_status == "error":
+            entries.append(UpgradePlanEntry(target, "failed", "failed-check", result))
+        elif target.update_status == "current":
+            entries.append(UpgradePlanEntry(target, "skipped", "current", result))
+        elif target.update_status == "available":
+            entries.append(UpgradePlanEntry(target, "eligible", result=result))
+        else:
+            entries.append(UpgradePlanEntry(target, "failed", "failed-check", result))
+    return UpgradePlan(entries)
+
+
+def execute_upgrade_plan(plan: UpgradePlan, revalidate_target, upgrade_target, *, fail_fast=False) -> UpgradePlan:
+    """Execute eligible plan entries sequentially and retain every outcome.
+
+    Parameters
+    ----------
+    plan : UpgradePlan
+        Previously generated plan.
+    revalidate_target : callable
+        Boundary that returns ``None`` when a target is still safe to mutate,
+        or an explanatory string when it changed.
+    upgrade_target : callable
+        Existing single-package upgrade operation.
+    fail_fast : bool, default=False
+        Mark eligible entries after the first failure as not attempted.
+
+    Returns
+    -------
+    UpgradePlan
+        The same plan with completed action results attached.
+    """
+    stopped = False
+    for entry in plan.entries:
+        if entry.outcome != "eligible":
+            continue
+        if stopped:
+            entry.outcome, entry.reason = "not-attempted", "fail-fast"
+            continue
+        problem = revalidate_target(entry.target)
+        if problem:
+            entry.outcome, entry.reason = "failed", problem
+            stopped = fail_fast
+            continue
+        entry.result = upgrade_target(entry.target)
+        if entry.result.ok:
+            entry.outcome = "upgraded" if entry.result.changed or entry.result.status in {"installed-update", "downloaded"} else "current"
+        else:
+            entry.outcome, entry.reason = "failed", "upgrade-failed"
+            stopped = fail_fast
+    return plan
+
+
+def _targets_in_upgrade_order(inventory: ManagerInventory, scopes: set[Scope]) -> list[ManagedTarget]:
+    """Return selected targets in the manager's user-then-system order."""
+    selected = [target for target in inventory.targets if target.scope in scopes]
+    return sorted(
+        selected,
+        key=lambda target: (
+            target.package.selector.casefold(),
+            target.package.selector,
+            _scope_sort_key(target.scope),
+        ),
+    )
 
 
 _VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")

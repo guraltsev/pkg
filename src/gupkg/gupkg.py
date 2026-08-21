@@ -62,6 +62,7 @@ from gupkg.core import (  # noqa: E402
 )
 from gupkg.layout import (  # noqa: E402
     compute_scope_paths,
+    inspect_current,
     resolve_input_path,
     update_current_junction_if_needed,
 )
@@ -85,13 +86,16 @@ from gupkg.updates import (  # noqa: E402
 )
 from gupkg.manager import (  # noqa: E402
     discover_manager,
+    execute_upgrade_plan,
     load_manager_config,
+    plan_upgrade_all,
     scope_id,
     scope_name,
     select_target,
 )
 from gupkg.windows import (  # noqa: E402
     is_current_user_admin,
+    relaunch_elevated,
     wait_for_keypress,
 )
 
@@ -1576,7 +1580,7 @@ def _manager_targets(inventory, scopes: set[Scope]):
 def _manager_update(target) -> ActionResult:
     """Refresh one target's update state while keeping CLI output suppressed."""
     manifest = next(
-        (item for item in target.package.manifests if item.version_path.name == target.local_version),
+        (item for item in target.package.manifests if item.version_path.name == (target.installed_version or target.local_version)),
         None,
     )
     if manifest is None:
@@ -1730,6 +1734,140 @@ def _manager_check(inventory, *, scopes: set[Scope], toml: bool) -> int:
     return highest
 
 
+def _manager_revalidate(target, configured_root: Path | None = None, *, quiet: bool = False) -> str | None:
+    """Recheck ownership, activation, and health immediately before mutation."""
+    try:
+        root = target.package.root.resolve()
+        if configured_root is not None and not root.is_relative_to(configured_root.resolve()):
+            return "target path escaped configured root"
+        current = inspect_current(target.package.root)
+        if not target.package.root.resolve().is_relative_to(root):
+            return "target path escaped configured root"
+        if current.status != "installed" or current.version_path is None:
+            return f"current changed to {current.status}"
+        if not current.version_path.resolve().is_relative_to(root):
+            return "current target escaped configured root"
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            result = health_check_package(current.version_path, scope=target.scope)
+        if not result.ok:
+            return "health changed before upgrade"
+    except (OSError, ValueError, RuntimeError) as exc:
+        return str(exc)
+    return None
+
+
+def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
+                     fail_fast: bool, local_deps_autoinstall: bool, no_checksum: bool,
+                     toml: bool) -> int:
+    """Plan and optionally execute a confirmed manager-wide upgrade."""
+    targets = _manager_targets(inventory, scopes)
+    selected_scopes = [scope for scope in inventory.scopes if scope.scope in scopes]
+    inventory_complete = all(scope.complete for scope in selected_scopes)
+
+    plan = plan_upgrade_all(inventory, scopes, _manager_update)
+    eligible = [entry for entry in plan.entries if entry.outcome == "eligible"]
+    system_work = any(entry.target.scope == Scope.MACHINE for entry in eligible)
+    if not toml:
+        log_info("Upgrade plan:")
+        for entry in plan.entries:
+            label = entry.outcome if entry.reason is None else f"{entry.outcome} ({entry.reason})"
+            log_info(f"  {entry.target.target_id}: {label}")
+    if dry_run:
+        status = _render_upgrade_plan(inventory, plan, toml=toml, complete=inventory_complete)
+        return max(status, EXIT_SUCCESS if inventory_complete else EXIT_USER_ERROR)
+    if not inventory_complete:
+        if not toml:
+            log_error("Selected manager scope is incomplete; upgrade all cannot run.")
+        return max(_render_upgrade_plan(inventory, plan, toml=toml, complete=False), EXIT_USER_ERROR)
+    interactive = bool(sys.stdin.isatty() and sys.stdout.isatty())
+    if not yes and not interactive:
+        message = "upgrade all requires --yes when stdin is not interactive"
+        if not toml:
+            log_error(message)
+        return max(_render_upgrade_plan(inventory, plan, toml=toml, complete=inventory_complete), EXIT_USER_ERROR)
+    if not yes:
+        answer = input("Run planned upgrades? [y/N] ").strip().casefold()
+        if answer not in {"y", "yes"}:
+            return max(_render_upgrade_plan(inventory, plan, toml=toml, complete=inventory_complete), EXIT_USER_ERROR)
+    if system_work and not is_current_user_admin():
+        if not interactive:
+            if not toml:
+                log_error("System targets require Administrator privileges; rerun from an elevated console.")
+            return max(_render_upgrade_plan(inventory, plan, toml=toml, complete=inventory_complete), EXIT_MUTATION_ERROR)
+        selected_scope_name = "system" if scopes == {Scope.MACHINE} else "all"
+        relaunch_args = ["--config", str(inventory.config.path), "upgrade", "all",
+                         "--scope", selected_scope_name, "--yes"]
+        if fail_fast:
+            relaunch_args.append("--fail-fast")
+        if local_deps_autoinstall:
+            relaunch_args.append("--local-deps-autoinstall")
+        if no_checksum:
+            relaunch_args.append("--no-checksum")
+        if toml:
+            relaunch_args.append("--toml")
+        if not relaunch_elevated(relaunch_args):
+            if not toml:
+                log_error("Administrator elevation was declined or could not be started.")
+            return max(_render_upgrade_plan(inventory, plan, toml=toml, complete=inventory_complete), EXIT_MUTATION_ERROR)
+        return EXIT_SUCCESS
+
+    def upgrade_target(target):
+        with contextlib.redirect_stdout(io.StringIO() if toml else sys.stdout):
+            return full_package_upgrade(
+                target.package.root,
+                scope=target.scope,
+                no_checksum=no_checksum,
+                local_deps_autoinstall=local_deps_autoinstall,
+            )
+
+    def revalidate_target(target):
+        configured_root = (inventory.config.user_root if target.scope == Scope.USER
+                           else inventory.config.system_root)
+        return _manager_revalidate(target, configured_root, quiet=toml)
+
+    execute_upgrade_plan(plan, revalidate_target, upgrade_target, fail_fast=fail_fast)
+    return _render_upgrade_plan(inventory, plan, toml=toml)
+
+
+def _render_upgrade_plan(inventory, plan, *, toml: bool, complete: bool = True) -> int:
+    """Render a completed or dry-run plan and return its most severe status."""
+    failed = sum(entry.outcome == "failed" for entry in plan.entries)
+    upgraded = sum(entry.outcome == "upgraded" for entry in plan.entries)
+    skipped = sum(entry.outcome == "skipped" for entry in plan.entries)
+    if toml:
+        print("[manager]")
+        print("schema_version = 1")
+        print(f"config = {_toml_value(str(inventory.config.path))}")
+        print(f"complete = {'true' if complete else 'false'}")
+        for entry in plan.entries:
+            target = entry.target
+            print("\n[[target]]")
+            print(f"id = {_toml_value(target.target_id)}")
+            print(f"selector = {_toml_value(target.package.selector)}")
+            print(f"scope = {_toml_value(scope_id(target.scope))}")
+            print(f"path = {_toml_value(str(target.package.root))}")
+            print(f"outcome = {_toml_value(entry.outcome)}")
+            print(f"reason = {_toml_value(entry.reason or '')}")
+            print(f"changed = {'true' if entry.result and entry.result.changed else 'false'}")
+            print(f"errors = {_toml_array(entry.result.errors if entry.result else [])}")
+        print("\n[summary]")
+        print(f"total = {len(plan.entries)}")
+        print(f"eligible = {sum(entry.outcome == 'eligible' for entry in plan.entries)}")
+        print(f"upgraded = {upgraded}")
+        print(f"skipped = {skipped}")
+        print(f"failed = {failed}")
+    else:
+        log_info(f"Summary: {upgraded} upgraded, {skipped} skipped, {failed} failed, "
+                 f"{sum(entry.outcome == 'not-attempted' for entry in plan.entries)} not attempted.")
+    severity = EXIT_SUCCESS
+    for entry in plan.entries:
+        if entry.result is not None:
+            severity = max(severity, entry.result.exit_code)
+        elif entry.outcome == "failed":
+            severity = max(severity, EXIT_MUTATION_ERROR if entry.reason != "failed-check" else EXIT_USER_ERROR)
+    return severity
+
+
 def _manager_config_path(raw: list[str], explicit: Path | None) -> tuple[Path | None, bool]:
     """Resolve exactly ``--config`` or the current directory marker."""
     if explicit is not None:
@@ -1812,6 +1950,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         manager_parser.add_argument("--scope", choices=["user", "system", "all"], default="all")
         manager_parser.add_argument("--toml", action="store_true")
         manager_parser.add_argument("--filter", choices=["all", "installed", "uninstalled", "updatable", "unhealthy"], default="all")
+        manager_parser.add_argument("--yes", action="store_true", help="Confirm upgrade all without prompting")
+        manager_parser.add_argument("--dry-run", action="store_true", help="Plan upgrades without downloading or changing packages")
+        manager_parser.add_argument("--fail-fast", action="store_true", help="Stop scheduling targets after the first upgrade failure")
+        manager_parser.add_argument("--local-deps-autoinstall", action="store_true", help="Allow package-local update hooks to install dependencies")
+        manager_parser.add_argument("--no-checksum", action="store_true", help="Skip checksum verification for the whole batch")
         manager_parser.add_argument("command", nargs="*", help="list, upgrade check, or doctor")
         try:
             manager_args = manager_parser.parse_args(command_args)
@@ -1827,9 +1970,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _manager_list(manager_inventory, scopes=scopes, filter_name=manager_args.filter, toml=globals_args.toml or manager_args.toml)
         if manager_args.command == ["upgrade", "check"]:
             return _manager_check(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)
+        if manager_args.command == ["upgrade", "all"]:
+            return _manager_upgrade(
+                manager_inventory,
+                scopes=scopes,
+                yes=manager_args.yes,
+                dry_run=manager_args.dry_run,
+                fail_fast=manager_args.fail_fast,
+                local_deps_autoinstall=manager_args.local_deps_autoinstall,
+                no_checksum=manager_args.no_checksum,
+                toml=globals_args.toml or manager_args.toml,
+            )
         if manager_args.command == ["doctor"]:
             return _manager_doctor(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)
-        log_error("Manager mode supports 'list', 'upgrade check', and 'doctor'.")
+        log_error("Manager mode supports 'list', 'upgrade check', 'upgrade all', and 'doctor'.")
         return EXIT_USER_ERROR
 
     # Explicit package paths bypass implicit manager discovery and preserve the
