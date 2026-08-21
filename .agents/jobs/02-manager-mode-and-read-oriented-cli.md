@@ -1,5 +1,7 @@
 # Job 02: Manager mode selection and read-oriented CLI
 
+Status: Closed — implemented by commit `19fda65`.
+
 Depends on: Job 01
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`

@@ -1,5 +1,7 @@
 # Job 01: Manager configuration and scoped inventory foundation
 
+Status: Closed — implemented by commit `8e65010`.
+
 Depends on: none
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`
@@ -91,4 +93,3 @@ function needs the behavior-oriented docstring required by `docs/tests.md`.
 - New focused tests pass.
 - The full existing test suite passes.
 - `git diff --check` reports no whitespace errors.
-

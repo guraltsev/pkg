@@ -1,5 +1,8 @@
 # Job 05: Batch-upgrade TUI, documentation, and release hardening
 
+Status: Closed — implemented by commit `8c76f82`; its release-validation gap is
+tracked by Job 06.
+
 Depends on: Job 04
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`
@@ -95,4 +98,3 @@ tests, or implementation-shape tests.
 - Manual smoke results cover Windows scope/elevation behavior that unit tests
   cannot establish reliably.
 - `git diff --check` reports no whitespace errors.
-

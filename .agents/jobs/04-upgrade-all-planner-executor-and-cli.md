@@ -1,5 +1,7 @@
 # Job 04: Upgrade-all planner, executor, and CLI
 
+Status: Closed — implemented by commit `6e50ba2`.
+
 Depends on: Job 03
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`
@@ -104,4 +106,3 @@ order and outcomes, not private helper calls.
 - Focused integration tests and the full test suite pass.
 - CLI help documents confirmation, dry-run, elevation, and partial failure.
 - `git diff --check` reports no whitespace errors.
-

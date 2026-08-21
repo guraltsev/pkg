@@ -1,5 +1,7 @@
 # Job 03: Manager TUI and scoped package navigation
 
+Status: Closed — implemented by commit `3e4d7ba`.
+
 Depends on: Job 02
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`
@@ -79,4 +81,3 @@ tests, or tests of private event-handler call order.
 - Manually smoke-test a terminal shorter than the package list and confirm that
   selection remains visible while scrolling.
 - `git diff --check` reports no whitespace errors.
-
