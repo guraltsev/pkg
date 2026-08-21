@@ -481,10 +481,11 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
             self.cancel_requested = True
             self.query_one("#execution-status", Static).update("Cancellation requested; finishing current target...")
 
-    class DoctorScreen(TextScreen):
+    class DoctorScreen(Screen):
         """Show concise local diagnostics without running provider checks."""
 
         def __init__(self) -> None:
+            super().__init__()
             lines = [f"Manager: {config.path}"]
             for scope in current_inventory.scopes:
                 lines.append(f"{scope_name(scope.scope)} root: {'complete' if scope.complete else 'incomplete'}")
@@ -492,7 +493,17 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
             for target in current_inventory.targets:
                 if target.diagnostics:
                     lines.append(f"{target.target_id}: " + "; ".join(target.diagnostics))
-            super().__init__("Doctor", "\n".join(lines) or "No diagnostics.")
+            self.lines = "\n".join(lines) or "No diagnostics."
+
+        def compose(self) -> ComposeResult:
+            """Compose diagnostics as a plain scrollable result view."""
+            yield Label("Doctor")
+            with VerticalScroll():
+                yield Static(self.lines)
+
+        def action_back(self) -> None:
+            """Return to the manager home."""
+            self.app.pop_screen()
 
     class TextScreen(Screen):
         """Display scrollable plain text for long manager output."""

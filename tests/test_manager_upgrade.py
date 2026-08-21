@@ -104,3 +104,30 @@ def test_upgrade_executor_cancellation_stops_before_the_next_package() -> None:
     assert calls == ["user:a"]
     assert plan.entries[1].outcome == "not-attempted"
     assert plan.entries[1].reason == "cancelled"
+
+
+def test_upgrade_executor_runs_all_user_targets_before_system_targets() -> None:
+    """Batch upgrades process every user target before any system target."""
+    targets = [
+        _target("system:alpha", Scope.MACHINE),
+        _target("user:zeta", Scope.USER),
+        _target("user:alpha", Scope.USER),
+        _target("system:beta", Scope.MACHINE),
+    ]
+
+    def check(target):
+        target.update_status = "available"
+        return ActionResult(True)
+
+    plan = plan_upgrade_all(
+        _inventory(targets), {Scope.USER, Scope.MACHINE}, check
+    )
+    calls = []
+
+    execute_upgrade_plan(
+        plan,
+        lambda target: None,
+        lambda target: (calls.append(target.target_id) or ActionResult(True, changed=True)),
+    )
+
+    assert calls == ["user:alpha", "user:zeta", "system:alpha", "system:beta"]

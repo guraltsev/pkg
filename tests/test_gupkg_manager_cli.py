@@ -115,3 +115,78 @@ def test_selected_manager_target_forces_configured_scope(
 
     assert package_main.call_args.args[0][:2] == ["--scope", "User"]
     assert package_main.call_args.args[0][-1] == str(user / "tool")
+
+
+def test_explicit_config_precedes_cwd_and_each_list_filter_is_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit configuration wins over the cwd marker and list filters expose their rows."""
+    cwd = tmp_path / "cwd"
+    configured = tmp_path / "configured"
+    cwd.mkdir()
+    configured.mkdir()
+    system = configured / "system"
+    user = configured / "user"
+    system.mkdir()
+    user.mkdir()
+    _package(user, "user-tool")
+    _package(system, "system-tool")
+    _config(configured, system, user)
+    _config(cwd, cwd / "wrong-system", cwd / "wrong-user")
+    monkeypatch.chdir(cwd)
+    module = _module()
+
+    for filter_name, expected_id in (
+        ("all", {"user:user-tool", "system:system-tool"}),
+        ("installed", set()),
+        ("uninstalled", {"user:user-tool", "system:system-tool"}),
+        ("unhealthy", set()),
+    ):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = module.main([
+                "--config", str(configured / "gupkg-config.toml"),
+                "list", "--filter", filter_name, "--toml",
+            ])
+        document = tomllib.loads(output.getvalue())
+        assert code == 0
+        assert {item["id"] for item in document.get("target", [])} == expected_id
+
+
+def test_doctor_and_dry_run_are_read_only_and_emit_parseable_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor and dry-run inspect real roots without invoking update or mutation boundaries."""
+    manager_dir = tmp_path / "manager"
+    system = tmp_path / "system"
+    user = tmp_path / "user"
+    manager_dir.mkdir()
+    system.mkdir()
+    user.mkdir()
+    _package(user)
+    _config(manager_dir, system, user)
+    monkeypatch.chdir(manager_dir)
+    module = _module()
+    provider_calls = []
+    mutation_calls = []
+
+    def unexpected_provider(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        raise AssertionError("read-only manager command contacted an update provider")
+
+    monkeypatch.setattr(module, "check_package_update", unexpected_provider)
+    monkeypatch.setattr(module, "full_package_upgrade", lambda *args, **kwargs: mutation_calls.append(args))
+
+    doctor_output = io.StringIO()
+    with redirect_stdout(doctor_output):
+        assert module.main(["doctor", "--toml"]) == 0
+    doctor_document = tomllib.loads(doctor_output.getvalue())
+    assert doctor_document["manager"]["complete"] is True
+    assert provider_calls == []
+
+    dry_run_output = io.StringIO()
+    with redirect_stdout(dry_run_output):
+        assert module.main(["upgrade", "all", "--dry-run", "--toml"]) == 0
+    dry_run_document = tomllib.loads(dry_run_output.getvalue())
+    assert dry_run_document["summary"]["total"] == 1
+    assert mutation_calls == []

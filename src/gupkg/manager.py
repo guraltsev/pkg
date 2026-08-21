@@ -209,9 +209,9 @@ def _targets_in_upgrade_order(inventory: ManagerInventory, scopes: set[Scope]) -
     return sorted(
         selected,
         key=lambda target: (
+            _scope_sort_key(target.scope),
             target.package.selector.casefold(),
             target.package.selector,
-            _scope_sort_key(target.scope),
         ),
     )
 
