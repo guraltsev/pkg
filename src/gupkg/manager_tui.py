@@ -2,13 +2,13 @@
 
 The manager app presents the same scoped inventory used by noninteractive
 commands, performs update checks in worker threads, and hands one selected
-target to the established package operation interface.  It does not perform
-aggregate mutation.
+target to the established package operation interface.  Aggregate upgrades
+use the manager planner and executor, including their safety and result rules.
 
 Usage and API
 -------------
-Call ``run_manager_tui(...)`` with a manager inventory to browse targets and
-open an individual package operation screen.
+Call ``run_manager_tui(...)`` with a manager inventory to browse targets,
+open an individual package operation screen, or confirm a planned batch.
 
 Implementation Approach
 -----------------------
@@ -21,8 +21,20 @@ an operation rebuilds the inventory through the supplied loader.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 
-from .manager import ManagerConfig, ManagerInventory, ManagedTarget, discover_manager, scope_name
+from .manager import (
+    ManagerConfig,
+    ManagerInventory,
+    ManagedTarget,
+    UpgradePlan,
+    discover_manager,
+    execute_upgrade_plan,
+    plan_upgrade_all,
+    scope_name,
+)
+from .core import Scope
 
 
 def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = None) -> int:
@@ -94,7 +106,7 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
             yield OptionList(
                 Option("Browse packages", id="browse"),
                 Option("Refresh update status", id="refresh"),
-                Option("Upgrade all installed packages (not implemented yet)", id="upgrade", disabled=True),
+                Option("Upgrade all installed packages", id="upgrade"),
                 Option("Doctor: validate manager and packages", id="doctor"),
                 Option("gupkg version", id="version"),
                 id="manager-actions",
@@ -111,6 +123,8 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
                 self.app.push_screen(BrowserScreen())
             elif action == "refresh":
                 self.app.push_screen(RefreshScreen())
+            elif action == "upgrade":
+                self.app.push_screen(UpgradePlanScreen())
             elif action == "doctor":
                 self.app.push_screen(DoctorScreen())
             elif action == "version":
@@ -263,6 +277,209 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
         def action_back(self) -> None:
             """Return after reviewing refresh results."""
             self.app.pop_screen()
+
+    class UpgradePlanScreen(Screen):
+        """Plan updates without changing package files."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def compose(self) -> ComposeResult:
+            yield Label("Upgrade all: plan")
+            yield Static("Checking installed packages...", id="plan-status")
+            with VerticalScroll(id="plan-output"):
+                yield Static("")
+
+        def on_mount(self) -> None:
+            # Show the result view before provider work starts, keeping the
+            # terminal usable while checks run.
+            self.run_worker(self._plan(), exclusive=True)
+
+        async def _plan(self) -> None:
+            from gupkg.gupkg import _manager_update
+
+            self.plan: UpgradePlan = await asyncio.to_thread(
+                plan_upgrade_all,
+                current_inventory,
+                {Scope.USER, Scope.MACHINE},
+                _manager_update,
+            )
+            available = sum(entry.outcome == "eligible" for entry in self.plan.entries)
+            current = sum(entry.reason == "current" for entry in self.plan.entries)
+            skipped = sum(entry.outcome == "skipped" and entry.reason != "current" for entry in self.plan.entries)
+            failed = sum(entry.outcome == "failed" for entry in self.plan.entries)
+            lines = [
+                f"Available: {available}",
+                f"Current: {current}",
+                f"Skipped: {skipped}",
+                f"Failed checks: {failed}",
+                "",
+            ]
+            lines.extend(
+                f"{entry.target.target_id}: {entry.outcome}"
+                + (f" ({entry.reason})" if entry.reason else "")
+                for entry in self.plan.entries
+            )
+            self.query_one("#plan-output Static", Static).update("\n".join(lines))
+            self.query_one("#plan-status", Static).update("Plan complete.")
+            self.app.push_screen(ConfirmScreen(self.plan))
+
+        def action_back(self) -> None:
+            self.app.pop_screen()
+
+    class ConfirmScreen(Screen):
+        """Confirm a completed plan and expose all batch safety settings."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def __init__(self, plan: UpgradePlan) -> None:
+            super().__init__()
+            self.plan = plan
+            self.fail_fast = False
+            self.local_deps = False
+            self.no_checksum = False
+
+        def compose(self) -> ComposeResult:
+            yield Label("Confirm upgrade all")
+            yield Static("Run planned upgrades first. Settings apply to this plan.")
+            yield OptionList(
+                Option("Run planned upgrades", id="run"),
+                Option("Scope: All", id="scope", disabled=True),
+                Option("Checksum: Verify", id="checksum"),
+                Option("Dependency auto-install: Off", id="deps"),
+                Option("Fail-fast: Off", id="fail-fast"),
+                id="confirm-actions",
+            )
+
+        def _refresh_options(self) -> None:
+            self.query_one("#confirm-actions", OptionList).set_options([
+                Option("Run planned upgrades", id="run"),
+                Option("Scope: All", id="scope", disabled=True),
+                Option(f"Checksum: {'Skip' if self.no_checksum else 'Verify'}", id="checksum"),
+                Option(f"Dependency auto-install: {'On' if self.local_deps else 'Off'}", id="deps"),
+                Option(f"Fail-fast: {'On' if self.fail_fast else 'Off'}", id="fail-fast"),
+            ])
+
+        def on_mount(self) -> None:
+            self.query_one("#confirm-actions", OptionList).focus()
+
+        def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+            selected = event.option.id
+            if selected == "run":
+                self.app.push_screen(ExecutionScreen(self.plan, self.fail_fast, self.local_deps, self.no_checksum))
+            elif selected == "checksum":
+                self.no_checksum = not self.no_checksum
+                self._refresh_options()
+            elif selected == "deps":
+                self.local_deps = not self.local_deps
+                self._refresh_options()
+            elif selected == "fail-fast":
+                self.fail_fast = not self.fail_fast
+                self._refresh_options()
+
+        def action_back(self) -> None:
+            self.app.pop_screen()
+
+    class ExecutionScreen(Screen):
+        """Execute a confirmed plan and retain per-target results."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def __init__(self, plan: UpgradePlan, fail_fast: bool, local_deps: bool, no_checksum: bool) -> None:
+            super().__init__()
+            self.plan = plan
+            self.fail_fast = fail_fast
+            self.local_deps = local_deps
+            self.no_checksum = no_checksum
+            self.cancel_requested = False
+
+        def compose(self) -> ComposeResult:
+            yield Label("Upgrade all: execution")
+            yield Static("Preparing...", id="execution-status")
+            with VerticalScroll(id="execution-output"):
+                yield Static("", id="execution-lines")
+
+        def on_mount(self) -> None:
+            self.run_worker(self._execute(), exclusive=True)
+
+        async def _execute(self) -> None:
+            nonlocal current_inventory
+            from gupkg.gupkg import (
+                _manager_revalidate,
+                full_package_upgrade,
+            )
+            from gupkg.windows import is_current_user_admin, relaunch_elevated
+
+            eligible = [entry for entry in self.plan.entries if entry.outcome == "eligible"]
+            needs_elevation = any(entry.target.scope == Scope.MACHINE for entry in eligible)
+            lines: list[str] = []
+            if needs_elevation and not is_current_user_admin():
+                relaunch_args = ["--config", str(config.path), "upgrade", "all", "--yes"]
+                if self.fail_fast:
+                    relaunch_args.append("--fail-fast")
+                if self.local_deps:
+                    relaunch_args.append("--local-deps-autoinstall")
+                if self.no_checksum:
+                    relaunch_args.append("--no-checksum")
+                accepted = await asyncio.to_thread(relaunch_elevated, relaunch_args)
+                message = (
+                    "Administrator elevation accepted; the elevated batch was started."
+                    if accepted else
+                    "Administrator elevation was declined or could not be started; no package was changed."
+                )
+                # Refresh even when elevation is declined or delegated so the
+                # browser never presents the pre-execution inventory forever.
+                current_inventory = await asyncio.to_thread(discover_manager, config)
+                self.query_one("#execution-lines", Static).update(message)
+                self.query_one("#execution-status", Static).update("Execution finished.")
+                return
+
+            def revalidate(target: ManagedTarget) -> str | None:
+                root = config.system_root if target.scope == Scope.MACHINE else config.user_root
+                return _manager_revalidate(target, root, quiet=True)
+
+            def upgrade(target: ManagedTarget):
+                lines.append(f"{target.target_id}: running")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = full_package_upgrade(
+                        target.package.root,
+                        scope=target.scope,
+                        no_checksum=self.no_checksum,
+                        local_deps_autoinstall=self.local_deps,
+                    )
+                lines[-1] = f"{target.target_id}: {'completed' if result.ok else 'failed'}"
+                return result
+
+            await asyncio.to_thread(
+                execute_upgrade_plan,
+                self.plan,
+                revalidate,
+                upgrade,
+                fail_fast=self.fail_fast,
+                cancel_requested=lambda: self.cancel_requested,
+            )
+            # The browser must observe new current/version state after even a
+            # partial batch, so a later return never relies on stale targets.
+            current_inventory = await asyncio.to_thread(discover_manager, config)
+            summary = self.plan.entries
+            lines.extend(
+                f"{entry.target.target_id}: {entry.outcome}"
+                for entry in summary
+                if not any(entry.target.target_id in line for line in lines)
+            )
+            lines.append(
+                "Summary: "
+                f"{sum(entry.outcome == 'upgraded' for entry in summary)} upgraded, "
+                f"{sum(entry.outcome == 'failed' for entry in summary)} failed, "
+                f"{sum(entry.outcome in {'skipped', 'not-attempted'} for entry in summary)} skipped/not attempted."
+            )
+            self.query_one("#execution-lines", Static).update("\n".join(lines))
+            self.query_one("#execution-status", Static).update("Execution finished.")
+
+        def action_back(self) -> None:
+            # The executor observes this flag between targets; it never
+            # interrupts a package operation that has already started.
+            self.cancel_requested = True
+            self.query_one("#execution-status", Static).update("Cancellation requested; finishing current target...")
 
     class DoctorScreen(TextScreen):
         """Show concise local diagnostics without running provider checks."""

@@ -27,6 +27,24 @@ effect. Legacy format conversion remains implemented in
 `legacy_to_gupkg_toml.py`; `gupkg config from-legacy` coordinates its public CLI
 result.
 
+## Manager integration
+
+Manager mode is an orchestration layer over collection discovery and the
+existing single-package operations. `manager.py` owns configuration validation,
+scoped inventory, planning, and the batch executor; the CLI and manager TUI
+must call those same plan/executor boundaries. Planning may check providers and
+update package-owned check state, but it must not download or activate a
+version. The executor revalidates ownership and health before each target and
+records skipped, failed, upgraded, and not-attempted outcomes.
+
+The TUI deliberately keeps planning, confirmation, and execution on separate
+scrollable screens. Worker tasks must leave Textual's event loop free while
+provider and package operations run. Cancellation is a boundary request: it
+prevents another target from being scheduled and never interrupts an operation
+already in progress. Mixed-scope elevation is resolved before invoking the
+executor. Manual Windows coverage for UAC, missing roots, duplicate selectors,
+partial failures, and terminal dimensions lives in `tests/manual_smoke.md`.
+
 ## Update coordinator
 
 The public update coordinator in `src/gupkg/gupkg.py` resolves the active package,

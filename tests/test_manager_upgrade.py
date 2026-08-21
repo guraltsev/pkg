@@ -73,3 +73,34 @@ def test_upgrade_executor_continues_in_order_and_marks_fail_fast_work() -> None:
     assert calls == ["user:a"]
     assert [entry.outcome for entry in plan.entries] == ["failed", "not-attempted"]
     assert plan.entries[1].reason == "fail-fast"
+
+
+def test_upgrade_executor_cancellation_stops_before_the_next_package() -> None:
+    """Cancellation prevents another package operation at a safe boundary."""
+    targets = [_target("user:a", Scope.USER), _target("user:b", Scope.USER)]
+    plan = plan_upgrade_all(
+        _inventory(targets),
+        {Scope.USER},
+        lambda target: (setattr(target, "update_status", "available") or ActionResult(True)),
+    )
+    calls = []
+
+    def upgrade(target):
+        calls.append(target.target_id)
+        return ActionResult(True, changed=True)
+
+    cancelled = False
+
+    def cancel_requested():
+        return cancelled
+
+    def first_upgrade(target):
+        nonlocal cancelled
+        cancelled = True
+        return upgrade(target)
+
+    execute_upgrade_plan(plan, lambda target: None, first_upgrade, cancel_requested=cancel_requested)
+
+    assert calls == ["user:a"]
+    assert plan.entries[1].outcome == "not-attempted"
+    assert plan.entries[1].reason == "cancelled"

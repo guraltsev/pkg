@@ -128,6 +128,8 @@ Notes:
     ``--local-deps-autoinstall`` is supplied.
   - ``config update`` creates a documented starter template when ``pkg.toml`` is missing.
   - ``config from-legacy`` builds canonical ``pkg.toml`` from legacy package files.
+  - A directory containing ``gupkg-config.toml`` opens manager mode; use
+    ``list``, ``doctor``, ``upgrade check``, or confirmed ``upgrade all`` there.
   - Contributor notes live in ``docs/development_guide.md``.
 
 Run the tool from inside a *version directory*:
@@ -158,6 +160,27 @@ Machine scope (requires admin):
   - shortcuts: %PROGRAMDATA%\Microsoft\Windows\Start Menu\opt
   - PATH/env:  HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment
   - bin dir:   <SYSTEMDRIVE>\bin
+
+Manager mode
+~~~~~~~~~~~~
+
+Create this exact schema in the manager directory:
+
+  mode = "manager"
+  schema_version = 1
+
+  [packages]
+  system = 'D:\Programs'
+  user = '%USERPROFILE%\Programs'
+
+Both roots must be distinct, non-nesting collection roots. Relative paths are
+relative to this file; ``%NAME%`` variables use the process environment and
+``~`` means the current user's home. Unknown variables and shell substitutions
+are errors. Missing roots are shown as incomplete and block mutation.
+
+Manager list, Doctor, and update checks are read-only. ``upgrade all`` plans
+first, requires confirmation, elevates before mixed-scope mutation, and
+continues after individual failures unless ``--fail-fast`` is selected.
 
 Canonical config keys
 ~~~~~~~~~~~~~~~~~~~~~

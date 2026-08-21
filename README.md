@@ -157,6 +157,52 @@ explicitly rebuild `App` from its origin before that repair.
 what is available, download it into a new version directory, then choose when
 to make that downloaded version current.
 
+### Central manager mode
+
+The centrally installed executable and package-local mode are both supported.
+Package-local launchers and explicit package paths keep existing behavior.
+Manager mode is selected only by `gupkg-config.toml` in the current directory
+or by `--config PATH`.
+
+The exact version-one manager schema is:
+
+```toml
+mode = "manager"
+schema_version = 1
+
+[packages]
+system = 'D:\Programs'
+user = '%USERPROFILE%\Programs'
+```
+
+Both roots are required collection roots and must be distinct and non-nesting.
+Relative paths resolve against the manager file, `%NAME%` expands from the
+case-insensitive process environment, and a leading `~` expands to the current
+user's home. Unknown variables and shell substitutions are rejected. A missing
+root is reported as an incomplete scope and blocks mutation; loading never
+creates roots. Scope comes from the configured root, so a user target cannot
+silently become a machine installation.
+
+Manager workflows are `gupkg list`, `gupkg doctor`, `gupkg upgrade check`, and
+`gupkg upgrade all [--dry-run] [--yes]`. List is local-only except for the
+`updatable` filter, which performs fresh checks. Doctor validates configuration,
+roots, `current`, and manifests without contacting providers. A valid `current`
+is authoritative: a lone version directory is not installed, and a broken or
+escaping activation is broken. Bootstrap definitions remain available but are
+never implicitly installed.
+
+Bare `gupkg` in a manager directory opens the TUI. Upgrade All first shows a
+non-installing plan with available, current, skipped, and failed-check counts.
+The confirmation screen puts `Run planned upgrades` first and exposes scope,
+checksum, dependency auto-install, and fail-fast settings. Execution remains
+scrollable with per-target states and final totals, then refreshes inventory.
+Elevation occurs before any mixed-scope mutation; declining it leaves packages
+unchanged. Without fail-fast, later safe targets continue after a failure.
+To recover, fix the failed target and safely rerun the same check/confirm flow;
+successful targets are revalidated and remain current. This migration changes
+only orchestration: package content, version directories, `current`, and
+`pkg.local` require no edits.
+
 ### Terminal interface
 
 Run the simple interactive interface:

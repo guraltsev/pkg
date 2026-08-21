@@ -7,5 +7,6 @@ Long-lived repository guidance lives in this directory.
 - `tests.md` defines testing policy and what belongs in the test suite.
 - `tui_style_guide.md` defines the principles, interaction model, and visual
   style for small list-first Python terminal interfaces.
+- `manual_smoke.md` records Windows manager, scope, elevation, and release checks.
 
 `AGENTS.md` is only a pointer to these files. Put human-facing rationale and style rules here.

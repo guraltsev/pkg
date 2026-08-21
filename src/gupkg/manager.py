@@ -147,7 +147,14 @@ def plan_upgrade_all(
     return UpgradePlan(entries)
 
 
-def execute_upgrade_plan(plan: UpgradePlan, revalidate_target, upgrade_target, *, fail_fast=False) -> UpgradePlan:
+def execute_upgrade_plan(
+    plan: UpgradePlan,
+    revalidate_target,
+    upgrade_target,
+    *,
+    fail_fast=False,
+    cancel_requested=None,
+) -> UpgradePlan:
     """Execute eligible plan entries sequentially and retain every outcome.
 
     Parameters
@@ -161,6 +168,10 @@ def execute_upgrade_plan(plan: UpgradePlan, revalidate_target, upgrade_target, *
         Existing single-package upgrade operation.
     fail_fast : bool, default=False
         Mark eligible entries after the first failure as not attempted.
+    cancel_requested : callable, optional
+        Boundary predicate checked before each new package operation.  A true
+        result stops scheduling without interrupting an operation already in
+        progress.
 
     Returns
     -------
@@ -170,6 +181,10 @@ def execute_upgrade_plan(plan: UpgradePlan, revalidate_target, upgrade_target, *
     stopped = False
     for entry in plan.entries:
         if entry.outcome != "eligible":
+            continue
+        if cancel_requested is not None and cancel_requested():
+            entry.outcome, entry.reason = "not-attempted", "cancelled"
+            stopped = True
             continue
         if stopped:
             entry.outcome, entry.reason = "not-attempted", "fail-fast"
