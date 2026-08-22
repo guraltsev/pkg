@@ -7,6 +7,12 @@ is a collection: `gupkg list`, `gupkg config check`, and `gupkg upgrade check`
 operate across its discovered packages. Use `--package NAME` (or a nested
 selector such as `editors/vscode`) before a mutating command.
 
+For a portable setup, copy the `src` directory to a folder such as
+`C:\opt\gupkg\` and run its `gupkg.cmd` launcher. The launcher loads the
+copied source and, unless `--root` is supplied, uses the directory beside that
+folder (`C:\opt\` in this example) as the collection root. No
+`gupkg-config.toml` or Python-module installation is required.
+
 `gupkg` manages self-contained Windows applications that live on disk rather
 than in a central package store. A package author puts an application's files,
 its version number, and a small `pkg.toml` definition in one directory. From

@@ -49,7 +49,9 @@ exit /b 0
             recorded_args = (
                 log_file.read_text(encoding="utf-8").removeprefix("args=").strip()
             )
-            self.assertIn("-m gupkg tui --probe", recorded_args)
+            self.assertIn("-m gupkg --root", recorded_args)
+            self.assertIn(str(SRC_ROOT.parent), recorded_args)
+            self.assertIn("tui --probe", recorded_args)
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_gupkg_wrapper_uses_its_own_directory_and_forwards_arguments(self) -> None:
@@ -84,7 +86,9 @@ exit /b 0
             recorded_cwd = lines[0].removeprefix("cwd=")
             recorded_args = lines[1].removeprefix("args=")
             self.assertEqual(Path(recorded_cwd), SRC_ROOT)
-            self.assertIn("-m gupkg upgrade check", recorded_args)
+            self.assertIn("-m gupkg --root", recorded_args)
+            self.assertIn(str(SRC_ROOT.parent), recorded_args)
+            self.assertIn("upgrade check", recorded_args)
 
 
 if __name__ == "__main__":
