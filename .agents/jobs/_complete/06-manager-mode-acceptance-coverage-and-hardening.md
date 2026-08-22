@@ -1,5 +1,9 @@
 # Job 06: Manager-mode acceptance coverage and hardening
 
+Status: Closed — implemented by commit `09e4cb0`.
+
+Validation: `121 passed, 8 subtests passed`; `git diff --check` passed.
+
 Depends on: Jobs 01-05
 
 Design authority: `docs/issues/issue011-fixed-manager-mode-and-bulk-upgrades.md`
