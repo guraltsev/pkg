@@ -1,0 +1,25 @@
+name = "fnm"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Fast and simple Node.js version manager, built in Rust."
+homepage = "https://fnm.vercel.app/"
+
+[origin]
+url = "https://github.com/Schniz/fnm"
+
+[update]
+
+[update.check]
+mode = "github"
+assetName = "fnm-windows.zip"
+
+[update.payload]
+mode = "zip"
+
+[[path]]
+value = "$App"
+
+[[bin]]
+name = "fnm"
+target = "$App\\fnm.exe"
