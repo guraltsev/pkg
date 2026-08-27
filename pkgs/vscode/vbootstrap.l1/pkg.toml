@@ -25,3 +25,4 @@ description = "Visual Studio Code"
 [[bin]]
 name = "code"
 target = "$App\\Code.exe"
+type = "gui"

@@ -44,8 +44,8 @@ def load_update_hook():
     return module
 
 
-def test_bootstrap_manifest_installs_the_code_command_shim() -> None:
-    """The VS Code package exposes ``code.exe`` through the scope bin directory."""
+def test_bootstrap_manifest_installs_the_gui_code_command_shim() -> None:
+    """The VS Code package exposes ``code.exe`` as a GUI launcher."""
     version_path = MANIFEST.parent
     identity = PackageIdentity.from_version_path(
         version_path.parent, version_path, is_current=False
@@ -57,6 +57,7 @@ def test_bootstrap_manifest_installs_the_code_command_shim() -> None:
 
     assert config["bin"][0]["name"] == "code"
     assert config["bin"][0]["target"] == "$App\\Code.exe"
+    assert config["bin"][0]["type"] == "gui"
 
 
 class VSCodeUpdateHookTests(unittest.TestCase):
