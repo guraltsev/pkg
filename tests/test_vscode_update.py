@@ -11,11 +11,16 @@ import importlib.util
 import io
 from pathlib import Path
 import sys
+import tomllib
 import unittest
 from unittest import mock
 
+from gupkg.configuration import normalize_runtime_config
+from gupkg.core import PackageIdentity
+
 
 ROOT = Path(__file__).resolve().parents[1]
+MANIFEST = ROOT / "pkgs" / "vscode" / "vbootstrap.l1" / "pkg.toml"
 HOOK_PATH = (
     ROOT
     / "pkgs"
@@ -37,6 +42,21 @@ def load_update_hook():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def test_bootstrap_manifest_installs_the_code_command_shim() -> None:
+    """The VS Code package exposes ``code.exe`` through the scope bin directory."""
+    version_path = MANIFEST.parent
+    identity = PackageIdentity.from_version_path(
+        version_path.parent, version_path, is_current=False
+    )
+
+    config = normalize_runtime_config(
+        tomllib.loads(MANIFEST.read_text(encoding="utf-8")), identity
+    )
+
+    assert config["bin"][0]["name"] == "code"
+    assert config["bin"][0]["target"] == "$App\\Code.exe"
 
 
 class VSCodeUpdateHookTests(unittest.TestCase):

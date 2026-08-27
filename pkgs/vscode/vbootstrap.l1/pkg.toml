@@ -21,3 +21,7 @@ ignore_checksum = true
 name = "VSCode"
 targetPath = "$App\\Code.exe"
 description = "Visual Studio Code"
+
+[[bin]]
+name = "code"
+target = "$App\\Code.exe"
