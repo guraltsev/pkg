@@ -1,0 +1,28 @@
+name = "autohotkey"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Windows automation and hotkey scripting language."
+homepage = "https://www.autohotkey.com/"
+
+[origin]
+url = "https://github.com/AutoHotkey/AutoHotkey"
+
+[update]
+
+[update.check]
+mode = "github"
+assetName = "AutoHotkey_${version}.zip"
+
+[update.payload]
+mode = "zip"
+
+[[shortcut]]
+name = "AutoHotkey\\Ahk2Exe"
+targetPath = "$App\\Compiler\\Ahk2Exe.exe"
+description = "Compile AutoHotkey scripts"
+
+[[bin]]
+name = "ahk2exe"
+target = "$App\\Compiler\\Ahk2Exe.exe"
+type = "console"
