@@ -1,0 +1,29 @@
+name = "xmake"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Cross-platform build utility based on Lua."
+homepage = "https://xmake.io/"
+
+[origin]
+url = "https://github.com/xmake-io/xmake"
+
+[update]
+
+[update.check]
+mode = "github"
+assetName = "xmake-master.win64.zip"
+
+[update.payload]
+mode = "zip"
+
+[[update.payload.extract]]
+src = "xmake/"
+dest = ""
+
+[[path]]
+value = "$App"
+
+[[bin]]
+name = "xmake"
+target = "$App\\xmake.exe"
