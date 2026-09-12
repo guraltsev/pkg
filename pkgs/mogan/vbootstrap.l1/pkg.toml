@@ -1,0 +1,31 @@
+name = "mogan"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "Mogan STEM, a scientific writing and technical computing environment based on GNU TeXmacs."
+homepage = "https://mogan.app/"
+
+[origin]
+url = "https://github.com/MoganLab/mogan"
+
+[update]
+
+[update.check]
+mode = "github"
+assetName = "mogan-release-${version}-win-x64-stable.zip"
+
+[update.payload]
+mode = "module"
+module = "pkg.local/unpack_app.py"
+
+[[shortcut]]
+name = "Mogan STEM"
+targetPath = "$App\\MoganSTEM.exe"
+workingDirectory = "$App"
+description = "Mogan STEM"
+
+[[bin]]
+name = "mogan"
+target = "$App\\MoganSTEM.exe"
+type = "gui"
+working_dir = "$App"
