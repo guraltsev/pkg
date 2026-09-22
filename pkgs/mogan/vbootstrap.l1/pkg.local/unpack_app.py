@@ -75,6 +75,11 @@ def unpack_app(context: dict[str, Any]) -> None:
             for member in archive.infolist():
                 _extract_member(archive, member, stage_app)
 
+    # The portable marker changes Mogan's runtime behavior. The package
+    # manager already provides an isolated application directory, so remove it
+    # before activation and use Mogan's standard data-location behavior.
+    (stage_app / ".portable").unlink(missing_ok=True)
+
 
 def _extract_member(
     archive: zipfile.ZipFile, member: zipfile.ZipInfo, destination: Path

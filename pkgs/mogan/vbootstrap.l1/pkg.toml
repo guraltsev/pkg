@@ -20,12 +20,12 @@ module = "pkg.local/unpack_app.py"
 
 [[shortcut]]
 name = "Mogan STEM"
-targetPath = "$App\\MoganSTEM.exe"
+targetPath = "$App\\Mogan Stem.exe"
 workingDirectory = "$App"
 description = "Mogan STEM"
 
 [[bin]]
 name = "mogan"
-target = "$App\\MoganSTEM.exe"
+target = "$App\\Mogan Stem.exe"
 type = "gui"
 working_dir = "$App"

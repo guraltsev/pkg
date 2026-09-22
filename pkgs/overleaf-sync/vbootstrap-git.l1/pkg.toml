@@ -19,4 +19,4 @@ mode = "git"
 [[bin]]
 name = "overleaf-sync"
 target = "%COMSPEC%"
-arguments = ["/d", "/c", "$App\\ols.cmd", "--store-path", "%USERPROFILE%\\.olauth"]
+arguments = ["/d", "/c", "$App\\ols.cmd"]
