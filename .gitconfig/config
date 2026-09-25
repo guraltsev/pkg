@@ -1,0 +1,6 @@
+[workspace]
+    version = 1
+    remote = github
+
+[remote "github"]
+    url = git@github.com:guraltsev/pkg.git
