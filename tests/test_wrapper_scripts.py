@@ -1,9 +1,9 @@
-"""Cover Windows launcher forwarding and script-directory module resolution.
+"""Cover Python selection and Windows launcher forwarding.
 
 Windows ``cmd`` execution is real while a temporary command shim replaces the
-selected Python interpreter. Package behavior and batch-file implementation
-details beyond forwarded arguments and the launched working directory are out
-of scope.
+system Python command. Package behavior, Python downloads, and batch-file
+implementation details beyond launched arguments and the working directory are
+out of scope.
 """
 
 from __future__ import annotations
@@ -20,6 +20,44 @@ SRC_ROOT = ROOT / "src"
 
 
 class WrapperScriptTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_gupkg_launcher_uses_path_python_when_no_runtime_is_downloaded(self) -> None:
+        """The portable launcher delegates to an available system Python first."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temporary_root = Path(tmpdir)
+            launcher = temporary_root / "gupkg.cmd"
+            launcher.write_text(
+                (SRC_ROOT / "gupkg.cmd").read_text(encoding="utf-8"),
+                encoding="ascii",
+            )
+            python_directory = temporary_root / "system-python"
+            python_directory.mkdir()
+            log_file = temporary_root / "system-python.log"
+            (python_directory / "python.cmd").write_text(
+                f'''@echo off
+>> "{log_file}" echo args=%*
+exit /b 0
+''',
+                encoding="ascii",
+            )
+
+            env = os.environ.copy()
+            env.pop("GUPKG_PYTHON", None)
+            env["PATH"] = f"{python_directory}{os.pathsep}{env.get('PATH', '')}"
+            result = subprocess.run(
+                ["cmd", "/c", str(launcher), "--probe"],
+                cwd=str(temporary_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            recorded_calls = log_file.read_text(encoding="utf-8").splitlines()
+            self.assertIn("-m gupkg --root", recorded_calls[-1])
+            self.assertIn("--probe", recorded_calls[-1])
+
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_gupkg_tui_wrapper_opens_the_interactive_command(self) -> None:
         """The TUI wrapper forwards its arguments to ``gupkg tui``."""

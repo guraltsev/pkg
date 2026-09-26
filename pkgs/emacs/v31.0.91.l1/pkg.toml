@@ -31,6 +31,10 @@ description = "Emacs text editor (client)"
 [[bin]]
 name = "emacs"
 target = "$App\\bin\\emacs.exe"
+
+[[bin]]
+name = "runemacs"
+target = "$App\\bin\\runemacs.exe"
 type = "gui"
 
 [[bin]]

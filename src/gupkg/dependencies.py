@@ -1,22 +1,22 @@
 """Install gupkg runtime dependencies while protecting package-local hooks.
 
-The ``gupkg`` runtime installs its declared third-party dependencies into an
-isolated user environment without changing the interpreter that launches
+The ``gupkg`` runtime installs its declared third-party dependencies into a
+per-user site-packages directory without changing the interpreter that launches
 ``gupkg``. Package-local hooks do not install imports by default: callers must
-explicitly opt in before their missing modules can be installed into
-``%LOCALAPPDATA%\\gupkg\\dependencies`` and makes that environment available to
-the current process. It prefers ``uv`` when it is on ``PATH`` and otherwise
-uses the environment's ``pip``.
+explicitly opt in before their missing modules can be installed. A normal
+interpreter installs into ``%LOCALAPPDATA%\\gupkg\\site-packages``; the bundled
+embeddable CPython installs into
+``%LOCALAPPDATA%\\gupkg\\embedded\\site-packages``. Each directory is added to
+the current process before pip is invoked.
 """
 
 from __future__ import annotations
 
 import importlib
 import os
-import shutil
 import site
 import subprocess
-import venv
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -123,37 +123,35 @@ def install_missing_dependency(module_name: str) -> None:
         If virtual-environment creation or dependency installation fails.
     """
     distribution = _distribution_name(module_name)
-    environment = _dependency_environment()
-    python = _environment_python(environment)
+    site_packages = _dependency_site_packages()
 
-    # Create the reusable environment before selecting an installer so pip is
-    # always isolated from the Python interpreter that launched gupkg.
-    if not python.exists():
-        print(f"[gupkg] Creating dependency environment: {environment}")
-        venv.EnvBuilder(with_pip=True).create(environment)
-
-    # Make already installed dependencies immediately importable on retries.
-    _add_environment_site_packages(python)
+    # Keep normal and bundled interpreters in separate per-user directories so
+    # their independently installed packages never overwrite one another.
+    site_packages.mkdir(parents=True, exist_ok=True)
+    site.addsitedir(str(site_packages))
     if _module_is_importable(module_name):
         return
 
-    # uv resolves and installs faster when available; pip remains a portable
-    # fallback that operates only inside gupkg's user-owned virtual environment.
-    uv = shutil.which("uv")
-    command = (
-        [uv, "pip", "install", "--python", str(python), distribution]
-        if uv
-        else [str(python), "-m", "pip", "install", distribution]
-    )
-    installer = "uv" if uv else "pip"
-    print(f"[gupkg] Installing missing dependency with {installer}: {distribution}")
+    # Target the owned directory directly instead of changing the selected
+    # interpreter. The bundled runtime includes pip for this exact workflow.
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--target",
+        str(site_packages),
+        distribution,
+    ]
+
+    # Invoke the selected installer only after the dependency directory has
+    # been put on the current process's import path for immediate retrying.
+    print(f"[gupkg] Installing missing dependency with pip: {distribution}")
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
-        raise RuntimeError(
-            f"Could not install missing dependency {distribution!r} with {installer}"
-        )
+        raise RuntimeError(f"Could not install missing dependency {distribution!r} with pip")
 
-    _add_environment_site_packages(python)
+    site.addsitedir(str(site_packages))
     importlib.invalidate_caches()
     if not _module_is_importable(module_name):
         raise RuntimeError(
@@ -161,41 +159,23 @@ def install_missing_dependency(module_name: str) -> None:
         )
 
 
-def _dependency_environment() -> Path:
-    """Return the user-owned virtual environment used by package-local hooks."""
+def _dependency_site_packages() -> Path:
+    """Return the per-user package directory for the active interpreter kind."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
-        return Path(local_app_data) / "gupkg" / "dependencies"
-    return Path.home() / "AppData" / "Local" / "gupkg" / "dependencies"
+        base_directory = Path(local_app_data) / "gupkg"
+    else:
+        base_directory = Path.home() / "AppData" / "Local" / "gupkg"
+    if _uses_embedded_python():
+        return base_directory / "embedded" / "site-packages"
+    return base_directory / "site-packages"
 
 
-def _environment_python(environment: Path) -> Path:
-    """Return the Python executable path for one virtual environment."""
-    if os.name == "nt":
-        return environment / "Scripts" / "python.exe"
-    return environment / "bin" / "python"
-
-
-def _add_environment_site_packages(python: Path) -> None:
-    """Add the dependency environment's site-packages directory to this process."""
-    # Ask the environment itself for its site path so the host Python version
-    # and platform layout cannot cause us to guess incorrectly.
-    completed = subprocess.run(
-        [
-            str(python),
-            "-c",
-            (
-                "import site; print(next(path for path in site.getsitepackages() "
-                "if path.lower().endswith('site-packages')))"
-            ),
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    if completed.returncode != 0 or not completed.stdout.strip():
-        raise RuntimeError(f"Could not locate site-packages for {python}")
-    site.addsitedir(completed.stdout.strip())
+def _uses_embedded_python() -> bool:
+    """Return whether the active interpreter is CPython's embeddable distribution."""
+    executable_directory = Path(sys.executable).resolve().parent
+    pth_name = f"python{sys.version_info.major}{sys.version_info.minor}._pth"
+    return (executable_directory / pth_name).is_file()
 
 
 def _module_is_importable(module_name: str) -> bool:

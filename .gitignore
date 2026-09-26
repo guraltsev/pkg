@@ -167,3 +167,6 @@ cython_debug/
 
 # VSCode
 .vscode/
+
+# The launcher downloads this private CPython runtime on first use when needed.
+src/python/

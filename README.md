@@ -8,10 +8,12 @@ operate across its discovered packages. Use `--package NAME` (or a nested
 selector such as `editors/vscode`) before a mutating command.
 
 For a portable setup, copy the `src` directory to a folder such as
-`C:\opt\gupkg\` and run its `gupkg.cmd` launcher. The launcher loads the
-copied source and, unless `--root` is supplied, uses the directory beside that
-folder (`C:\opt\` in this example) as the collection root. No
-`gupkg-config.toml` or Python-module installation is required.
+`C:\opt\gupkg\` and run its `gupkg.cmd` launcher. It uses an available system
+Python 3.11+ when present. Otherwise it downloads verified x64 CPython and pip
+into the copied directory's ignored `python\` folder on first use. Unless
+`--root` is supplied, the directory beside that folder (`C:\opt\` in this
+example) is the collection root. No `gupkg-config.toml` or Python-module
+installation is required.
 
 `gupkg` manages self-contained Windows applications that live on disk rather
 than in a central package store. A package author puts an application's files,
@@ -223,9 +225,10 @@ The interface exposes install, each update stage, and every configuration
 action with the same package path, scope, and applicable flags as the command
 line. It intentionally uses selections and plain output instead of a
 frame-heavy terminal layout. On first use, `gupkg` automatically installs its
-Textual dependency into `%LOCALAPPDATA%\gupkg\dependencies`; the launcher Python
-is not modified. `--pause` is omitted because the interface stays open after
-each operation.
+Textual dependency into `%LOCALAPPDATA%\gupkg\site-packages`; when using the
+bundled runtime it uses `%LOCALAPPDATA%\gupkg\embedded\site-packages` instead.
+The launcher Python is not modified. `--pause` is omitted because the interface
+stays open after each operation.
 
 ```text
 gupkg.cmd [options] <command> [subcommand] [path]
@@ -306,8 +309,14 @@ The convenience scripts call the same entry point and add `--pause` where
 appropriate. They use the same `install`, `upgrade`, and `config` commands
 documented above.
 
-`gupkg.cmd` locates Python in this order: `GUPKG_PYTHON`, `gupkg.python` beside the
-launcher, then `python` from `PATH`.
+`gupkg.cmd` locates Python in this order: `GUPKG_PYTHON`, `gupkg.python` beside
+the launcher, an existing `python\python.exe`, then `python` from `PATH`. When
+none is usable, it downloads CPython 3.12.10's official x64 embeddable package,
+verifies its SHA-256 digest, extracts it into the ignored `python\` directory,
+and installs pip there. The downloaded runtime keeps manually installed
+packages in `%LOCALAPPDATA%\gupkg\embedded\site-packages`; it does not alter a
+system Python. Use `GUPKG_PYTHON` or `gupkg.python` to select another
+interpreter.
 
 ## `pkg.toml` reference
 
@@ -539,12 +548,13 @@ can stage a repair. Candidate mappings contain non-empty `candidateId`,
 versions must be safe version-directory values and may not go backward.
 
 `gupkg` installs every dependency declared by its own optional runtime features
-into `%LOCALAPPDATA%\gupkg\dependencies`; the launcher Python is not modified.
-Trusted package-local hooks never trigger dependency installation by default.
-When a hook needs an unavailable import, `gupkg` reports it and stops. Pass
-`--local-deps-autoinstall` to explicitly allow installation and retrying for
-that command. Installations prefer `uv` and otherwise use that environment's
-`pip`. Trusted package-local hooks are not sandboxed.
+into `%LOCALAPPDATA%\gupkg\site-packages`; the bundled runtime instead uses
+`%LOCALAPPDATA%\gupkg\embedded\site-packages`. The launcher Python is not
+modified. Trusted package-local hooks never trigger dependency installation by
+default. When a hook needs an unavailable import, `gupkg` reports it and stops.
+Pass `--local-deps-autoinstall` to explicitly allow installation and retrying
+for that command. Installations use the active interpreter's `pip`. Trusted
+package-local hooks are not sandboxed.
 
 #### Update payloads
 
