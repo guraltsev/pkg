@@ -7,11 +7,13 @@ is a collection: `gupkg list`, `gupkg config check`, and `gupkg upgrade check`
 operate across its discovered packages. Use `--package NAME` (or a nested
 selector such as `editors/vscode`) before a mutating command.
 
-For a portable setup, copy the `src` directory to a folder such as
-`C:\opt\gupkg\` and run its `gupkg.cmd` launcher. It uses an available system
+For a source-checkout portable setup, copy the `src` directory to a folder such
+as `C:\opt\gupkg\` and run `src\gupkg\gupkg.cmd`. It uses an available system
 Python 3.11+ when present. Otherwise it downloads verified x64 CPython and pip
-into the copied directory's ignored `python\` folder on first use. Unless
-`--root` is supplied, the directory beside that folder (`C:\opt\` in this
+into the copied directory's ignored `python\` folder on first use. The outer
+`src\gupkg.cmd` is only a thin selector for a package-local native command or a
+`gupkg.exe` found on `PATH`; packaged releases provide that native command.
+Unless `--root` is supplied, the directory beside `src` (`C:\opt\` in this
 example) is the collection root. No `gupkg-config.toml` or Python-module
 installation is required.
 
@@ -309,14 +311,15 @@ The convenience scripts call the same entry point and add `--pause` where
 appropriate. They use the same `install`, `upgrade`, and `config` commands
 documented above.
 
-`gupkg.cmd` locates Python in this order: `GUPKG_PYTHON`, `gupkg.python` beside
-the launcher, an existing `python\python.exe`, then `python` from `PATH`. When
-none is usable, it downloads CPython 3.12.10's official x64 embeddable package,
-verifies its SHA-256 digest, extracts it into the ignored `python\` directory,
-and installs pip there. The downloaded runtime keeps manually installed
-packages in `%LOCALAPPDATA%\gupkg\embedded\site-packages`; it does not alter a
-system Python. Use `GUPKG_PYTHON` or `gupkg.python` to select another
-interpreter.
+The internal `src\gupkg\gupkg.cmd` locates Python in this order:
+`GUPKG_PYTHON`, `gupkg.python` beside the launcher, an existing
+`python\python.exe`, then `python` from `PATH`. When none is usable, it
+downloads CPython 3.12.10's official x64 embeddable package, verifies its
+SHA-256 digest, and extracts it into the ignored `python\` directory. The
+Python bootstrap then writes runtime support files and installs pip there. The
+downloaded runtime keeps manually installed packages in
+`%LOCALAPPDATA%\gupkg\embedded\site-packages`; it does not alter a system
+Python. Use `GUPKG_PYTHON` or `gupkg.python` to select another interpreter.
 
 ## `pkg.toml` reference
 

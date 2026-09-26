@@ -28,7 +28,9 @@ content. Installing a selected package copies its install seed into
 the selected collection root and then delegates payload acquisition,
 activation, and Windows integration to the existing single-package workflow.
 
-This document is an implementation plan. It does not implement the feature.
+This document is an implementation plan. The preliminary launcher phase is
+implemented in the source tree; the standalone package, registry, and new
+manager layout remain planned work.
 
 ## Goals
 
@@ -169,6 +171,26 @@ checkout, recovery, and no-Python bootstrap boundary.
 This preparation is behavior-preserving for package operations. It changes
 which layer owns launch/bootstrap decisions before the standalone layout is
 introduced.
+
+### Preliminary implementation status
+
+The launcher-only part of this design is intentionally complete, while the
+standalone package and registry work remains unchecked below:
+
+- [x] Add internal `gupkg\gupkg.cmd` and `gupkg\gupkg-tui.cmd` entry points.
+- [x] Move no-Python interpreter selection and embedded-runtime download into
+  the internal command file.
+- [x] Hand runtime support-file generation, embedded pip setup, and final CLI
+  dispatch to the Python bootstrap entry point.
+- [x] Make the outer wrappers select package-local executables or a
+  PATH-resolved system command and preserve arguments and exit status.
+- [x] Rewrite automated launcher coverage around selection, forwarding,
+  fallback, failure propagation, and the internal bootstrap handoff.
+- [ ] Build and materialize package-local native `gupkg.exe` and
+  `gupkg-tui.exe` shims.
+- [ ] Perform the manual Windows coverage listed in the test strategy.
+- [ ] Implement the standalone layout, manager configuration, GitHub registry,
+  registry installation, and self-hosting phases.
 
 ### Default filesystem layout
 
@@ -1272,18 +1294,19 @@ long paths, and a home directory containing spaces and non-ASCII characters.
 
 ### Phase 0: thin launchers and Python-owned bootstrap
 
-1. Add internal `gupkg\gupkg.cmd` and `gupkg\gupkg-tui.cmd` entry points.
-2. Move unavoidable no-Python interpreter discovery/download work into the
-   internal command file.
-3. Add a Python bootstrap entry point and move `_pth`, site customization, pip,
-   dependency, path, configuration, and dispatch logic into Python as soon as
-   an interpreter is runnable.
-4. Materialize package-local native `gupkg.exe` and `gupkg-tui.exe` shims with
-   relative configurations targeting the vendored interpreter.
-5. Replace the external `gupkg.cmd` and `gupkg-tui.cmd` with local-executable
-   selectors plus PATH-only system fallback and exact argument/exit forwarding.
-6. Rewrite launcher tests around the observable boundary and perform manual
-   Windows checks for quoting, PATH resolution, UNC paths, and missing tools.
+- [x] Add internal `gupkg\gupkg.cmd` and `gupkg\gupkg-tui.cmd` entry points.
+- [x] Move unavoidable no-Python interpreter discovery/download work into the
+  internal command file.
+- [x] Add a Python bootstrap entry point and move `_pth`, site customization, pip,
+  dependency, path, configuration, and dispatch logic into Python as soon as
+  an interpreter is runnable.
+- [ ] Materialize package-local native `gupkg.exe` and `gupkg-tui.exe` shims with
+  relative configurations targeting the vendored interpreter.
+- [x] Replace the external `gupkg.cmd` and `gupkg-tui.cmd` with local-executable
+  selectors plus PATH-only system fallback and exact argument/exit forwarding.
+- [x] Rewrite launcher tests around the observable boundary.
+- [ ] Perform manual Windows checks for quoting, PATH resolution, UNC paths,
+  and missing tools.
 
 Exit criteria: the two external wrappers contain no package-manager or runtime
 bootstrap policy; they only select a local or installed executable, forward
