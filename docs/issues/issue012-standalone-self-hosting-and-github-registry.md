@@ -21,9 +21,10 @@ Configuration comes from the active version directory, a per-user roaming
 override, or built-in defaults.
 
 The same change adds an official read-only package registry hosted in the
-GitHub repository. `gupkg registry sync` downloads and verifies an immutable
-registry snapshot. Search and registry-backed installation use only the last
-successfully verified local snapshot. Synchronization never executes registry
+GitHub repository. `gupkg registry sync` downloads the immutable `pkgs/`
+subtree from a pinned Git commit and validates it locally. Search and registry-backed
+installation use only the last successfully downloaded and validated local
+tree. Synchronization never executes registry
 content. Installing a selected package copies its install seed into
 the selected collection root and then delegates payload acquisition,
 activation, and Windows integration to the existing single-package workflow.
@@ -45,14 +46,14 @@ manager layout remain planned work.
   `%USERPROFILE%\opt`.
 - Put collection roots, bin directories, and registry cache location in a
   strict TOML configuration.
-- Download a verified official registry snapshot from GitHub.
+- Download the official repository's `pkgs/` subtree from GitHub.
 - Search the cached registry and install a named package into an explicitly
   selected scope.
 - Reuse the existing `pkg.toml`, bootstrap promotion, update, activation,
   component, manager, and TUI domains.
 - Let the running `gupkg` safely update its own package and redirect future
   invocations to the new immutable version.
-- Preserve an offline path through the last verified registry snapshot.
+- Preserve an offline path through the last downloaded registry tree.
 
 ## Non-goals
 
@@ -329,8 +330,8 @@ channel = "stable"
 
 Version 2 accepts exactly these top-level keys and exact keys within each
 table. `channel` initially accepts only `"stable"`. The official GitHub
-repository, release asset names, signature algorithm, and trusted public keys
-are application policy, not user-selectable registry endpoints. A future
+repository, stable-ref policy, and Git-subtree transport policy are application
+policy, not user-selectable registry endpoints. A future
 schema can replace `[registry]` with multiple named registry definitions
 without making arbitrary sources part of the first release contract.
 
@@ -721,7 +722,7 @@ an actionable error rather than being overwritten.
 
 ### Local Python runtime
 
-- Git and registry source snapshots omit `gupkg\python`, but the published
+- Git and registry source trees omit `gupkg\python`, but the published
   standalone/bootstrap ZIP must contain a complete verified runtime. A release
   with a missing or partial runtime is invalid.
 - Developer or package-local copies without `gupkg\python` use the version's
@@ -830,7 +831,7 @@ an actionable error rather than being overwritten.
   reported separately from checksum or configuration failures so repair advice
   is actionable.
 - A successful local self-install is not rolled back when registry sync fails.
-  Conversely, a valid registry snapshot does not make a broken local Python
+  Conversely, a valid cached registry tree does not make a broken local Python
   runtime healthy.
 
 ## Official GitHub registry
@@ -838,87 +839,45 @@ an actionable error rather than being overwritten.
 ### Publication
 
 The official source is the GitHub repository already associated with this
-project, `https://github.com/guraltsev/pkg`. A release workflow builds a
-deterministic registry snapshot from `pkgs/` and publishes three assets:
+project, `https://github.com/guraltsev/pkg`. The registry is the repository's
+`pkgs/` subtree at the commit selected by the published stable Git tag. No
+separate registry archive, signed index, or release asset is published.
 
-- `gupkg-registry-v1.toml`: signed snapshot metadata and package index;
-- `gupkg-registry-v1.toml.sig`: detached signature; and
-- `gupkg-registry-v1.zip`: package definition trees.
+For `stable`, the client resolves the designated stable tag to a full commit
+ID, then performs a bounded sparse Git checkout of only `pkgs/` at that commit.
+The resolved commit ID is the registry revision. Development builds may expose
+an explicit internal local-tree option, but arbitrary URLs and branch tips are
+not part of the public version-one contract.
 
-Clients use stable `releases/latest/download/...` URLs for the `stable`
-channel. Development builds may expose an explicit internal option for a local
-snapshot, but branch archives and arbitrary URLs are not part of the public
-version-one contract.
+The stable tag is a release-selection mechanism, not an assertion that the
+download is independently cryptographically authenticated. This keeps the
+registry transport deliberately simple: it obtains the corresponding source
+subtree from the official repository and applies local safety and configuration
+validation before using it.
 
-Publishing fails if registry validation fails. A Git tag or GitHub release by
-itself is not sufficient publication.
+### Registry tree and validation
 
-### Registry index
-
-The signed index contains data, not executable configuration:
-
-```toml
-schema_version = 1
-registry = "official"
-revision = "<full git commit>"
-generated_at = "2026-09-26T00:00:00Z"
-archive = "gupkg-registry-v1.zip"
-archive_size = 123456
-archive_sha256 = "<sha256>"
-
-[[package]]
-selector = "gupkg"
-path = "packages/gupkg"
-description = "The gupkg package manager"
-manifest_sha256 = "<sha256>"
-```
-
-Package rows are sorted by case-folded selector and then original selector.
-Selectors are unique case-insensitively. Version one accepts flat selectors
-only; nested registry selectors can be designed with multi-registry support.
-
-Every package path contains exactly one install seed version tree plus optional
-package-owned support files used by that seed. A seed may be a
+Each direct child of `pkgs/` is a flat, case-insensitive package selector.
+Each package directory contains exactly one install seed version tree plus
+optional package-owned support files used by that seed. A seed may be a
 `vbootstrap*.lN` update template or a concrete `v<version>.lN` definition whose
-missing declared payload can be populated from `[origin]`. This preserves the package
-shapes already present under `pkgs/` without copying application payloads into
-the registry. Registry publication rejects:
+missing declared payload can be populated from `[origin]`. This preserves the
+package shapes already present under `pkgs/` without copying application
+payloads into the registry.
+
+Before publication into the local cache, synchronization rejects:
 
 - `current`, `.gupkg`, the declared payload directory, or manager state,
   except for explicitly allowed source/support files in the `gupkg` seed;
 - absolute paths, `..`, symlinks, junctions, and reparse points;
 - manifests whose directory-owned identity is inconsistent;
-- duplicate selectors or case collisions;
-- unknown registry schema fields;
-- files omitted from the snapshot hash inventory; and
+- duplicate selectors or case collisions; and
 - package trees that fail the existing configuration health checks.
 
 The registry is a catalog of install definitions, not a mirror of application
 payloads. Payloads continue to come from each package's declared origin or
-update provider.
-
-### Trust and verification
-
-Registry definitions can contain trusted `pkg.local` code that later runs
-during installation or updates. HTTPS and a checksum served beside an archive
-are not a sufficient trust boundary by themselves.
-
-The client bundles the official registry's public signing key. Synchronization
-must:
-
-1. download the index and detached signature with bounded sizes and timeouts;
-2. verify the signature before trusting URLs, sizes, hashes, or package rows;
-3. download the named archive with a configured maximum size;
-4. verify its exact byte count and SHA-256 digest;
-5. extract into a new temporary directory with traversal, link, reparse-point,
-   file-count, and expanded-size protections;
-6. verify every indexed package manifest and reject unexpected files;
-7. validate every package definition without importing or executing hooks; and
-8. atomically publish the snapshot as current only after all checks succeed.
-
-Key rotation is delivered by a `gupkg` release that trusts both the retiring
-and replacement keys for an overlap period. A registry snapshot cannot add a
-new trusted key by itself.
+update provider. The client must not import or execute `pkg.local` while
+fetching, enumerating, or validating the tree.
 
 ### Local cache
 
@@ -926,35 +885,33 @@ The default cache is:
 
 ```text
 %LOCALAPPDATA%\gupkg\registry\official\
-  downloads\
-  snapshots\<revision>\
-    registry.toml
-    packages\...
+  trees\<revision>\
+    pkgs\...
   state.toml
 ```
 
-`state.toml` identifies the active verified revision, source ETag when
-available, successful synchronization time, and diagnostic state. It is
-atomically replaced. A failed sync leaves the previous snapshot active and
-removes disposable work when possible.
+`state.toml` identifies the active commit revision, source tag, successful
+synchronization time, and diagnostic state. It is atomically replaced. A
+failed sync leaves the previous tree active and removes disposable work when
+possible.
 
 Only the cache for the invoking user is updated, even when installing a system
 package. Elevation is delayed until the package-root mutation, so ordinary
 registry downloads and searches do not require administrator privileges.
-The elevated continuation revalidates the selected snapshot revision and
-package hashes before copying anything into `C:\opt`.
+The elevated continuation revalidates the selected tree revision and package
+definition before copying anything into `C:\opt`.
 
-Keep the newest two verified snapshots so an interrupted reader can finish;
+Keep the newest two validated trees so an interrupted reader can finish;
 older cache cleanup is explicit and recoverable. Cache contents are never
 treated as installed package state.
 
 ### Synchronization behavior
 
 `gupkg registry sync` is the only ordinary command that refreshes a populated
-cache. It uses HTTP conditional requests when possible and reports `current`
-without replacing the snapshot when GitHub returns an unchanged result.
+cache. It resolves the stable tag first and reports `current` without replacing
+the tree when it still resolves to the active commit.
 
-If no verified cache exists, commands that inherently need registry data may
+If no validated cache exists, commands that inherently need registry data may
 offer or perform one foreground synchronization:
 
 - bootstrap always attempts it;
@@ -963,9 +920,9 @@ offer or perform one foreground synchronization:
 - local list, doctor, health, and update commands never contact the registry.
 
 With an existing cache, install and search do not silently refresh it. They
-show the snapshot revision and age, and the TUI offers `Sync registry` as an
+show the tree revision and age, and the TUI offers `Sync registry` as an
 explicit action. `--offline` forbids network access and fails clearly when no
-verified snapshot exists.
+validated tree exists.
 
 ## Registry-backed package installation
 
@@ -1011,14 +968,14 @@ workflow. It does not use a separate updater.
 Installing a registry selector performs these steps:
 
 1. Load and validate manager configuration and the selected scope layout.
-2. Load one verified cached registry snapshot, synchronizing only when absent
-   and not offline.
-3. Resolve the selector case-insensitively to exactly one indexed package.
+2. Load one validated cached registry tree, synchronizing only when absent and
+   not offline.
+3. Resolve the selector case-insensitively to exactly one package directory.
 4. Validate scope permissions and obtain elevation before the first system
    write.
 5. Acquire a collection mutation lock under
    `<scope-root>\.gupkg\locks\install.lock`.
-6. Revalidate the registry revision and all selected package hashes.
+6. Revalidate the registry revision and selected package definition.
 7. Copy the install seed into a unique work directory beneath
    `<scope-root>\.gupkg\work`.
 8. Run the ordinary manifest and health validation against the staged tree.
@@ -1101,9 +1058,8 @@ activation mechanism.
 Add a focused module responsible for:
 
 - official endpoint policy;
-- index parsing and signature verification;
-- bounded HTTP downloads;
-- safe snapshot extraction and hash validation;
+- stable-tag resolution and sparse Git checkout of `pkgs/`;
+- bounded Git transport and local tree validation;
 - atomic cache publication;
 - catalog search and exact selector resolution; and
 - staging one selected definition for the normal installer.
@@ -1139,7 +1095,7 @@ No global service locator or provider framework is needed.
 - A malformed manager config stops before network or filesystem mutation.
 - A failed or untrusted registry sync never replaces the active cache.
 - An absent registry cache does not block local package management.
-- A stale verified cache remains usable and is labeled with its age/revision.
+- A stale validated cache remains usable and is labeled with its age/revision.
 - A package install never broadens from user to system scope.
 - Elevation cancellation leaves both roots unchanged.
 - An install seed committed before a payload failure remains visible as
@@ -1220,15 +1176,15 @@ Protect these behaviors with real TOML files and temporary directories:
 
 ### Registry tests
 
-Use a local HTTP test server or mocked HTTP boundary and real archives:
+Use a local Git fixture or mocked Git boundary and real `pkgs/` trees:
 
-- valid signed metadata and matching archive publish one snapshot;
-- bad signature, wrong size/hash, unsupported schema, duplicate selector,
-  unsafe path, symlink/reparse entry, excessive expansion, unexpected file, or
-  invalid package leaves the old snapshot active;
-- conditional synchronization preserves the current snapshot on no change;
+- a stable tag resolving to a valid commit publishes its `pkgs/` tree;
+- an unresolved tag, failed sparse checkout, duplicate selector, unsafe path,
+  symlink/reparse entry, or invalid package leaves the old tree active;
+- synchronization preserves the current tree when the tag still resolves to
+  its active commit;
 - a failed first sync leaves no active cache;
-- offline search/install uses a verified cache and never calls the network;
+- offline search/install uses a validated cache and never calls the network;
 - search ordering and exact selector resolution are deterministic;
 - synchronization never imports or executes a registry hook; and
 - cache state reports revision, age, source, and last failure accurately.
@@ -1340,16 +1296,16 @@ components only into the configured scope locations.
 Exit criteria: a clean Windows machine with no Python can install and run
 `gupkg` from either default scope.
 
-### Phase 3: signed official registry
+### Phase 3: official Git subtree registry
 
-1. Define the index schema and release validation command.
-2. Add deterministic snapshot publication and signing in CI.
-3. Add verification, safe extraction, atomic cache publication, status, and
-   offline behavior.
-4. Publish the three stable-channel GitHub release assets.
+1. Define stable-tag resolution and the `pkgs/` tree validation command.
+2. Add bounded sparse checkout, atomic cache publication, status, and offline
+   behavior.
+3. Add CI validation for the `pkgs/` tree before a stable tag is published.
 
-Exit criteria: `gupkg registry sync` can obtain a verified snapshot without
-executing its contents, and every failure preserves the preceding snapshot.
+Exit criteria: `gupkg registry sync` can obtain and validate the `pkgs/`
+subtree without executing its contents, and every failure preserves the
+preceding tree.
 
 ### Phase 4: registry search and install
 
@@ -1394,11 +1350,11 @@ The design is implemented only when all of the following are true:
    registry cache within the documented safety constraints.
 8. User and system shims may coexist without overwriting one another.
 9. A clean bootstrap installs locally even if the later registry sync fails.
-10. Registry sync verifies signed metadata, archive size/hash, extraction
-   safety, indexed files, and package health before activation.
-11. Failed synchronization leaves the previous verified snapshot usable.
+10. Registry sync resolves a stable tag to a commit, checks out only its
+    `pkgs/` subtree, and validates package safety and health before activation.
+11. Failed synchronization leaves the previous validated tree usable.
 12. Local package management never requires registry access.
-13. Search and install can operate offline from a verified snapshot.
+13. Search and install can operate offline from a validated tree.
 14. Registry sync/list/search never imports or executes package-local code.
 15. Registry-backed install defaults to user scope and requires explicit
     system selection/elevation.
@@ -1410,7 +1366,7 @@ The design is implemented only when all of the following are true:
 19. The running native shim is either left intact or replaced safely after it
     exits.
 20. Build and release automation produces the standalone package, bootstrap
-    archive, signed registry assets, digests, and clean-machine test evidence.
+    archive, `pkgs/`-tree validation, digests, and clean-machine test evidence.
 21. The `gupkg` package version contains `gupkg\`, optional
     `gupkg-config.toml`, and standard `pkg.toml` without requiring an `App`
     directory.
@@ -1449,7 +1405,7 @@ moved it. Its version directory contains `pkg.toml`, optional
 `gupkg-config.toml`, and the `gupkg\` application payload with a locally
 vendored `gupkg\python` runtime. Bootstrap creates
 `%USERPROFILE%\bin\gupkg.exe`, adds that directory to the user `PATH`, and
-downloads the verified official registry. A persistent user override may be
+downloads the official repository's `pkgs/` subtree. A persistent user override may be
 placed at `%APPDATA%\gupkg\gupkg-config.toml`. After opening a new terminal,
 the user can run:
 
