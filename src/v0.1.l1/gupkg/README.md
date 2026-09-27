@@ -1,5 +1,9 @@
 # Runtime modules and migration helpers
 
+For operator-facing installation and recovery procedures, see
+[the operations guide](../../docs/operations.md). This file describes the
+implementation-facing modules and migration helpers.
+
 The Python modules in this directory contain the supported implementation
 domains used by the stable `gupkg/gupkg.py` executable:
 
@@ -14,6 +18,8 @@ domains used by the stable `gupkg/gupkg.py` executable:
 - `origin.py`: Git, zip, and script application population
 - `updates.py`: update state, hooks, candidate validation, and staging
 - `github_releases.py`: built-in latest-release discovery for GitHub assets
+- `registry.py`: validated sparse Git registry cache, search, and selectors
+- `distribution.py`: standalone runtime health and scoped self-repair
 
 `gupkg/gupkg.py` remains the executable and public facade. It owns CLI dispatch and
 the high-level install, health-check, configuration, and update workflows.
@@ -118,6 +124,10 @@ After running a helper script, check at least these items:
 - wrapper script content still makes sense for the target shell
 - `[origin].url` points at a zip archive that `gupkg` should use to populate
   `App/`
+- `payloadDirectory`, when present, is a safe immediate child of the version
+  directory
+- registry validation is treated as data-only; package-local modules are not
+  imported while validating registry manifests
 
 When in doubt, treat the helper output as a starting point and edit the TOML by
 hand.

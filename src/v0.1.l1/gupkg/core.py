@@ -600,14 +600,21 @@ def write_bytes_atomic(path: Path, content: bytes) -> None:
 
 
 def expand_text(
-    text: str, identity: PackageIdentity, mode: ExpansionMode
+    text: str,
+    identity: PackageIdentity,
+    mode: ExpansionMode,
+    *,
+    payload_directory: str = "App",
+    install_context: Any | None = None,
 ) -> ExpansionResult:
     """Expand package and environment variables in text.
 
     Expansion rules:
 
-    - ``$App``, ``$Icons``, ``$Shortcuts``, and ``${version}`` expand in every
-      mode.
+    - ``$App``, ``$Icons``, ``$Shortcuts``, ``$VersionRoot``, ``$Payload``, and
+      ``${version}`` expand in every mode.
+    - ``$ScopeRoot`` and ``$Bin`` expand when an installation context supplies
+      those values.
     - ``${VAR}`` expands in every mode and is tracked as unresolved when the
       environment variable does not exist.
     - Plain ``$NAME`` only expands when it names a package variable.
@@ -624,6 +631,11 @@ def expand_text(
         Package identity used to resolve package-variable paths.
     mode : ExpansionMode
         Expansion ruleset to apply.
+    payload_directory : str, default="App"
+        Lifecycle payload child used by ``$Payload``.
+    install_context : object, optional
+        Mapping or context object exposing ``collection_root`` and ``bin_dir``
+        for manager-owned install values.
 
     Returns
     -------
@@ -646,8 +658,23 @@ def expand_text(
         "App": str(gupkg_base / "App"),
         "Icons": str(gupkg_base / "Icons"),
         "Shortcuts": str(gupkg_base / "Shortcuts"),
+        "VersionRoot": str(gupkg_base),
+        "Payload": str(gupkg_base / payload_directory),
         "version": identity.version,
     }
+    if install_context is not None:
+        if isinstance(install_context, dict):
+            scope_root = install_context.get("collection_root") or install_context.get(
+                "scope_root"
+            )
+            bin_dir = install_context.get("bin_dir")
+        else:
+            scope_root = getattr(install_context, "collection_root", None)
+            bin_dir = getattr(install_context, "bin_dir", None)
+        if scope_root is not None:
+            gupkg_map["ScopeRoot"] = str(scope_root)
+        if bin_dir is not None:
+            gupkg_map["Bin"] = str(bin_dir)
     out: List[str] = []
     unresolved: List[str] = []
     i = 0

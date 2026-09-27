@@ -7,15 +7,22 @@ is a collection: `gupkg list`, `gupkg config check`, and `gupkg upgrade check`
 operate across its discovered packages. Use `--package NAME` (or a nested
 selector such as `editors/vscode`) before a mutating command.
 
-For a source-checkout portable setup, copy the `src` directory to a folder such
-as `C:\opt\gupkg\` and run `src\gupkg\gupkg.cmd`. It uses an available system
-Python 3.11+ when present. Otherwise it downloads verified x64 CPython and pip
-into the copied directory's ignored `python\` folder on first use. The outer
-`src\gupkg.cmd` is only a thin selector for a package-local native command or a
-`gupkg.exe` found on `PATH`; packaged releases provide that native command.
-Unless `--root` is supplied, the directory beside `src` (`C:\opt\` in this
-example) is the collection root. No `gupkg-config.toml` or Python-module
-installation is required.
+For the supported standalone/operator workflow, read
+[docs/operations.md](docs/operations.md). It covers release installation,
+manager v2 configuration, the GitHub registry, offline operation, migration,
+and self-repair.
+
+For a release install, run the shipped bootstrap wrapper with
+`--scope user` or `--scope system`; the embedded runtime and native shims are
+part of the versioned artifact. For a source-checkout development setup, copy
+the `src` directory to a folder such as `C:\opt\gupkg\` and run
+`src\gupkg\gupkg.cmd`. It uses an available system Python 3.11+ when present.
+Otherwise it downloads verified x64 CPython and pip into the copied
+directory's ignored `python\` folder on first use. The outer `src\gupkg.cmd`
+is only a thin selector for a package-local native command or a `gupkg.exe`
+found on `PATH`; packaged releases provide that native command. See
+[the operations guide](docs/operations.md) for the release build inputs and
+recovery commands.
 
 `gupkg` manages self-contained Windows applications that live on disk rather
 than in a central package store. A package author puts an application's files,
@@ -68,11 +75,11 @@ configured origin. Shortcuts, PATH entries, environment values, and wrappers
 normally point at files or directories beneath `App`.
 
 `pkg.toml` sits beside `App` and describes the package version. It declares
-how to obtain `App` when necessary and how to expose it to Windows. The
+how to obtain the payload when necessary and how to expose it to Windows. The
 configuration uses package variables so that it does not need hard-coded
-machine-specific paths: `$App`, `$Icons`, and `$Shortcuts` resolve to the
-matching directories in the installed version, while `${version}` resolves to
-the version in the directory name. For example,
+machine-specific paths: `$App`, `$Payload`, `$VersionRoot`, `$Icons`, and
+`$Shortcuts` resolve to matching directories in the installed version, while
+`${version}` resolves to the version in the directory name. For example,
 
 ```toml
 [[shortcut]]
@@ -90,8 +97,9 @@ target = "$App\\rg.exe"
 
 This creates a shortcut to the executable, stores the full `App` path in an
 environment variable, and creates a command wrapper that launches the same
-executable. The exact expansion rules are documented in [Variables and
-expansion](#variables-and-expansion).
+executable. A package may set `payloadDirectory` to a safe immediate child of
+the version directory when its payload is not named `App`. The exact expansion
+rules are documented in [Variables and expansion](#variables-and-expansion).
 
 `Icons` and `Shortcuts` are optional package-owned asset directories. `Icons`
 is a natural place for shortcut icons; `Shortcuts` is available to package
@@ -171,33 +179,47 @@ to make that downloaded version current.
 
 The centrally installed executable and package-local mode are both supported.
 Package-local launchers and explicit package paths keep existing behavior.
-Manager mode is selected only by `gupkg-config.toml` in the current directory
-or by `--config PATH`.
+Manager mode is selected by an explicit `--config PATH`, a discovered
+`gupkg-config.toml`, or the version-local manager configuration described in
+[the operations guide](docs/operations.md).
 
-The exact version-one manager schema is:
+The current manager schema is:
 
 ```toml
 mode = "manager"
-schema_version = 1
+schema_version = 2
 
 [packages]
-system = 'D:\Programs'
-user = '%USERPROFILE%\Programs'
+system = 'C:\opt'
+user = '%USERPROFILE%\opt'
+
+[bin]
+system = 'C:\bin'
+user = '%USERPROFILE%\bin'
+
+[registry]
+cache = '%LOCALAPPDATA%\gupkg\registry'
+channel = "stable"
 ```
 
-Both roots are required collection roots and must be distinct and non-nesting.
-Relative paths resolve against the manager file, `%NAME%` expands from the
-case-insensitive process environment, and a leading `~` expands to the current
-user's home. Unknown variables and shell substitutions are rejected. A missing
-root is reported as an incomplete scope and blocks mutation; loading never
-creates roots. Scope comes from the configured root, so a user target cannot
-silently become a machine installation.
+Both package roots are required collection roots and must be distinct and
+non-nesting. The bin roots must also be distinct, and the registry cache must
+not be inside either package root. Relative paths resolve against the manager
+file, `%NAME%` expands from the case-insensitive process environment, and a
+leading `~` expands to the current user's home. Unknown variables and shell
+substitutions are rejected. A missing root is reported as an incomplete scope
+and blocks mutation; loading never creates roots. Scope comes from the
+configured root, so a user target cannot silently become a machine
+installation. Schema v1 remains readable and can be rewritten with
+`gupkg migrate-config`.
 
-Manager workflows are `gupkg list`, `gupkg doctor`, `gupkg upgrade check`, and
-`gupkg upgrade all [--dry-run] [--yes]`. List is local-only except for the
-`updatable` filter, which performs fresh checks. Doctor validates configuration,
-roots, `current`, and manifests without contacting providers. A valid `current`
-is authoritative: a lone version directory is not installed, and a broken or
+Manager workflows include `gupkg list`, `gupkg doctor`, `gupkg upgrade check`,
+`gupkg upgrade all [--dry-run] [--yes]`, `gupkg registry sync|status`,
+`gupkg search`, `gupkg install <selector>`, `gupkg self status`, and
+`gupkg self repair|update`. `list` is local-only except for the `updatable`
+filter, which performs fresh checks. Doctor validates configuration, roots,
+`current`, and manifests without contacting providers. A valid `current` is
+authoritative: a lone version directory is not installed, and a broken or
 escaping activation is broken. Bootstrap definitions remain available but are
 never implicitly installed.
 
@@ -486,8 +508,10 @@ configuration carefully.
 
 ### Variables and expansion
 
-`$App`, `$Icons`, and `$Shortcuts` expand to the corresponding directories in
-the selected version. `${version}` expands to the upstream version. Braced
+`$App`, `$Payload`, `$VersionRoot`, `$Icons`, and `$Shortcuts` expand to the
+corresponding directories in the selected version. `$Payload` is the directory
+named by `payloadDirectory` (or `App` by default), while `$VersionRoot` is the
+version directory itself. `${version}` expands to the upstream version. Braced
 environment references such as `${USERPROFILE}` expand from the process
 environment and must resolve. `$$` becomes a literal dollar sign.
 

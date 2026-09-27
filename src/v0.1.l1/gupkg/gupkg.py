@@ -86,13 +86,24 @@ from gupkg.updates import (  # noqa: E402
 )
 from gupkg.manager import (  # noqa: E402
     discover_manager,
+    discover_manager_config,
+    installation_context,
     execute_upgrade_plan,
     load_manager_config,
+    migrate_manager_config,
     plan_upgrade_all,
     scope_id,
     scope_name,
     select_target,
 )
+from gupkg.registry import (  # noqa: E402
+    default_registry_cache,
+    registry_status,
+    resolve_selector,
+    search_registry,
+    sync_registry,
+)
+from gupkg.distribution import repair_self, self_status  # noqa: E402
 from gupkg.windows import (  # noqa: E402
     is_current_user_admin,
     relaunch_elevated,
@@ -702,6 +713,7 @@ def install_package(
     refresh_app: bool = False,
     no_checksum: bool = False,
     local_deps_autoinstall: bool = False,
+    install_context=None,
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -825,7 +837,11 @@ def install_package(
         )
 
     try:
-        scope_paths = compute_scope_paths(scope)
+        scope_paths = (
+            install_context.as_scope_paths()
+            if install_context is not None
+            else compute_scope_paths(scope)
+        )
     except (RuntimeError, ValueError, OSError) as exc:
         return action_failure(
             f"Failed to resolve {scope.value} scope paths: {exc}",
@@ -851,9 +867,10 @@ def install_package(
 
     # An install is only meaningful for a concrete application payload. Fail
     # before junction mutations when no origin can repair the package.
-    if runtime_config.get("origin") is None and not app_has_payload(identity):
+    if runtime_config.get("origin") is None and not app_has_payload(identity, runtime_config):
+        payload_label = "App" if runtime_config.get("payloadDirectory", "App") == "App" else "Configured payload"
         return action_failure(
-            "App is missing or empty and no [origin] is configured to populate it",
+            f"{payload_label} is missing or empty and no [origin] is configured to populate it",
             exit_code=EXIT_USER_ERROR,
             warnings=warnings,
         )
@@ -1892,18 +1909,205 @@ def _render_upgrade_plan(inventory, plan, *, toml: bool, complete: bool = True) 
 
 
 def _manager_config_path(raw: list[str], explicit: Path | None) -> tuple[Path | None, bool]:
-    """Resolve exactly ``--config`` or the current directory marker."""
-    if explicit is not None:
-        return explicit, True
-    marker = Path.cwd() / "gupkg-config.toml"
-    return (marker, False) if marker.exists() else (None, False)
+    """Resolve the manager file using explicit, cwd, roaming, and local rules."""
+    _ = raw
+    version_root = Path(__file__).resolve().parent.parent
+    selected = discover_manager_config(explicit, version_root=version_root)
+    return selected, explicit is not None
+
+
+def _manager_registry_cache(manager) -> Path:
+    """Return the configured or built-in registry cache location."""
+    return manager.registry_cache or default_registry_cache()
+
+
+def _manager_registry_command(manager, args: list[str], *, toml: bool) -> int:
+    """Run one manager registry command using only the validated cache boundary."""
+    if not args:
+        log_error("registry requires sync or status")
+        return EXIT_USER_ERROR
+    cache = _manager_registry_cache(manager)
+    if args[0] == "sync":
+        offline = "--offline" in args[1:]
+        result = sync_registry(cache, offline=offline)
+        if toml:
+            print("[registry]")
+            print(f"status = {_toml_value(result.status or ('failed' if not result.ok else 'synced'))}")
+            print(f"cache = {_toml_value(str(cache))}")
+            if result.errors:
+                print(f"error = {_toml_value(result.errors[0])}")
+        else:
+            for warning in result.warnings:
+                log_warning(warning)
+            for error in result.errors:
+                log_error(error)
+            if result.ok:
+                state = registry_status(cache)
+                log_info(f"Registry {result.status}; revision={state.revision or '-'}")
+        return result.exit_code
+    if args[0] == "status" and len(args) == 1:
+        state = registry_status(cache)
+        if toml:
+            print("[registry]")
+            print(f"cache = {_toml_value(str(cache))}")
+            print(f"revision = {_toml_value(state.revision or '')}")
+            print(f"source = {_toml_value(state.source or '')}")
+            print(f"synchronized_at = {_toml_value(state.synchronized_at or '')}")
+            print(f"last_failure = {_toml_value(state.last_failure or '')}")
+        else:
+            log_info(f"Registry cache: {cache}")
+            log_info(f"Revision: {state.revision or 'none'}")
+            if state.last_failure:
+                log_warning(f"Last sync failure: {state.last_failure}")
+        return EXIT_SUCCESS
+    log_error("registry supports 'sync [--offline]' and 'status'")
+    return EXIT_USER_ERROR
+
+
+def _manager_registry_search(manager, args: list[str], inventory, *, toml: bool) -> int:
+    """Search validated catalog entries while keeping installed state local."""
+    parser = argparse.ArgumentParser(prog="gupkg search")
+    parser.add_argument("query", nargs="?", default="")
+    parser.add_argument("--installed", action="store_true")
+    parser.add_argument("--available", action="store_true")
+    parser.add_argument("--offline", action="store_true")
+    parsed = parser.parse_args(args)
+    cache = _manager_registry_cache(manager)
+    try:
+        state = registry_status(cache)
+        if state.tree_path is None and not parsed.offline:
+            sync_result = sync_registry(cache)
+            if not sync_result.ok:
+                for error in sync_result.errors:
+                    log_error(error)
+                return sync_result.exit_code
+        installed = {target.package.selector for target in inventory.targets}
+        matches = search_registry(
+            cache,
+            parsed.query,
+            installed=installed if parsed.installed else None,
+        )
+        if parsed.available:
+            matches = [item for item in matches if item.selector.casefold() not in {name.casefold() for name in installed}]
+    except (FileNotFoundError, ValueError, ConfigValidationError) as exc:
+        log_error(str(exc))
+        return EXIT_USER_ERROR
+    if toml:
+        print("[registry]")
+        print(f"revision = {_toml_value(registry_status(cache).revision or '')}")
+        for item in matches:
+            print("[[package]]")
+            print(f"selector = {_toml_value(item.selector)}")
+            print(f"seed = {_toml_value(str(item.version_path))}")
+    else:
+        for item in matches:
+            log_info(item.selector)
+        log_info(f"{len(matches)} registry packages found.")
+    return EXIT_SUCCESS
+
+
+def _manager_registry_install(manager, inventory, selector: str, *, scope: Scope, offline: bool) -> int:
+    """Stage one validated registry seed and delegate to ordinary installation."""
+    if any(character in selector for character in "\\/") or Path(selector).is_absolute() or selector in {".", ".."}:
+        log_error("Path-looking install arguments must name an existing local package path")
+        return EXIT_USER_ERROR
+    cache = _manager_registry_cache(manager)
+    try:
+        state = registry_status(cache)
+        if state.tree_path is None and not offline:
+            result = sync_registry(cache)
+            if not result.ok:
+                for error in result.errors:
+                    log_error(error)
+                return result.exit_code
+        package = resolve_selector(cache, selector)
+    except (FileNotFoundError, ValueError, ConfigValidationError) as exc:
+        log_error(str(exc))
+        return EXIT_USER_ERROR
+    root = manager.user_root if scope == Scope.USER else manager.system_root
+    target = root / package.selector / package.version_path.name
+    if target.exists():
+        if not target.is_dir():
+            log_error(f"Registry install target conflicts with a non-directory: {target}")
+            return EXIT_MUTATION_ERROR
+    else:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package.version_path, target)
+        except OSError as exc:
+            log_error(f"Could not stage registry package {selector}: {exc}")
+            return EXIT_MUTATION_ERROR
+    result = install_package(
+        target,
+        scope=scope,
+        install_context=installation_context(manager, scope),
+    )
+    return result.exit_code
+
+
+def _manager_self_command(manager, args: list[str], *, toml: bool) -> int:
+    """Run standalone status/repair commands for the running package copy."""
+    if not args or args[0] == "status":
+        try:
+            report = self_status()
+        except (ConfigValidationError, OSError) as exc:
+            log_error(str(exc))
+            return EXIT_USER_ERROR
+        if toml:
+            print("[self]")
+            print(f"version_root = {_toml_value(str(report['version_root']))}")
+            print(f"runtime_healthy = {'true' if report['runtime_healthy'] else 'false'}")
+            for shim in report["shims"]:
+                print("[[shim]]")
+                print(f"scope = {_toml_value(scope_name(shim.scope))}")
+                print(f"path = {_toml_value(str(shim.path))}")
+                print(f"healthy = {'true' if shim.healthy else 'false'}")
+                if shim.diagnostic:
+                    print(f"diagnostic = {_toml_value(shim.diagnostic)}")
+        else:
+            log_info(f"Standalone package: {report['version_root']}")
+            log_info(f"Embedded runtime: {'healthy' if report['runtime_healthy'] else 'missing or unhealthy'}")
+            for shim in report["shims"]:
+                state = "healthy" if shim.healthy else shim.diagnostic or "unhealthy"
+                log_info(f"{scope_name(shim.scope)} shim: {shim.path} ({state})")
+        return EXIT_SUCCESS if report["runtime_healthy"] else EXIT_MUTATION_ERROR
+    if args[0] in {"repair", "update"}:
+        parser = argparse.ArgumentParser(prog=f"gupkg self {args[0]}")
+        parser.add_argument("--scope", choices=["user", "system"], default="user")
+        parsed = parser.parse_args(args[1:])
+        scope = Scope.USER if parsed.scope == "user" else Scope.MACHINE
+        result = repair_self(
+            scope=scope,
+            install_context=installation_context(manager, scope),
+        )
+        for warning in result.warnings:
+            log_warning(warning)
+        for error in result.errors:
+            log_error(error)
+        return result.exit_code
+    log_error("self supports status, repair, and update")
+    return EXIT_USER_ERROR
 
 
 def _has_explicit_package_path(arguments: list[str]) -> bool:
-    """Recognize package command forms that carry a positional path."""
+    """Recognize local-path syntax without stealing bare registry selectors."""
     if len(arguments) >= 2 and arguments[0] == "install":
-        return not arguments[1].startswith("-")
-    return len(arguments) >= 3 and arguments[0] in {"upgrade", "config"} and not arguments[2].startswith("-")
+        candidate = arguments[1]
+    elif len(arguments) >= 3 and arguments[0] in {"upgrade", "config"}:
+        candidate = arguments[2]
+    else:
+        return False
+    if candidate.startswith("-"):
+        return False
+    path = Path(candidate).expanduser()
+    return (
+        path.exists()
+        or path.is_absolute()
+        or candidate in {".", ".."}
+        or "/" in candidate
+        or "\\" in candidate
+        or (len(candidate) >= 2 and candidate[1] == ":")
+    )
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1978,6 +2182,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         manager_parser.add_argument("--fail-fast", action="store_true", help="Stop scheduling targets after the first upgrade failure")
         manager_parser.add_argument("--local-deps-autoinstall", action="store_true", help="Allow package-local update hooks to install dependencies")
         manager_parser.add_argument("--no-checksum", action="store_true", help="Skip checksum verification for the whole batch")
+        manager_parser.add_argument("--offline", action="store_true", help="Do not contact the registry")
+        manager_parser.add_argument("--output", type=Path, help="Destination for migrate-config")
         manager_parser.add_argument("command", nargs="*", help="list, upgrade check, or doctor")
         try:
             manager_args = manager_parser.parse_args(command_args)
@@ -1987,6 +2193,53 @@ def main(argv: Optional[List[str]] = None) -> int:
         except ValueError as exc:
             log_error(str(exc))
             return EXIT_USER_ERROR
+        if manager_args.command and manager_args.command[0] == "registry":
+            return _manager_registry_command(
+                manager,
+                manager_args.command[1:] + (["--offline"] if manager_args.offline else []),
+                toml=globals_args.toml or manager_args.toml,
+            )
+        if manager_args.command == ["migrate-config"]:
+            try:
+                destination = migrate_manager_config(manager.path, manager_args.output)
+            except (ConfigValidationError, OSError, ValueError) as exc:
+                log_error(str(exc))
+                return EXIT_USER_ERROR
+            log_info(f"Wrote schema-version-two manager configuration: {destination}")
+            return EXIT_SUCCESS
+        if manager_args.command and manager_args.command[0] == "self":
+            return _manager_self_command(
+                manager,
+                manager_args.command[1:],
+                toml=globals_args.toml or manager_args.toml,
+            )
+        if manager_args.command and manager_args.command[0] == "search":
+            return _manager_registry_search(
+                manager,
+                manager_args.command[1:] + (["--offline"] if manager_args.offline else []),
+                manager_inventory,
+                toml=globals_args.toml or manager_args.toml,
+            )
+        if manager_args.command and manager_args.command[0] == "install":
+            install_parser = argparse.ArgumentParser(prog="gupkg install")
+            install_parser.add_argument("selector")
+            install_parser.add_argument("--scope", choices=["user", "system"], default="user")
+            install_parser.add_argument("--offline", action="store_true")
+            try:
+                install_args = install_parser.parse_args(manager_args.command[1:])
+            except SystemExit:
+                raise
+            return _manager_registry_install(
+                manager,
+                manager_inventory,
+                install_args.selector,
+                scope=(
+                    Scope.USER
+                    if manager_args.scope in {"all", "user"} and install_args.scope == "user"
+                    else Scope.MACHINE
+                ),
+                offline=install_args.offline or manager_args.offline,
+            )
         if manager_args.command == []:
             return _run_manager_tui(manager, manager_inventory)
         if manager_args.command == ["list"]:
@@ -2006,7 +2259,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         if manager_args.command == ["doctor"]:
             return _manager_doctor(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)
-        log_error("Manager mode supports 'list', 'upgrade check', 'upgrade all', and 'doctor'.")
+        log_error("Manager mode supports registry, search, install, list, upgrade, and doctor commands.")
         return EXIT_USER_ERROR
 
     # Explicit package paths bypass implicit manager discovery and preserve the

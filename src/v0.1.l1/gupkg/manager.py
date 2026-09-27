@@ -29,17 +29,42 @@ from .core import (
     Scope,
     compare_package_versions,
     read_toml_file,
+    write_text_atomic,
 )
 from .layout import inspect_current
 
 
 @dataclass(frozen=True)
 class ManagerConfig:
-    """Describe validated manager configuration and its two resolved roots."""
+    """Describe validated manager configuration and its scoped destinations."""
 
     path: Path
     system_root: Path
     user_root: Path
+    system_bin: Path | None = None
+    user_bin: Path | None = None
+    registry_cache: Path | None = None
+    channel: str = "stable"
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class InstallationContext:
+    """Carry manager-owned destinations into one package installation."""
+
+    scope: Scope
+    collection_root: Path
+    bin_dir: Path
+    manager_config: Path
+    shortcut_root: Path | None = None
+    registry_cache: Path | None = None
+
+    def as_scope_paths(self) -> dict[str, Path]:
+        """Return the legacy component mapping with manager paths applied."""
+        paths = {"bin_dir": self.bin_dir, "collection_root": self.collection_root}
+        if self.shortcut_root is not None:
+            paths["shortcut_root"] = self.shortcut_root
+        return paths
 
 
 @dataclass
@@ -220,7 +245,7 @@ _VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 
 
 def load_manager_config(path: Path) -> ManagerConfig:
-    """Read and strictly validate one ``gupkg-config.toml`` file."""
+    """Read and strictly validate one version-one or version-two manager file."""
     path = Path(path).expanduser().absolute()
     if not path.is_file():
         raise ConfigValidationError(f"Manager configuration is not a regular file: {path}")
@@ -228,19 +253,30 @@ def load_manager_config(path: Path) -> ManagerConfig:
         raw = read_toml_file(path)
     except Exception as exc:
         raise ConfigValidationError(f"Could not read manager configuration {path}: {exc}") from exc
-    if set(raw) != {"mode", "schema_version", "packages"}:
+    if "mode" not in raw or "schema_version" not in raw or "packages" not in raw:
+        raise ConfigValidationError(
+            "Invalid manager configuration: missing required top-level key(s)"
+        )
+    schema_version = raw["schema_version"]
+    if type(schema_version) is not int or schema_version not in {1, 2}:
+        raise ConfigValidationError("schema_version must be the integer 1 or 2")
+    allowed_top_level = (
+        {"mode", "schema_version", "packages"}
+        if schema_version == 1
+        else {"mode", "schema_version", "packages", "bin", "registry"}
+    )
+    if set(raw) != allowed_top_level:
         unknown = sorted(set(raw) - {"mode", "schema_version", "packages"})
-        missing = sorted({"mode", "schema_version", "packages"} - set(raw))
+        missing = sorted(allowed_top_level - set(raw))
         parts = []
         if unknown:
             parts.append(f"unknown top-level key(s): {', '.join(unknown)}")
         if missing:
             parts.append(f"missing top-level key(s): {', '.join(missing)}")
-        raise ConfigValidationError("Invalid manager configuration: " + "; ".join(parts))
+        prefix = "schema_version 2 requires the [bin] and [registry] tables; " if schema_version == 2 else ""
+        raise ConfigValidationError(prefix + "Invalid manager configuration: " + "; ".join(parts))
     if raw["mode"] != "manager":
         raise ConfigValidationError("mode must be exactly 'manager'")
-    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
-        raise ConfigValidationError("schema_version must be the integer 1")
     packages = raw["packages"]
     if not isinstance(packages, dict) or set(packages) != {"system", "user"}:
         if not isinstance(packages, dict):
@@ -261,7 +297,139 @@ def load_manager_config(path: Path) -> ManagerConfig:
     system_root, user_root = roots["system"], roots["user"]
     if _same_or_nested(system_root, user_root):
         raise ConfigValidationError("Configured system and user roots must be distinct and non-nested")
-    return ManagerConfig(path, system_root, user_root)
+    if schema_version == 1:
+        return ManagerConfig(path, system_root, user_root)
+
+    bin_table = raw.get("bin")
+    registry_table = raw.get("registry")
+    if not isinstance(bin_table, dict) or set(bin_table) != {"system", "user"}:
+        raise ConfigValidationError("Invalid [bin] table: expected exactly system and user")
+    if not isinstance(registry_table, dict) or set(registry_table) != {"cache", "channel"}:
+        raise ConfigValidationError("Invalid [registry] table: expected exactly cache and channel")
+    bins = {
+        name: _expand_manager_path(value, path.parent, name)
+        for name, value in bin_table.items()
+    }
+    if bins["system"] == bins["user"]:
+        raise ConfigValidationError("Configured system and user bin directories must be distinct")
+    cache = _expand_manager_path(registry_table["cache"], path.parent, "cache")
+    if registry_table["channel"] != "stable":
+        raise ConfigValidationError("[registry].channel must be exactly 'stable'")
+    if _same_or_nested(cache, system_root) or _same_or_nested(cache, user_root):
+        raise ConfigValidationError("Registry cache must be outside both package roots")
+    for field_name, value in (
+        ("bin.system", bins["system"]),
+        ("bin.user", bins["user"]),
+        ("registry.cache", cache),
+    ):
+        if value.exists() and not value.is_dir():
+            raise ConfigValidationError(f"Configured {field_name} path is not a directory: {value}")
+    return ManagerConfig(
+        path,
+        system_root,
+        user_root,
+        system_bin=bins["system"],
+        user_bin=bins["user"],
+        registry_cache=cache,
+        channel="stable",
+        schema_version=2,
+    )
+
+
+def discover_manager_config(
+    explicit: Path | None = None,
+    *,
+    cwd: Path | None = None,
+    version_root: Path | None = None,
+    appdata: str | None = None,
+) -> Path | None:
+    """Select the manager file using the documented precedence without writing it."""
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    current = (cwd or Path.cwd()) / "gupkg-config.toml"
+    if current.exists():
+        return current
+    roaming_root = appdata if appdata is not None else os.environ.get("APPDATA")
+    if roaming_root:
+        roaming = Path(roaming_root) / "gupkg" / "gupkg-config.toml"
+        if roaming.exists():
+            return roaming
+    if version_root is not None:
+        local = Path(version_root) / "gupkg-config.toml"
+        if local.exists():
+            return local
+    return None
+
+
+def installation_context(config: ManagerConfig, scope: Scope) -> InstallationContext:
+    """Build the manager-owned destinations for one selected scope."""
+    if scope == Scope.AUTO:
+        raise ValueError("Installation context requires an explicit scope")
+    if scope == Scope.USER:
+        collection_root = config.user_root
+        bin_dir = config.user_bin
+        if bin_dir is None:
+            from .layout import compute_scope_paths
+
+            bin_dir = compute_scope_paths(scope)["bin_dir"]
+    else:
+        collection_root = config.system_root
+        bin_dir = config.system_bin
+        if bin_dir is None:
+            from .layout import compute_scope_paths
+
+            bin_dir = compute_scope_paths(scope)["bin_dir"]
+    try:
+        from .layout import compute_scope_paths
+
+        shortcut_root = compute_scope_paths(scope)["shortcut_root"]
+    except (RuntimeError, ValueError, OSError):
+        shortcut_root = None
+    return InstallationContext(
+        scope=scope,
+        collection_root=collection_root,
+        bin_dir=bin_dir,
+        manager_config=config.path,
+        shortcut_root=shortcut_root,
+        registry_cache=config.registry_cache,
+    )
+
+
+def manager_config_text(config: ManagerConfig) -> str:
+    """Render a reviewed schema-version-two manager configuration."""
+    user_bin = config.user_bin
+    system_bin = config.system_bin
+    if user_bin is None or system_bin is None:
+        from .layout import compute_scope_paths
+
+        user_bin = user_bin or compute_scope_paths(Scope.USER)["bin_dir"]
+        system_bin = system_bin or compute_scope_paths(Scope.MACHINE)["bin_dir"]
+    cache = config.registry_cache or (
+        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        / "gupkg"
+        / "registry"
+    )
+    return (
+        'mode = "manager"\n'
+        'schema_version = 2\n\n'
+        '[packages]\n'
+        f'system = {str(config.system_root)!r}\n'
+        f'user = {str(config.user_root)!r}\n\n'
+        '[bin]\n'
+        f'system = {str(system_bin)!r}\n'
+        f'user = {str(user_bin)!r}\n\n'
+        '[registry]\n'
+        f'cache = {str(cache)!r}\n'
+        'channel = "stable"\n'
+    )
+
+
+def migrate_manager_config(path: Path, output: Path | None = None) -> Path:
+    """Write a schema-version-two copy of a validated manager file."""
+    config = load_manager_config(path)
+    destination = Path(output) if output is not None else Path(path)
+    write_text_atomic(destination, manager_config_text(config))
+    return destination
 
 
 def discover_manager(config: ManagerConfig) -> ManagerInventory:

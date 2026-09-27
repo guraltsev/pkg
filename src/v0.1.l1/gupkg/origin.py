@@ -33,8 +33,10 @@ def _app_contains_entries(app_path: Path) -> bool:
     return app_path.is_dir() and any(app_path.iterdir())
 
 
-def app_has_payload(identity: PackageIdentity) -> bool:
-    """Return whether a package version has a non-empty ``App`` directory.
+def app_has_payload(
+    identity: PackageIdentity, runtime_config: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Return whether a package version has a non-empty lifecycle payload.
 
     Parameters
     ----------
@@ -46,12 +48,17 @@ def app_has_payload(identity: PackageIdentity) -> bool:
     bool
         ``True`` only when ``App`` is a directory containing at least one entry.
     """
-    return _app_contains_entries(identity.version_path / "App")
+    payload_name = (runtime_config or {}).get("payloadDirectory", "App")
+    return _app_contains_entries(identity.version_path / payload_name)
 
 
-def app_needs_origin_population(identity: PackageIdentity, refresh_app: bool) -> bool:
-    """Return whether the selected package version needs ``App/`` population."""
-    return refresh_app or not app_has_payload(identity)
+def app_needs_origin_population(
+    identity: PackageIdentity,
+    refresh_app: bool,
+    runtime_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether the selected package version needs payload population."""
+    return refresh_app or not app_has_payload(identity, runtime_config)
 
 
 def populate_app_from_origin(
@@ -61,25 +68,27 @@ def populate_app_from_origin(
     no_checksum: bool = False,
     refresh_app: bool = False,
 ) -> StepResult:
-    """Populate ``App/`` from the package origin when the install requires it."""
+    """Populate the configured lifecycle payload from the package origin."""
     origin = runtime_config.get("origin")
-    app_path = identity.version_path / "App"
+    payload_directory = runtime_config.get("payloadDirectory", "App")
+    payload_label = "App" if payload_directory == "App" else "lifecycle payload"
+    app_path = identity.version_path / payload_directory
     if origin is None:
-        if app_has_payload(identity):
+        if app_has_payload(identity, runtime_config):
             return StepResult(ok=True, changed=False)
         return StepResult(
             ok=False,
             errors=[
-                "App is missing or empty and no [origin] is configured to populate it"
+                f"{payload_label} is missing or empty and no [origin] is configured to populate it"
             ],
         )
 
-    if not app_needs_origin_population(identity, refresh_app):
-        log_info("App is already populated; skipping origin population")
+    if not app_needs_origin_population(identity, refresh_app, runtime_config):
+        log_info(f"{payload_label} is already populated; skipping origin population")
         return StepResult(ok=True, changed=False)
 
-    if refresh_app and app_has_payload(identity):
-        log_info("--refresh-app enabled; clearing App before origin population")
+    if refresh_app and app_has_payload(identity, runtime_config):
+        log_info("--refresh-app enabled; clearing lifecycle payload before origin population")
     elif app_path.exists():
         log_info("App is empty; populating from origin...")
     else:
@@ -92,9 +101,18 @@ def populate_app_from_origin(
                 f"Origin version '{origin_version}' does not declare url or script, so it cannot populate App"
             )
         if origin["mode"] == "zip":
-            populate_app_from_zip_origin(identity, origin, no_checksum=no_checksum)
+            populate_app_from_zip_origin(
+                identity,
+                origin,
+                no_checksum=no_checksum,
+                payload_directory=runtime_config.get("payloadDirectory", "App"),
+            )
         elif origin["mode"] == "git":
-            populate_app_from_git_origin(identity, origin)
+            populate_app_from_git_origin(
+                identity,
+                origin,
+                payload_directory=runtime_config.get("payloadDirectory", "App"),
+            )
         elif origin["mode"] == "script":
             populate_app_from_script_origin(
                 identity, origin, runtime_config, refresh_app=refresh_app
@@ -111,24 +129,27 @@ def populate_app_from_origin(
         message = str(exc)
         log_error(message)
         return StepResult(ok=False, changed=False, errors=[message])
-    if not app_has_payload(identity):
+    if not app_has_payload(identity, runtime_config):
         return StepResult(
             ok=False,
             changed=True,
-            errors=["Origin population completed but App is missing or empty"],
+            errors=["Origin population completed but lifecycle payload is missing or empty"],
         )
     return StepResult(ok=True, changed=True)
 
 
 def populate_app_from_git_origin(
-    identity: PackageIdentity, origin: Dict[str, str]
+    identity: PackageIdentity,
+    origin: Dict[str, str],
+    *,
+    payload_directory: str = "App",
 ) -> None:
     """Populate ``App/`` with the exact commit at a configured Git ref."""
-    app_path = identity.version_path / "App"
+    app_path = identity.version_path / payload_directory
     with tempfile.TemporaryDirectory(
         prefix=".gupkg-origin-", dir=str(identity.version_path)
     ) as temp_root_name:
-        prepared_app = Path(temp_root_name) / "App.new"
+        prepared_app = Path(temp_root_name) / f"{payload_directory}.new"
 
         # Resolve the configured ref before cloning so the installed checkout
         # records one exact source state even if the branch advances.
@@ -175,21 +196,25 @@ def populate_app_from_git_origin(
             text=True,
             check=True,
         )
-        _replace_app_directory(identity.version_path, app_path, prepared_app)
+        _replace_payload_directory(identity.version_path, app_path, prepared_app)
 
 
 def populate_app_from_zip_origin(
-    identity: PackageIdentity, origin: Dict[str, str], *, no_checksum: bool
+    identity: PackageIdentity,
+    origin: Dict[str, str],
+    *,
+    no_checksum: bool,
+    payload_directory: str = "App",
 ) -> None:
     """Populate ``App/`` from a downloaded zip archive."""
-    app_path = identity.version_path / "App"
+    app_path = identity.version_path / payload_directory
     with tempfile.TemporaryDirectory(
         prefix=".gupkg-origin-", dir=str(identity.version_path)
     ) as temp_root_name:
         temp_root = Path(temp_root_name)
         archive_path = temp_root / "origin.zip"
         staging_dir = temp_root / "extract"
-        prepared_app = temp_root / "App.new"
+        prepared_app = temp_root / f"{payload_directory}.new"
         staging_dir.mkdir()
 
         log_info(f"Downloading origin: {origin['url']}")
@@ -229,7 +254,7 @@ def populate_app_from_zip_origin(
 
         prepared_app.mkdir()
         _copy_directory_contents(selected_source, prepared_app)
-        _replace_app_directory(identity.version_path, app_path, prepared_app)
+        _replace_payload_directory(identity.version_path, app_path, prepared_app)
 
 
 def safe_extract_zip(zip_path: Path, destination: Path) -> None:
@@ -307,18 +332,24 @@ def _copy_directory_contents(source: Path, destination: Path) -> None:
             shutil.copy2(entry, target)
 
 
-def _replace_app_directory(
+def _replace_payload_directory(
     version_path: Path, app_path: Path, prepared_app: Path
 ) -> None:
-    """Replace ``App/`` with already prepared contents."""
+    """Replace one lifecycle payload with already prepared contents."""
     resolved_version = version_path.resolve()
     resolved_app = app_path.resolve(strict=False)
-    if resolved_app.parent != resolved_version or resolved_app.name != "App":
+    if resolved_app.parent != resolved_version or resolved_app.name.casefold() in {
+        "current",
+        ".gupkg",
+        "pkg.local",
+    }:
         raise RuntimeError(
-            "Refusing to replace App outside the package version directory"
+            "Refusing to replace a reserved payload outside the package version directory"
         )
 
-    backup_path = Path(tempfile.mkdtemp(prefix=".gupkg-old-App-", dir=str(version_path)))
+    backup_path = Path(
+        tempfile.mkdtemp(prefix=f".gupkg-old-{app_path.name}-", dir=str(version_path))
+    )
     backup_path.rmdir()
     if app_path.exists():
         if _app_contains_entries(app_path):
@@ -335,6 +366,13 @@ def _replace_app_directory(
         shutil.rmtree(backup_path)
 
 
+def _replace_app_directory(
+    version_path: Path, app_path: Path, prepared_app: Path
+) -> None:
+    """Preserve the historical private helper for literal ``App`` payloads."""
+    _replace_payload_directory(version_path, app_path, prepared_app)
+
+
 def populate_app_from_script_origin(
     identity: PackageIdentity,
     origin: Dict[str, str],
@@ -344,15 +382,16 @@ def populate_app_from_script_origin(
 ) -> None:
     """Run a package-local origin script and verify that it populated ``App/``."""
     script_path = _resolve_origin_script_path(identity, origin["script"])
-    app_path = identity.version_path / "App"
+    payload_directory = runtime_config.get("payloadDirectory", "App")
+    app_path = identity.version_path / payload_directory
     if refresh_app and app_path.exists():
         resolved_app = app_path.resolve(strict=False)
         if (
             resolved_app.parent != identity.version_path.resolve()
-            or resolved_app.name != "App"
+            or resolved_app.name != payload_directory
         ):
             raise RuntimeError(
-                "Refusing to clear App outside the package version directory"
+                "Refusing to clear lifecycle payload outside the package version directory"
             )
         shutil.rmtree(app_path)
 
@@ -393,7 +432,7 @@ def populate_app_from_script_origin(
             f"Origin script failed with exit code {completed.returncode}"
         )
     if not _app_contains_entries(app_path):
-        raise RuntimeError("Origin script completed but App is missing or empty")
+        raise RuntimeError("Origin script completed but lifecycle payload is missing or empty")
 
 
 def populate_app_from_module_origin(
@@ -406,15 +445,16 @@ def populate_app_from_module_origin(
     """Run a package-local Python origin module and verify its application tree."""
     from .updates import _load_package_module
 
-    app_path = identity.version_path / "App"
+    payload_directory = runtime_config.get("payloadDirectory", "App")
+    app_path = identity.version_path / payload_directory
     if refresh_app and app_path.exists():
         resolved_app = app_path.resolve(strict=False)
         if (
             resolved_app.parent != identity.version_path.resolve()
-            or resolved_app.name != "App"
+            or resolved_app.name != payload_directory
         ):
             raise RuntimeError(
-                "Refusing to clear App outside the package version directory"
+                "Refusing to clear lifecycle payload outside the package version directory"
             )
         shutil.rmtree(app_path)
 
@@ -432,7 +472,7 @@ def populate_app_from_module_origin(
         }
     )
     if not _app_contains_entries(app_path):
-        raise RuntimeError("Origin module completed but App is missing or empty")
+        raise RuntimeError("Origin module completed but lifecycle payload is missing or empty")
 
 
 def _resolve_origin_script_path(identity: PackageIdentity, script: str) -> Path:
@@ -465,12 +505,15 @@ def build_origin_script_payload(
     identity: PackageIdentity, runtime_config: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Build the JSON object passed to origin scripts on stdin."""
+    payload_directory = runtime_config.get("payloadDirectory", "App")
+    payload_path = (identity.version_path / payload_directory).resolve()
     return {
         "config": {
             "name": identity.name,
             "version": identity.version,
             "localVersion": identity.local_version,
             "only_portable": runtime_config["only_portable"],
+            "payloadDirectory": payload_directory,
             "origin": runtime_config.get("origin"),
             "shortcut": runtime_config["shortcut"],
             "environment": runtime_config["environment"],
@@ -486,8 +529,14 @@ def build_origin_script_payload(
         "PkgVars": {
             "PkgRoot": str(identity.version_path.resolve()),
             "App": str((identity.version_path / "App").resolve()),
+            "Payload": str(payload_path),
+            "VersionRoot": str(identity.version_path.resolve()),
             "Icons": str((identity.version_path / "Icons").resolve()),
             "Shortcuts": str((identity.version_path / "Shortcuts").resolve()),
+        },
+        "paths": {
+            "stageApp": str((identity.version_path / "App").resolve()),
+            "stagePayload": str(payload_path),
         },
     }
 

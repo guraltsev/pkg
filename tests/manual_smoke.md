@@ -32,3 +32,30 @@ Manager release checks:
    safely rerun. Confirm returning to the browser shows new versions.
 6. Repeat in narrow and short terminals; verify human and TOML output remains
    usable without relying on color or fixed widths.
+
+Standalone and registry checks:
+
+1. Build a release ZIP with `tools\build_standalone.py` using a known runtime
+   archive and SHA-256 digest. Confirm the digest is required, a source
+   checkout `python\` directory is not copied, and the versioned payload
+   contains the embedded runtime, `pkg.toml`, and native shims.
+2. Install the release once with `gupkg-bootstrap.exe --scope user`, then
+   repeat the install/repair path. Confirm it does not require elevation and
+   that `gupkg self status` reports a healthy embedded runtime.
+3. Run `gupkg self repair --scope user` after removing or renaming only a
+   user-scope shim/configuration file. Confirm repair restores it. Repeat in
+   system scope with UAC accepted and declined; a declined prompt must leave
+   system files unchanged.
+4. Create a schema-v2 manager config with separate package roots, bin roots,
+   and an external registry cache. Verify `gupkg doctor`, `gupkg registry
+   status`, and `gupkg search --offline` are read-only and do not create
+   missing package roots.
+5. Run `gupkg registry sync` with network available, then run `gupkg search`
+   and install one known selector. Disconnect the network and verify cached
+   `search --offline` still works while a selector absent from the cache fails
+   cleanly.
+6. Corrupt or make unavailable a temporary registry checkout and retry sync.
+   Confirm the last validated active tree remains usable and the failed sync
+   does not replace it.
+7. Copy a v1 manager config for rollback, run `gupkg migrate-config`, and
+   verify the resulting v2 file includes `[bin]` and `[registry]` sections.

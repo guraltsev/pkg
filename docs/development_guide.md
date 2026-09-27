@@ -17,6 +17,10 @@ The runtime package has one-way domain boundaries:
 - `components` applies shortcuts, environment variables, `PATH`, and wrappers.
 - `origin` prepares and replaces `App/` payloads.
 - `updates` owns state, hook loading, candidate normalization, and staging.
+- `registry` owns the sparse Git checkout/cache lifecycle and validates registry
+  data without importing package-local code.
+- `distribution` owns standalone runtime health, bootstrap metadata checks, and
+  scoped self-repair.
 
 The facade imports only the names needed by its workflows. It does not provide
 compatibility re-exports or a provider framework. Update payload preparation
@@ -44,6 +48,12 @@ prevents another target from being scheduled and never interrupts an operation
 already in progress. Mixed-scope elevation is resolved before invoking the
 executor. Manual Windows coverage for UAC, missing roots, duplicate selectors,
 partial failures, and terminal dimensions lives in `tests/manual_smoke.md`.
+
+Manager schema v2 adds separate package roots, wrapper/bin roots, and a
+registry cache. Configuration discovery and migration are implemented in the
+manager layer; the operational contract is documented in
+`docs/operations.md`. Registry selectors are resolved only after the active
+cache has passed manifest and path validation.
 
 ## Update coordinator
 
@@ -75,3 +85,9 @@ checks remain available for checkout-path or remote-name customization.
 Update work, locks, timing state, and receipts are manager-owned data beneath
 the package root's `.gupkg/` directory. A finalized version directory contains
 only package-authored files and its completed `App/` payload.
+
+Standalone release assembly is intentionally separate from runtime startup.
+`tools/build_standalone.py` receives an explicit, digest-verified embedded
+runtime and creates the versioned payload; release automation supplies the
+outer bootstrap executable. This keeps source checkouts from becoming an
+implicit runtime dependency and makes runtime provenance auditable.

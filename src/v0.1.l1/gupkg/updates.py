@@ -268,12 +268,13 @@ def _check_update(
             "localVersion": identity.local_version,
             "versionString": identity.version_string,
             "candidateId": state.get("lastCandidateId"),
-            "appReady": app_has_payload(identity),
+            "appReady": app_has_payload(identity, config),
         },
         "paths": {
             "packageRoot": identity.package_root,
             "versionRoot": identity.version_path,
-            "app": identity.version_path / "App",
+            "app": identity.version_path / config.get("payloadDirectory", "App"),
+            "payload": identity.version_path / config.get("payloadDirectory", "App"),
         },
         "state": dict(state),
     }
@@ -376,8 +377,9 @@ def _prepare_update(
     # ``App`` is the only generated directory: the selected update payload
     # replaces it below.  Copying entries individually keeps every other
     # directory, including empty defaults such as ``config.default``.
+    payload_directory = config.get("payloadDirectory", "App")
     for source in identity.version_path.iterdir():
-        if source.name == "App":
+        if source.name.casefold() == payload_directory.casefold():
             continue
         destination = stage / source.name
         if source.is_dir():
@@ -392,7 +394,7 @@ def _prepare_update(
     text = (stage / "pkg.toml").read_text(encoding="utf-8")
     rendered, _ = sync_config_metadata_text(text, staged_identity)
     write_text_atomic(stage / "pkg.toml", rendered)
-    stage_app = stage / "App"
+    stage_app = stage / payload_directory
     payload = config["update"]["payload"]
     artifact: Optional[Path] = None
     if payload["mode"] == "git":
@@ -498,6 +500,7 @@ def _prepare_update(
                 stage_app,
                 payload.get("rename", []),
                 staged_identity,
+                payload_directory=payload_directory,
             )
         else:
             module = run_with_missing_dependencies(
@@ -521,6 +524,7 @@ def _prepare_update(
                         "artifact": artifact,
                         "stageRoot": stage,
                         "stageApp": stage_app,
+                        "stagePayload": stage_app,
                     },
                 },
                 autoinstall=local_deps_autoinstall,
@@ -580,6 +584,7 @@ def _run_install_steps(
                     "artifact": artifact,
                     "stageRoot": stage_root,
                     "stageApp": stage_app,
+                    "stagePayload": stage_app,
                 },
             },
             autoinstall=local_deps_autoinstall,
@@ -590,6 +595,8 @@ def _apply_payload_renames(
     app_path: Path,
     mappings: list[Dict[str, str]],
     identity: PackageIdentity,
+    *,
+    payload_directory: str = "App",
 ) -> None:
     """Rename configured files or directories within a staged ``App`` tree."""
     resolved_app = app_path.resolve()
@@ -598,10 +605,12 @@ def _apply_payload_renames(
     # while retaining containment checks before every filesystem mutation.
     for mapping in mappings:
         source_text = expand_text(
-            mapping["src"], identity, ExpansionMode.GENERAL
+            mapping["src"], identity, ExpansionMode.GENERAL,
+            payload_directory=payload_directory,
         ).value
         destination_text = expand_text(
-            mapping["dest"], identity, ExpansionMode.GENERAL
+            mapping["dest"], identity, ExpansionMode.GENERAL,
+            payload_directory=payload_directory,
         ).value
         source = app_path / source_text
         destination = app_path / destination_text
