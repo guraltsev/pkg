@@ -8,6 +8,7 @@ and the native shim implementation itself are out of scope.
 from __future__ import annotations
 
 import ast
+import json
 import os
 from pathlib import Path
 import shutil
@@ -18,7 +19,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = ROOT / "src"
+SRC_ROOT = ROOT / "src" / "v0.1.l1"
 SHIM = SRC_ROOT / "gupkg" / "shim" / "shim-console.exe"
 
 
@@ -171,6 +172,38 @@ raise SystemExit({exit_code})
             self.assertFalse(fallback_probe.exists())
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_outer_tui_launcher_falls_back_to_source_bootstrap(self) -> None:
+        """The outer TUI launcher uses the adjacent bootstrap in a source checkout."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            package = root / "gupkg"
+            package.mkdir()
+            log_file = root / "source.log"
+            native_probe = self.make_probe(root, "native-tui")
+            self.make_executable(
+                package, "gupkg-tui.exe", native_probe.with_suffix(".py")
+            )
+            source_tui = package / "gupkg-tui.cmd"
+            source_tui.write_text(
+                "@echo off\n"
+                f'>> "{log_file}" echo args=%*\n'
+                "exit /b 17\n",
+                encoding="ascii",
+            )
+            wrapper = root / "gupkg-tui.cmd"
+            shutil.copy2(SRC_ROOT / "gupkg-tui.cmd", wrapper)
+
+            env = os.environ.copy()
+            env["PATH"] = ""
+            result = self.run_wrapper(wrapper, "--probe", cwd=root, env=env)
+
+            self.assertEqual(result.returncode, 17, msg=result.stderr or result.stdout)
+            self.assertEqual(
+                log_file.read_text(encoding="utf-8").strip(), "args=--probe"
+            )
+            self.assertFalse(native_probe.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_internal_bootstrap_handoff_keeps_python_policy_inside(self) -> None:
         """The internal command selects Python and hands dispatch to Python bootstrap."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -197,10 +230,59 @@ exit /b 0
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
-            recorded = log_file.read_text(encoding="utf-8").splitlines()[1]
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0], f"cwd={root}")
+            recorded = lines[1]
             self.assertIn("bootstrap.py", recorded)
-            self.assertIn("--root", recorded)
-            self.assertIn("upgrade check", recorded)
+            self.assertIn('"upgrade"', recorded)
+            self.assertIn('"check"', recorded)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native shim behavior")
+    def test_native_shim_calls_absolute_batch_without_changing_cwd(self) -> None:
+        """A shell shim can launch a batch file without changing package cwd."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            package = root / "package with spaces" / "gupkg"
+            package.mkdir(parents=True)
+            log_file = root / "batch.log"
+            batch = package / "gupkg.cmd"
+            batch.write_text(
+                "@echo off\n"
+                f'>"{log_file}" echo cwd=%CD%\n'
+                f'>>"{log_file}" echo arg1=[%1] arg1tilde=[%~1] arg2=[%2] args=[%*]\n'
+                "exit /b 0\n",
+                encoding="ascii",
+            )
+
+            executable = root / "gupkg.exe"
+            shutil.copy2(SHIM, executable)
+            config = executable.with_suffix(".config.toml")
+            config.write_text(
+                'target = "%COMSPEC%"\n'
+                "forward_arguments = true\n"
+                "elevate = false\n\n"
+                "[[argument]]\nvalue = \"/d\"\n\n"
+                "[[argument]]\nvalue = \"/s\"\n\n"
+                "[[argument]]\nvalue = \"/c\"\n\n"
+                f"[[argument]]\nvalue = {json.dumps(str(batch))}\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [str(executable), "--probe"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            recorded = log_file.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(recorded[0], f"cwd={root}")
+            self.assertEqual(
+                recorded[1],
+                'arg1=["--probe] arg1tilde=[--probe] arg2=[] args=["--probe]',
+            )
 
 
 if __name__ == "__main__":

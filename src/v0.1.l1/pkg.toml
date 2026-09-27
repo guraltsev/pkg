@@ -11,14 +11,14 @@ Value = "$VersionRoot\\gupkg"
 
 [[bin]]
 name = "gupkg"
-target = "$VersionRoot\\gupkg\\python\\python.exe"
-arguments = ["-m", "gupkg"]
+target = "%COMSPEC%"
+arguments = ["/d", "/s", "/c", "$VersionRoot\\gupkg\\gupkg.cmd"]
 type = "console"
 forward_args = true
 
 [[bin]]
 name = "gupkg-tui"
-target = "$VersionRoot\\gupkg\\python\\python.exe"
-arguments = ["-m", "gupkg", "tui"]
+target = "%COMSPEC%"
+arguments = ["/d", "/s", "/c", "$VersionRoot\\gupkg\\gupkg-tui.cmd"]
 type = "console"
 forward_args = true

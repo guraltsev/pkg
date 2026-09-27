@@ -1,11 +1,26 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "GUPKG_BUNDLED_PYTHON=%~dp0python\python.exe"
-set "GUPKG_PYTHON_FILE=%~dp0gupkg.python"
-set "GUPKG_BOOTSTRAP_DIRECTORY=%~dp0python"
-set "GUPKG_BOOTSTRAP_ARCHIVE=%~dp0python\python-3.12.10-embed-amd64.zip"
+for %%I in ("%~f0") do set "GUPKG_SCRIPT_DIR=%%~dpI"
+set "GUPKG_PYTHONPATH=%GUPKG_SCRIPT_DIR%.."
+if defined PYTHONPATH set "GUPKG_PYTHONPATH=%GUPKG_PYTHONPATH%;%PYTHONPATH%"
+set "PYTHONPATH=%GUPKG_PYTHONPATH%"
+set "GUPKG_BUNDLED_PYTHON=%GUPKG_SCRIPT_DIR%python\python.exe"
+set "GUPKG_PYTHON_FILE=%GUPKG_SCRIPT_DIR%gupkg.python"
+set "GUPKG_BOOTSTRAP_DIRECTORY=%GUPKG_SCRIPT_DIR%python"
+set "GUPKG_BOOTSTRAP_ARCHIVE=%GUPKG_SCRIPT_DIR%python\python-3.12.10-embed-amd64.zip"
 set "GUPKG_PYTHON_URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
 set "GUPKG_PYTHON_SHA256=4ACBED6DD1C744B0376E3B1CF57CE906F9DC9E95E68824584C8099A63025A3C3"
+
+rem cmd.exe /c quoting can leave a leading quote on forwarded arguments when
+rem this launcher is started by the native shim. Normalize every argument
+rem through %%~1 before handing the final list to Python.
+set "GUPKG_FORWARD_ARGS="
+:collect_forward_args
+if "%~1"=="" goto :forward_args_ready
+set "GUPKG_FORWARD_ARGS=%GUPKG_FORWARD_ARGS% "%~1""
+shift
+goto :collect_forward_args
+:forward_args_ready
 
 rem Honor explicit interpreter choices before probing the local or system runtime.
 if defined GUPKG_PYTHON goto :run
@@ -33,17 +48,14 @@ set "GUPKG_PYTHON=%GUPKG_BUNDLED_PYTHON%"
 set "GUPKG_EMBEDDED=1"
 
 :run
-pushd "%~dp0.."
 if defined GUPKG_EMBEDDED goto :run_embedded
-"%GUPKG_PYTHON%" "%~dp0bootstrap.py" --root "%~dp0..\.." %*
+"%GUPKG_PYTHON%" "%GUPKG_SCRIPT_DIR%bootstrap.py" %GUPKG_FORWARD_ARGS%
 set "GUPKG_EXIT_CODE=%ERRORLEVEL%"
-popd
 exit /b %GUPKG_EXIT_CODE%
 
 :run_embedded
-"%GUPKG_PYTHON%" "%~dp0bootstrap.py" --embedded --root "%~dp0..\.." %*
+"%GUPKG_PYTHON%" "%GUPKG_SCRIPT_DIR%bootstrap.py" --embedded %GUPKG_FORWARD_ARGS%
 set "GUPKG_EXIT_CODE=%ERRORLEVEL%"
-popd
 exit /b %GUPKG_EXIT_CODE%
 
 :bootstrap_embedded_python

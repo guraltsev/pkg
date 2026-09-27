@@ -179,9 +179,10 @@ to make that downloaded version current.
 
 The centrally installed executable and package-local mode are both supported.
 Package-local launchers and explicit package paths keep existing behavior.
-Manager mode is selected by an explicit `--config PATH`, a discovered
-`gupkg-config.toml`, or the version-local manager configuration described in
-[the operations guide](docs/operations.md).
+Manager mode is opt-in: use `--manager` with a discovered configuration, or
+use an explicit `--config PATH`. A discovered `gupkg-config.toml` never changes
+a normal package invocation into manager mode by itself. Without a selected
+package or an explicit manager request, the command reports an error.
 
 The current manager schema is:
 
@@ -223,7 +224,8 @@ authoritative: a lone version directory is not installed, and a broken or
 escaping activation is broken. Bootstrap definitions remain available but are
 never implicitly installed.
 
-Bare `gupkg` in a manager directory opens the TUI. Upgrade All first shows a
+`gupkg --manager list` reports the manager inventory. Use
+`gupkg-tui.cmd --manager` for the interactive manager interface. Upgrade All first shows a
 non-installing plan with available, current, skipped, and failed-check counts.
 The confirmation screen puts `Run planned upgrades` first and exposes scope,
 checksum, dependency auto-install, and fail-fast settings. Execution remains

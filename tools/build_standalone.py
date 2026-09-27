@@ -41,11 +41,11 @@ def main() -> int:
             shutil.copy2(shim, payload / "gupkg.exe")
             shutil.copy2(shim, payload / "gupkg-tui.exe")
         (payload / "gupkg.config.toml").write_text(
-            'target = "python\\\\python.exe"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "-m"\n\n[[argument]]\nvalue = "gupkg"\n',
+            'target = "%COMSPEC%"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "/d"\n\n[[argument]]\nvalue = "/s"\n\n[[argument]]\nvalue = "/c"\n\n[[argument]]\nvalue = "gupkg.cmd"\n',
             encoding="utf-8",
         )
         (payload / "gupkg-tui.config.toml").write_text(
-            'target = "python\\\\python.exe"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "-m"\n\n[[argument]]\nvalue = "gupkg"\n\n[[argument]]\nvalue = "tui"\n',
+            'target = "%COMSPEC%"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "/d"\n\n[[argument]]\nvalue = "/s"\n\n[[argument]]\nvalue = "/c"\n\n[[argument]]\nvalue = "gupkg-tui.cmd"\n',
             encoding="utf-8",
         )
         for wrapper_name in ("gupkg.cmd", "gupkg-tui.cmd"):

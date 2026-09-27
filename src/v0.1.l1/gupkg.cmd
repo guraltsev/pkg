@@ -1,7 +1,11 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem Select the package-local native command before looking for an installed one.
+rem Prefer the package-local bootstrap, which is also the source-checkout entry point.
+set "GUPKG_BOOTSTRAP=%~dp0gupkg\gupkg.cmd"
+if exist "%GUPKG_BOOTSTRAP%" goto :run_bootstrap
+
+rem If no bootstrap is present, select the package-local native command.
 set "GUPKG_LOCAL=%~dp0gupkg\gupkg.exe"
 if not exist "%GUPKG_LOCAL%" goto :find_system
 if exist "%GUPKG_LOCAL%\NUL" goto :find_system
@@ -20,4 +24,8 @@ if not defined GUPKG_SYSTEM (
 )
 
 set "GUPKG_SYSTEM=" & "%GUPKG_SYSTEM%" %*
+exit /b %ERRORLEVEL%
+
+:run_bootstrap
+call "%GUPKG_BOOTSTRAP%" %*
 exit /b %ERRORLEVEL%

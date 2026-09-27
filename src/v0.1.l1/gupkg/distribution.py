@@ -22,6 +22,7 @@ the existing installer.
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,15 +117,40 @@ def _inspect_shim(scope: Scope, bin_dir: Path, version_root: Path) -> SelfShim:
         return SelfShim(scope, shim_path, config_path, None, False, "shim is missing")
     if not config_path.is_file():
         return SelfShim(scope, shim_path, config_path, None, False, "shim config is missing")
-    target = None
-    for line in config_path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("target") and "=" in line:
-            target = line.split("=", 1)[1].strip().strip('"')
-            break
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return SelfShim(scope, shim_path, config_path, None, False, f"invalid shim config: {exc}")
+
+    target = config.get("target")
+    if not isinstance(target, str) or not target:
+        target = None
     if not target:
         return SelfShim(scope, shim_path, config_path, None, False, "shim target is missing")
-    target_path = (config_path.parent / target).resolve()
+
+    # Standalone shims delegate to the sibling batch bootstrap through cmd.exe;
+    # that bootstrap owns interpreter selection and may use system Python.
+    expanded_target = os.path.expandvars(target)
+    target_path = Path(expanded_target)
+    if not target_path.is_absolute():
+        target_path = config_path.parent / target_path
+    target_path = target_path.resolve()
     healthy = target_path.is_file() and target_path.is_relative_to(version_root.resolve())
+    if target_path.name.casefold() == "cmd.exe":
+        working_dir = config.get("working_dir") or "."
+        working_path = Path(os.path.expandvars(str(working_dir)))
+        if not working_path.is_absolute():
+            working_path = config_path.parent / working_path
+        command_path = None
+        for argument in config.get("argument", []):
+            value = argument.get("value") if isinstance(argument, dict) else None
+            if isinstance(value, str) and value.casefold().endswith(".cmd"):
+                command_path = Path(os.path.expandvars(value))
+        if command_path is not None:
+            if not command_path.is_absolute():
+                command_path = working_path / command_path
+            command_path = command_path.resolve()
+            healthy = command_path.is_file() and command_path.is_relative_to(version_root.resolve())
     return SelfShim(
         scope,
         shim_path,
@@ -144,4 +170,3 @@ def _system_bin() -> Path:
     """Return the conventional machine command directory."""
     drive = os.environ.get("SYSTEMDRIVE", "C:")
     return Path(drive) / "bin"
-

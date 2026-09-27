@@ -1,7 +1,11 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem Select the package-local TUI command before the canonical installed command.
+rem Prefer the package-local bootstrap, which is also the source-checkout entry point.
+set "GUPKG_TUI_BOOTSTRAP=%~dp0gupkg\gupkg-tui.cmd"
+if exist "%GUPKG_TUI_BOOTSTRAP%" goto :run_bootstrap
+
+rem If no bootstrap is present, select the package-local native TUI command.
 set "GUPKG_TUI_LOCAL=%~dp0gupkg\gupkg-tui.exe"
 if not exist "%GUPKG_TUI_LOCAL%" goto :find_system
 if exist "%GUPKG_TUI_LOCAL%\NUL" goto :find_system
@@ -20,4 +24,8 @@ if not defined GUPKG_SYSTEM (
 )
 
 set "GUPKG_SYSTEM=" & "%GUPKG_SYSTEM%" tui %*
+exit /b %ERRORLEVEL%
+
+:run_bootstrap
+call "%GUPKG_TUI_BOOTSTRAP%" %*
 exit /b %ERRORLEVEL%

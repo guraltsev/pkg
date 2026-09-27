@@ -1371,7 +1371,7 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
             ensure_runtime_dependencies("tui")
             from gupkg.tui import run_tui
 
-            return run_tui()
+            return run_tui(str(Path.cwd()))
         except RuntimeError as install_error:
             log_error(f"Could not install a TUI dependency: {install_error}")
             return EXIT_MUTATION_ERROR
@@ -2128,6 +2128,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     globals_parser.add_argument("--root", type=Path)
     globals_parser.add_argument("--package")
     globals_parser.add_argument("--config", type=Path)
+    globals_parser.add_argument(
+        "--manager",
+        action="store_true",
+        help="Explicitly select manager mode",
+    )
     globals_parser.add_argument("--max-depth", type=int, default=8)
     globals_parser.add_argument("--toml", action="store_true")
     globals_args, remaining = globals_parser.parse_known_args(raw)
@@ -2138,13 +2143,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # directory; combining it with an unrelated manager config is unsafe.
     explicit_path = _has_explicit_package_path(remaining)
     config_path, config_was_explicit = _manager_config_path(raw, globals_args.config)
+    manager_requested = globals_args.manager or config_was_explicit
+    if globals_args.manager and config_path is None:
+        log_error("--manager requires a manager configuration")
+        return EXIT_USER_ERROR
     if config_path is not None and explicit_path and config_was_explicit and not globals_args.package:
         log_error("--config cannot be combined with an unrelated explicit package path")
         return EXIT_USER_ERROR
 
     # The manager marker is deliberately fixed to the caller's directory. A
     # malformed marker is a visible configuration error, never a mode fallback.
-    manager_mode = config_path is not None and not (explicit_path and not config_was_explicit)
+    manager_mode = manager_requested and config_path is not None and not (
+        explicit_path and not config_was_explicit
+    )
     if manager_mode:
         try:
             manager = load_manager_config(config_path)
@@ -2152,6 +2163,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         except (ConfigValidationError, ValueError, OSError) as exc:
             log_error(str(exc))
             return EXIT_USER_ERROR
+        if remaining == ["tui"]:
+            return _run_manager_tui(manager, manager_inventory)
         if globals_args.package:
             selector_args = list(remaining)
             if selector_args and selector_args[0] in {"list", "doctor"}:
@@ -2241,7 +2254,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 offline=install_args.offline or manager_args.offline,
             )
         if manager_args.command == []:
-            return _run_manager_tui(manager, manager_inventory)
+            return _manager_list(
+                manager_inventory,
+                scopes=scopes,
+                filter_name=manager_args.filter,
+                toml=globals_args.toml or manager_args.toml,
+            )
         if manager_args.command == ["list"]:
             return _manager_list(manager_inventory, scopes=scopes, filter_name=manager_args.filter, toml=globals_args.toml or manager_args.toml)
         if manager_args.command == ["upgrade", "check"]:
@@ -2281,6 +2299,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         package_context = True
     except ValueError:
         package_context = False
+    if remaining == ["tui"]:
+        if package_context:
+            return _run_package_tui(root)
+        log_error(
+            "No package selected. Run from a package directory or use --manager."
+        )
+        return EXIT_USER_ERROR
     if globals_args.package:
         try:
             selected = select_package(inventory, globals_args.package)
@@ -2308,11 +2333,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if explicit_package_path:
         return _package_main(package_args)
 
+    if not package_context and remaining:
+        log_error(
+            "No package selected. Run from a package directory or use --manager."
+        )
+        return EXIT_USER_ERROR
+
     # A real package root takes precedence over aggregate command spellings.
     # This preserves ``gupkg config check`` inside one package.
     if package_context:
         if not remaining:
-            return _run_package_tui(root)
+            return _package_main(package_args)
         return _package_main(package_args)
 
     if remaining and remaining[0] == "list":
@@ -2326,22 +2357,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _aggregate_check(inventory, update=True, scope=Scope.AUTO, toml=globals_args.toml)
 
     # A resolvable root retains ordinary package behavior. Every other bare
-    # invocation is a collection context, where no implicit mutation is safe.
+    # invocation fails rather than implicitly entering manager mode.
     if not remaining:
-        if globals_args.toml:
-            return _collection_list(inventory, filter_name="all", toml=True)
-        try:
-            # Collection mode is also a Textual interface, even though it
-            # presents a selector before opening a package's operation screen.
-            from gupkg.dependencies import ensure_runtime_dependencies
-
-            ensure_runtime_dependencies("tui")
-            from gupkg.collection_tui import run_collection_tui
-
-            return run_collection_tui(inventory)
-        except RuntimeError as install_error:
-            log_error(f"Could not install a TUI dependency: {install_error}")
-            return EXIT_MUTATION_ERROR
+        log_error(
+            "No package selected. Run from a package directory or use --manager."
+        )
+        return EXIT_USER_ERROR
     if remaining[0] in {"install", "upgrade", "config"}:
         log_error("Collection mutations require --package or an explicit package path.")
         return EXIT_USER_ERROR
