@@ -121,12 +121,20 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             identity, _ = resolve_input_path(Path(path_text or ".").expanduser())
             config_path = identity.version_path / "pkg.toml"
             config = read_toml_file(config_path) if config_path.exists() else {}
-            current_identity, _ = resolve_input_path(identity.package_root)
-            installed = (
-                current_identity.version_string
-                if current_identity.is_current
-                else "not installed"
-            )
+
+            # A bootstrap directory remains a valid selection while a failed
+            # promotion leaves another version beside it without ``current``.
+            # The summary should retain that selection rather than treating a
+            # missing installed-state answer as a missing package.
+            try:
+                current_identity, _ = resolve_input_path(identity.package_root)
+                installed = (
+                    current_identity.version_string
+                    if current_identity.is_current
+                    else "not installed"
+                )
+            except (OSError, ValueError):
+                installed = "not installed"
             conflicts = check_metadata_consistency(identity, config)
             warning = (
                 "Warning: pkg.toml metadata conflicts with the directory name."

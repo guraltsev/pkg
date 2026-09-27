@@ -15,9 +15,10 @@ import tomllib
 from pathlib import Path
 from unittest import mock
 
+from tests.runtime_paths import find_runtime_directory
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src" / "v0.1"))
+sys.path.insert(0, str(find_runtime_directory(ROOT)))
 
 from gupkg import extractors
 from gupkg.configuration import normalize_runtime_config

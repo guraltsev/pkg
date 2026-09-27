@@ -1,6 +1,6 @@
 name = "7zip"
 version = "bootstrap"
-localVersion = 1
+localVersion = 0
 only_portable = false
 description = "7-Zip is a file archiver with a high compression ratio."
 homepage = "https://www.7-zip.org/"

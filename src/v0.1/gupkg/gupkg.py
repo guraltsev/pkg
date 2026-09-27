@@ -539,12 +539,19 @@ def download_package_update(
         receipt = paths["receipts"] / f"{new_identity.version_string}.toml"
         if new_identity.version_path.exists():
             # Reinstalling a bootstrap template must reactivate its original
-            # immutable promotion instead of allocating a higher local revision.
+            # immutable promotion rather than staging another version.
             if identity.version.startswith("bootstrap"):
                 paths["receipts"].mkdir(parents=True, exist_ok=True)
                 write_text_atomic(
                     receipt,
                     f"schemaVersion = 1\ncandidateId = {_toml_value(candidate['candidateId'])}\nversion = {_toml_value(new_identity.version)}\nlocalVersion = {new_identity.local_version}\n",
+                )
+            else:
+                return action_failure(
+                    "Cannot stage update because its immutable version already "
+                    f"exists: {new_identity.version_path}",
+                    exit_code=EXIT_USER_ERROR,
+                    warnings=warnings,
                 )
             log_info(f"Downloaded: {new_identity.version_string}")
             return ActionResult(True, warnings=warnings, status="downloaded")
@@ -615,7 +622,7 @@ def install_downloaded_update(
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
     receipts = _update_paths(identity.package_root)["receipts"]
     receipt_paths = sorted(
-        receipts.glob("v*.l*.toml"), key=lambda path: path.stat().st_mtime, reverse=True
+        receipts.glob("v*.toml"), key=lambda path: path.stat().st_mtime, reverse=True
     ) if receipts.exists() else []
     if not receipt_paths:
         return action_failure(
@@ -632,7 +639,10 @@ def install_downloaded_update(
         local_version = receipt.get("localVersion")
         if not isinstance(version, str) or not isinstance(local_version, int):
             raise ValueError("receipt has invalid version metadata")
-        version_path = identity.package_root / f"v{version}.l{local_version}"
+        version_name = f"v{version}"
+        if local_version:
+            version_name += f".l{local_version}"
+        version_path = identity.package_root / version_name
         if not version_path.is_dir():
             raise ValueError(f"downloaded version is missing: {version_path}")
     except (OSError, ValueError) as exc:
@@ -2367,8 +2377,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         resolve_input_path(root)
         package_context = True
-    except ValueError:
+        package_context_error = None
+    except ValueError as exc:
         package_context = False
+        package_context_error = str(exc)
     if remaining == ["tui"]:
         if globals_args.manager:
             return _run_manager_tui()
@@ -2401,6 +2413,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     if explicit_package_path:
         return _package_main(package_args)
+
+    # A package root with several versions but no ``current`` is recognizable,
+    # yet cannot select one safely. Preserve the layout diagnostic so callers
+    # can name the intended version rather than mistaking it for no package.
+    if (
+        not package_context
+        and package_context_error is not None
+        and "contains multiple version directories" in package_context_error
+    ):
+        log_error(package_context_error)
+        return EXIT_USER_ERROR
 
     if not package_context and remaining:
         log_error(

@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+from tests.runtime_paths import find_runtime_directory
+
+SRC_ROOT = find_runtime_directory(Path(__file__).resolve().parents[1])
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 

@@ -343,17 +343,8 @@ def _git_origin_candidate(
 def _next_version_identity(
     identity: PackageIdentity, candidate: Dict[str, Any]
 ) -> PackageIdentity:
-    """Assign a plain candidate version and add a local revision only on collision."""
+    """Return the candidate's plain immutable version identity."""
     path = identity.package_root / f"v{candidate['version']}"
-    if not path.exists():
-        return PackageIdentity.from_version_path(
-            identity.package_root, path, is_current=False
-        )
-
-    revision = 1
-    while (identity.package_root / f"v{candidate['version']}.l{revision}").exists():
-        revision += 1
-    path = identity.package_root / f"v{candidate['version']}.l{revision}"
     return PackageIdentity.from_version_path(
         identity.package_root, path, is_current=False
     )

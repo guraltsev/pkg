@@ -111,8 +111,8 @@ and disposable work files rather than application files.
 Version directories must be named `v<upstream-version>` or
 `v<upstream-version>.l<local-version>`. For example, `v1.2.3` has upstream
 version `1.2.3` and local revision `0`, while `v1.2.3.l1` has local revision
-`1`. New package definitions and update releases use the plain version name by
-default; `.lN` is reserved for collisions that require a local revision.
+`1`. New package definitions and update releases always use the plain version
+name; gupkg never creates a `.lN` collision directory.
 The package name is the package-root directory name. A name ending in
 `-portable` is portable-only by convention.
 
@@ -294,9 +294,8 @@ When it reports an available release, it also tells you to run `upgrade download
 the check summary explicitly says that no files were changed.
 `upgrade download` checks again, downloads and verifies the release, and stages
 it as a new version directory without changing `current`. A missing or empty
-`App` remains repairable when upstream reports the same version: built-in
-GitHub and Git-origin checks stage a higher local revision with a complete
-payload. `upgrade install`
+`App` remains repairable when upstream reports the same version if the plain
+candidate version is not already present. `upgrade install`
 activates the most recently downloaded version and applies its shortcuts,
 environment settings, PATH entries, and wrappers. There is no automatic update
 policy or background update action. A successful activation consumes its

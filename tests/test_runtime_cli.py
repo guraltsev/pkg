@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
+from tests.runtime_paths import find_runtime_directory
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_DIRECTORY = ROOT / "src" / "v0.1.l1"
-RELEASE_VERSION = "0.1"
+RUNTIME_DIRECTORY = find_runtime_directory(ROOT)
+RELEASE_VERSION = tomllib.loads(
+    (RUNTIME_DIRECTORY / "pkg.toml").read_text(encoding="utf-8")
+)["version"]
 
 
 class RuntimeCommandTests(unittest.TestCase):
@@ -38,15 +41,12 @@ class RuntimeCommandTests(unittest.TestCase):
             check=False,
         )
 
-    def test_version_matches_the_declared_release_and_runtime_directory(self) -> None:
-        """The declared release, runtime directory, and version command agree exactly."""
+    def test_version_matches_the_declared_release(self) -> None:
+        """The checked-in runtime manifest and version command agree exactly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             result = self.run_command("--version", cwd=Path(tmpdir))
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        directory_identity = re.fullmatch(r"v(.+)\.l\d+", RUNTIME_DIRECTORY.name)
-        self.assertIsNotNone(directory_identity)
-        self.assertEqual(directory_identity.group(1), RELEASE_VERSION)
         self.assertTrue(
             result.stdout.strip().endswith(f" {RELEASE_VERSION}"),
             msg=result.stdout,

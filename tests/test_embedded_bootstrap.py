@@ -16,10 +16,12 @@ import types
 import unittest
 from unittest import mock
 
+from tests.runtime_paths import find_runtime_directory
 
 ROOT = Path(__file__).resolve().parents[1]
-BOOTSTRAP = ROOT / "src" / "v0.1.l1" / "gupkg" / "bootstrap.py"
-DEPENDENCIES = ROOT / "src" / "v0.1.l1" / "gupkg" / "dependencies.py"
+RUNTIME_DIRECTORY = find_runtime_directory(ROOT)
+BOOTSTRAP = RUNTIME_DIRECTORY / "gupkg" / "bootstrap.py"
+DEPENDENCIES = RUNTIME_DIRECTORY / "gupkg" / "dependencies.py"
 
 
 def load_bootstrap_module() -> types.ModuleType:

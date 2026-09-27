@@ -28,9 +28,10 @@ from types import ModuleType
 import unittest
 from unittest import mock
 
+from tests.runtime_paths import find_runtime_directory
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = ROOT / "src"
+SRC_ROOT = find_runtime_directory(ROOT)
 GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
@@ -429,8 +430,8 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
 
-            # Reinstalling the same bootstrap must reuse its original
-            # promotion instead of creating an otherwise identical local revision.
+            # Reinstalling a bootstrap reuses its immutable promotion instead
+            # of manufacturing a local-version directory.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
@@ -472,15 +473,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 for path in package_root.glob("v*")
                 if path not in {version_dir, new_version}
             ]
-            self.assertTrue(update_result.ok, msg=update_result.errors)
-            self.assertEqual(update_result.status, "installed-update")
-            self.assertEqual(len(updated_versions), 1)
-            self.assertEqual(
-                (updated_versions[0] / "App" / "payload.txt").read_text(
-                    encoding="utf-8"
-                ),
-                "two",
-            )
+            self.assertFalse(update_result.ok)
+            self.assertEqual(update_result.exit_code, module.EXIT_USER_ERROR)
+            self.assertIn("immutable version already exists", update_result.errors[0])
+            self.assertEqual(updated_versions, [])
 
     def test_upgrade_install_rejects_a_receipt_for_the_active_version(self) -> None:
         """Upgrade install requires a staged version newer than the active version."""
@@ -508,7 +504,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
         )
 
     def test_upgrade_download_repairs_missing_app_at_the_same_version(self) -> None:
-        """Download stages a complete local revision when current App is missing."""
+        """Download uses the plain candidate version when it is not already present."""
         module = load_gupkg_module()
         archive = self.zip_bytes({"tool.exe": "restored"})
         release = json.dumps(
@@ -557,7 +553,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             ):
                 result = module.download_package_update(version_dir)
 
-            repaired_version = version_dir.parent / "v1.0.0.l2"
+            repaired_version = version_dir.parent / "v1.0.0"
             self.assertTrue(result.ok, msg=result.errors)
             self.assertEqual(result.status, "downloaded")
             self.assertEqual(
@@ -1038,6 +1034,23 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
             self.assertIn("contains multiple version directories", output)
+
+    def test_bare_command_explains_an_ambiguous_package_root_without_current(
+        self,
+    ) -> None:
+        """A package root with several versions names the required selection."""
+        module = load_gupkg_module()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir) / "AmbiguousApp"
+            (package_root / "vbootstrap").mkdir(parents=True)
+            (package_root / "v2.0.0").mkdir()
+
+            with pushd(package_root):
+                code, output = self.run_main(module, [])
+
+            self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
+            self.assertIn("contains multiple version directories", output)
+            self.assertIn("Pass an explicit version directory", output)
 
     def test_update_config_syncs_metadata_and_preserves_existing_content(self) -> None:
         """Update config syncs metadata and preserves existing content."""

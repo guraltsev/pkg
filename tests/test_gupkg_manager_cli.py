@@ -16,9 +16,10 @@ from unittest import mock
 
 import pytest
 
+from tests.runtime_paths import find_runtime_directory
 
 ROOT = Path(__file__).resolve().parents[1]
-GUPKG_PY = ROOT / "src" / "gupkg" / "gupkg.py"
+GUPKG_PY = find_runtime_directory(ROOT) / "gupkg" / "gupkg.py"
 
 
 def _module():
