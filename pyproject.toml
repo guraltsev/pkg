@@ -22,4 +22,10 @@ where = ["src"]
 include = ["gupkg*"]
 
 [tool.setuptools.package-data]
-gupkg = ["shim/*.exe", "shim/LICENSE-*", "shim/README.md"]
+gupkg = [
+    "7zip/*.dll",
+    "7zip/*.exe",
+    "shim/*.exe",
+    "shim/LICENSE-*",
+    "shim/README.md",
+]

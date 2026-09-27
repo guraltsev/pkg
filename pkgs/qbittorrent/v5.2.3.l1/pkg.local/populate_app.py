@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from gupkg.extractors import find_7z
+
 
 PKG_MODULE_API = 1
 
@@ -40,7 +42,5 @@ def populate_app(context: dict[str, Any]) -> None:
         # Extract the installer archive into the manager-owned App directory
         # without running NSIS installation actions against the host system.
         stage_app.mkdir(parents=True, exist_ok=True)
-        command = subprocess.list2cmdline(
-            ["7z", "x", "-y", f"-o{stage_app}", str(installer)]
-        )
-        subprocess.run(command, check=True, shell=True)
+        command = [str(find_7z()), "x", "-y", f"-o{stage_app}", str(installer)]
+        subprocess.run(command, check=True)

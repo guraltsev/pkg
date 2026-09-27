@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from gupkg.configuration import normalize_runtime_config
 from gupkg.core import PackageIdentity
+from gupkg import extractors
 
 
 PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3.l1"
@@ -86,10 +87,9 @@ def test_unpacker_extracts_the_installer_into_the_staged_app_directory(tmp_path)
 
     assert stage_app.is_dir()
     command = run.call_args.args[0]
-    assert command.startswith("7z x -y ")
-    assert f"-o{stage_app}" in command
-    assert str(artifact) in command
-    assert run.call_args.kwargs == {"check": True, "shell": True}
+    assert command[0] == str(extractors.find_7z())
+    assert command[1:] == ["x", "-y", f"-o{stage_app}", str(artifact)]
+    assert run.call_args.kwargs == {"check": True}
 
 
 def test_populator_extracts_the_downloaded_installer_into_app(tmp_path) -> None:
@@ -110,10 +110,32 @@ def test_populator_extracts_the_downloaded_installer_into_app(tmp_path) -> None:
         "qbittorrent_5.2.3_x64_setup.exe/download"
     )
     command = run.call_args.args[0]
-    assert command.startswith("7z x -y ")
-    assert f"-o{app}" in command
-    assert command.endswith("qbittorrent_5.2.3_x64_setup.exe")
-    assert run.call_args.kwargs == {"check": True, "shell": True}
+    assert command[0] == str(extractors.find_7z())
+    assert command[1:3] == ["x", "-y"]
+    assert command[3] == f"-o{app}"
+    assert command[-1].endswith("qbittorrent_5.2.3_x64_setup.exe")
+    assert run.call_args.kwargs == {"check": True}
+
+
+def test_unpacker_falls_back_to_system_7za_when_bundled_extractor_is_missing(
+    tmp_path,
+) -> None:
+    """A system 7za command is used when the bundled extractor is unavailable."""
+    unpacker = _load_module(UNPACKER, "qbittorrent_unpacker_system_fallback")
+    artifact = tmp_path / "qbittorrent_setup.exe"
+    stage_app = tmp_path / "stage" / "App"
+
+    def which(command_name: str) -> str | None:
+        return {"7z": None, "7za": r"C:\Tools\7za.exe", "7zr": None}[command_name]
+
+    with mock.patch.object(extractors.Path, "is_file", return_value=False):
+        with mock.patch.object(extractors.shutil, "which", side_effect=which):
+            with mock.patch.object(unpacker.subprocess, "run") as run:
+                unpacker.unpack_app(
+                    {"paths": {"artifact": artifact, "stageApp": stage_app}}
+                )
+
+    assert run.call_args.args[0][0] == r"C:\Tools\7za.exe"
 
 
 def test_manifest_uses_package_local_installer_update_modules() -> None:
