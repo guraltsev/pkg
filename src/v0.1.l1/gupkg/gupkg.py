@@ -52,6 +52,7 @@ from gupkg.core import (  # noqa: E402
     ConfigValidationError,
     PackageIdentity,
     Scope,
+    __version__ as _RUNTIME_VERSION,
     compare_package_versions,
     is_version_directory_name,
     log_error,
@@ -110,7 +111,6 @@ from gupkg.windows import (  # noqa: E402
     wait_for_keypress,
 )
 
-__version__ = "0.12.0"
 __copyright__ = "Copyright (C) 2025 Gennady Uraltsev. All rights reserved."
 __license__ = "MIT"
 
@@ -118,6 +118,10 @@ EXIT_SUCCESS = 0
 EXIT_USER_ERROR = 2
 EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
+
+
+# Re-export the shared runtime identity for callers that inspect this facade.
+__version__ = _RUNTIME_VERSION
 
 
 EXTENDED_HELP = r"""
@@ -2124,6 +2128,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         Process exit status shared by console-script and module invocation.
     """
     raw = list(sys.argv[1:] if argv is None else argv)
+
+    # Help and version describe the command itself, so they must work without
+    # selecting, inspecting, or modifying any package or manager collection.
+    if any(option in {"--help", "--help-extended", "--version"} for option in raw):
+        return _package_main(raw)
+
     globals_parser = argparse.ArgumentParser(add_help=False)
     globals_parser.add_argument("--root", type=Path)
     globals_parser.add_argument("--package")

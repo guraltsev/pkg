@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
+VERSION_DIR_NAME_RE = re.compile(r"^v(.+?)(?:\.l(\d+))?$")
 
 # Legacy package metadata commonly lived in one of these filenames.
 LEGACY_METADATA_FILENAMES = [
@@ -488,7 +488,7 @@ def infer_metadata_from_directory(base_dir: Path) -> dict[str, Any]:
     package_name = base_dir.parent.name
     inferred["name"] = package_name or None
     inferred["version"] = match.group(1)
-    inferred["localVersion"] = int(match.group(2))
+    inferred["localVersion"] = int(match.group(2) or 0)
     inferred["only_portable"] = package_name.lower().endswith("-portable")
     return inferred
 

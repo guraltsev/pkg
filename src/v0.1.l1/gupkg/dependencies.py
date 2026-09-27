@@ -4,10 +4,10 @@ The ``gupkg`` runtime installs its declared third-party dependencies into a
 per-user site-packages directory without changing the interpreter that launches
 ``gupkg``. Package-local hooks do not install imports by default: callers must
 explicitly opt in before their missing modules can be installed. A normal
-interpreter installs into ``%LOCALAPPDATA%\\gupkg\\site-packages``; the bundled
-embeddable CPython installs into
-``%LOCALAPPDATA%\\gupkg\\embedded\\site-packages``. Each directory is added to
-the current process before pip is invoked.
+interpreter installs into ``%LOCALAPPDATA%\\gupkg\\embedded\\site-packages``;
+the bundled embeddable CPython installs into its adjacent
+``python\\Lib\\site-packages`` directory. Each directory is added to the current
+process before pip is invoked.
 """
 
 from __future__ import annotations
@@ -125,8 +125,8 @@ def install_missing_dependency(module_name: str) -> None:
     distribution = _distribution_name(module_name)
     site_packages = _dependency_site_packages()
 
-    # Keep normal and bundled interpreters in separate per-user directories so
-    # their independently installed packages never overwrite one another.
+    # Keep system and bundled interpreters isolated, without modifying the
+    # system interpreter or writing bundled dependencies outside its package.
     site_packages.mkdir(parents=True, exist_ok=True)
     site.addsitedir(str(site_packages))
     if _module_is_importable(module_name):
@@ -161,21 +161,17 @@ def install_missing_dependency(module_name: str) -> None:
 
 def _dependency_site_packages() -> Path:
     """Return the per-user package directory for the active interpreter kind."""
+    if os.environ.get("GUPKG_BUNDLED_RUNTIME") == "1":
+        # The marker is set by the local bootstrap. Derive the target from this
+        # module rather than from sys.executable or a caller-provided path.
+        return Path(__file__).resolve().parent / "python" / "Lib" / "site-packages"
+
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         base_directory = Path(local_app_data) / "gupkg"
     else:
         base_directory = Path.home() / "AppData" / "Local" / "gupkg"
-    if _uses_embedded_python():
-        return base_directory / "embedded" / "site-packages"
-    return base_directory / "site-packages"
-
-
-def _uses_embedded_python() -> bool:
-    """Return whether the active interpreter is CPython's embeddable distribution."""
-    executable_directory = Path(sys.executable).resolve().parent
-    pth_name = f"python{sys.version_info.major}{sys.version_info.minor}._pth"
-    return (executable_directory / pth_name).is_file()
+    return base_directory / "embedded" / "site-packages"
 
 
 def _module_is_importable(module_name: str) -> bool:

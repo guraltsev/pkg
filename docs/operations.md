@@ -63,7 +63,7 @@ the ZIP is the repository build output.
 
 For a source checkout, the existing `src\gupkg\gupkg.cmd` launcher remains
 available for development. It may use `GUPKG_PYTHON`, `gupkg.python`, a local
-`python\python.exe`, or Python on `PATH`.
+`python\python.exe`, Python on `PATH`, or the Windows `py -3` launcher.
 
 ## Manager configuration
 

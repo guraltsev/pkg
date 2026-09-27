@@ -157,8 +157,8 @@ healthy vendored interpreter, probing a supported system interpreter, and, if
 none exists, invoking the pinned and verified embedded-Python bootstrap.
 
 As soon as any Python interpreter can execute a script, control passes to a
-Python bootstrap entry point. Python owns runtime validation, `_pth` and
-`sitecustomize` generation, pip bootstrap after the interpreter exists,
+Python bootstrap entry point. Python owns runtime validation, local-bundle
+`_pth` generation, pip bootstrap after the bundled interpreter exists,
 dependency placement, package/config discovery, registry behavior, logging,
 and final CLI dispatch. Static files should be copied from package resources
 rather than emitted as long groups of batch `echo` statements.
@@ -486,17 +486,17 @@ includes a complete runtime so first installation needs no system Python.
 
 `python312._pth` admits the bundled standard library, bundled site-packages,
 and the version directory so `import gupkg` resolves the sibling application
-package. It enables `sitecustomize` solely to add the documented mutable
-dependency directory. The release includes all ordinary runtime dependencies,
-including Textual, and includes `pip` only for the existing explicit
-package-hook dependency installation workflow. No import path points at the
-source checkout.
+package. It does not generate `sitecustomize` or extend a system interpreter.
+The release includes all ordinary runtime dependencies, including Textual, and
+includes `pip` only for the existing explicit package-hook dependency
+installation workflow. No import path points at the source checkout.
 
 The local `gupkg\python` directory is the one deliberate mutable exception
 inside this package version. Package hashes, registry publication, and support
 tree copying exclude it; release-asset hashes still cover the materialized
-runtime shipped to users. Manager state, registry cache, update work, and
-optional hook dependencies remain in their established external locations.
+runtime shipped to users. Bundled-runtime dependencies remain below its
+`python\Lib\site-packages` directory; manager state, registry cache, and update
+work remain in their established external locations.
 
 The release build must be reproducible from a locked dependency set, record
 the CPython archive digest, and produce a software bill of materials plus

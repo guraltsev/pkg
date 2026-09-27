@@ -108,8 +108,10 @@ is reserved for trusted Python update-check and unpack hooks. `.gupkg`, created
 at the package root by update operations, holds manager state, locks, receipts,
 and disposable work files rather than application files.
 
-Version directories must be named `v<upstream-version>.l<local-version>`.
-For example, `v1.2.3.l1` has upstream version `1.2.3` and local revision `1`.
+Version directories must be named `v<upstream-version>` or
+`v<upstream-version>.l<local-version>`. For example, `v1.2.3` has upstream
+version `1.2.3` and local revision `0`, while `v1.2.3.l1` has local revision
+`1`.
 The package name is the package-root directory name. A name ending in
 `-portable` is portable-only by convention.
 
@@ -251,10 +253,10 @@ The interface exposes install, each update stage, and every configuration
 action with the same package path, scope, and applicable flags as the command
 line. It intentionally uses selections and plain output instead of a
 frame-heavy terminal layout. On first use, `gupkg` automatically installs its
-Textual dependency into `%LOCALAPPDATA%\gupkg\site-packages`; when using the
-bundled runtime it uses `%LOCALAPPDATA%\gupkg\embedded\site-packages` instead.
-The launcher Python is not modified. `--pause` is omitted because the interface
-stays open after each operation.
+Textual dependency into `%LOCALAPPDATA%\gupkg\embedded\site-packages` when
+using a system Python; the bundled runtime uses its own
+`gupkg\python\Lib\site-packages` instead. The launcher Python is not modified.
+`--pause` is omitted because the interface stays open after each operation.
 
 ```text
 gupkg.cmd [options] <command> [subcommand] [path]
@@ -337,13 +339,14 @@ documented above.
 
 The internal `src\gupkg\gupkg.cmd` locates Python in this order:
 `GUPKG_PYTHON`, `gupkg.python` beside the launcher, an existing
-`python\python.exe`, then `python` from `PATH`. When none is usable, it
+`python\python.exe`, then `python` from `PATH`, then the Windows `py -3`
+launcher. When none is usable, it creates the ignored `python\` directory,
 downloads CPython 3.12.10's official x64 embeddable package, verifies its
-SHA-256 digest, and extracts it into the ignored `python\` directory. The
-Python bootstrap then writes runtime support files and installs pip there. The
+SHA-256 digest, and extracts it there. The Python bootstrap then writes runtime
+support files and installs pip only inside that `python\` directory. The
 downloaded runtime keeps manually installed packages in
-`%LOCALAPPDATA%\gupkg\embedded\site-packages`; it does not alter a system
-Python. Use `GUPKG_PYTHON` or `gupkg.python` to select another interpreter.
+`python\Lib\site-packages`; it does not alter a system Python. Use
+`GUPKG_PYTHON` or `gupkg.python` to select another interpreter.
 
 ## `pkg.toml` reference
 
@@ -577,13 +580,13 @@ can stage a repair. Candidate mappings contain non-empty `candidateId`,
 versions must be safe version-directory values and may not go backward.
 
 `gupkg` installs every dependency declared by its own optional runtime features
-into `%LOCALAPPDATA%\gupkg\site-packages`; the bundled runtime instead uses
-`%LOCALAPPDATA%\gupkg\embedded\site-packages`. The launcher Python is not
-modified. Trusted package-local hooks never trigger dependency installation by
-default. When a hook needs an unavailable import, `gupkg` reports it and stops.
-Pass `--local-deps-autoinstall` to explicitly allow installation and retrying
-for that command. Installations use the active interpreter's `pip`. Trusted
-package-local hooks are not sandboxed.
+into `%LOCALAPPDATA%\gupkg\embedded\site-packages` when using a system Python;
+the bundled runtime instead uses its own `python\Lib\site-packages` directory.
+The launcher Python is not modified. Trusted package-local hooks never trigger
+dependency installation by default. When a hook needs an unavailable import,
+`gupkg` reports it and stops. Pass `--local-deps-autoinstall` to explicitly
+allow installation and retrying for that command. Installations use the active
+interpreter's `pip`. Trusted package-local hooks are not sandboxed.
 
 #### Update payloads
 

@@ -25,7 +25,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 from collections.abc import Sequence
 from urllib.request import urlopen
 
@@ -59,7 +58,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.path.insert(0, str(package_parent))
 
     if options.embedded:
-        _prepare_embedded_runtime(Path(sys.executable).resolve().parent)
+        # The bootstrap file and bundled runtime are one owned unit. Never
+        # derive a write target from the interpreter that launched the command.
+        runtime_directory = Path(__file__).resolve().parent / "python"
+        _prepare_embedded_runtime(runtime_directory)
+        os.environ["GUPKG_BUNDLED_RUNTIME"] = "1"
 
     # Preserve the existing root contract while keeping bootstrap-only flags
     # out of the public command parser.
@@ -73,65 +76,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _prepare_embedded_runtime(runtime_directory: Path) -> None:
     """Write embedded-runtime support files and ensure pip is available."""
-    # Keep the embedded interpreter isolated while allowing the adjacent app
-    # package and its private dependency directory to be imported.
+    # Keep the bundled interpreter isolated while making its own dependency
+    # directory importable. Every generated path remains inside this runtime.
     pth_name = f"python{sys.version_info.major}{sys.version_info.minor}._pth"
     pth_path = runtime_directory / pth_name
     pth_path.write_text(
-        "python312.zip\n.\n..\nLib/site-packages\n\nimport site\n",
+        f"python{sys.version_info.major}{sys.version_info.minor}.zip\n.\n..\nLib/site-packages\n\nimport site\n",
         encoding="ascii",
     )
-    _write_sitecustomize()
-    _ensure_pip()
+    _ensure_pip(runtime_directory)
 
 
-def _write_sitecustomize() -> None:
-    """Write the site hook that exposes mutable embedded dependencies."""
-    sitecustomize_path = Path(sys.executable).resolve().parent / "sitecustomize.py"
-    sitecustomize_path.write_text(
-        '''"""Add gupkg's mutable embedded dependency directory to sys.path."""
-
-from __future__ import annotations
-
-import os
-import site
-from pathlib import Path
-
-if not os.environ.get("GUPKG_BOOTSTRAPPING_PIP"):
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    pip_target = (
-        Path(local_app_data) / "gupkg" / "embedded" / "site-packages"
-        if local_app_data
-        else Path.home() / "AppData" / "Local" / "gupkg" / "embedded" / "site-packages"
-    )
-    site.addsitedir(str(pip_target))
-    os.environ.setdefault("PIP_TARGET", str(pip_target))
-''',
-        encoding="utf-8",
-    )
-
-
-def _ensure_pip() -> None:
+def _ensure_pip(runtime_directory: Path) -> None:
     """Install pip into the embedded runtime's mutable dependency location."""
-    # Avoid importing pip into the bootstrap process before sitecustomize is
-    # active; the subprocess observes the same support files on its next run.
+    runtime_python = runtime_directory / "python.exe"
+
+    # Invoke only the bundled executable, even when another launcher reached
+    # this bootstrap command.
     probe = subprocess.run(
-        [sys.executable, "-m", "pip", "--version"],
+        [runtime_python, "-m", "pip", "--version"],
         capture_output=True,
         check=False,
     )
     if probe.returncode == 0:
         return
 
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    pip_target = (
-        Path(local_app_data) / "gupkg" / "embedded" / "site-packages"
-        if local_app_data
-        else Path.home() / "AppData" / "Local" / "gupkg" / "embedded" / "site-packages"
-    )
+    # Keep the installer and every installed file inside the local bundle.
+    pip_target = runtime_directory / "Lib" / "site-packages"
     pip_target.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix="-get-pip.py", delete=False) as handle:
-        installer_path = Path(handle.name)
+    installer_path = runtime_directory / "get-pip.py"
     try:
         with urlopen("https://bootstrap.pypa.io/get-pip.py") as response:
             installer_path.write_bytes(response.read())
@@ -139,7 +112,7 @@ def _ensure_pip() -> None:
         environment["GUPKG_BOOTSTRAPPING_PIP"] = "1"
         environment["PIP_TARGET"] = str(pip_target)
         result = subprocess.run(
-            [sys.executable, str(installer_path), "--no-warn-script-location"],
+            [runtime_python, str(installer_path), "--no-warn-script-location"],
             env=environment,
             check=False,
         )

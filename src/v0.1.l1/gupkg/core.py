@@ -25,7 +25,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-__version__ = "0.12.0"
 __copyright__ = "Copyright (C) 2025 Gennady Uraltsev. All rights reserved."
 __license__ = "MIT"
 
@@ -34,7 +33,11 @@ EXIT_USER_ERROR = 2
 EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
-VERSION_DIR_NAME_RE = re.compile(r"^v(.+)\.l(\d+)$")
+VERSION_DIR_NAME_RE = re.compile(r"^v(.+?)(?:\.l(\d+))?$")
+
+# Keep the release identifier explicit.  The release test verifies that this
+# value matches the immutable directory selected for the shipped runtime.
+__version__ = "0.1"
 
 
 class ConfigValidationError(ValueError):
@@ -124,7 +127,8 @@ class PackageIdentity:
     version : str
         Upstream version string derived from the version directory.
     local_version : int
-        Local revision number derived from the ``.lN`` suffix.
+        Local revision number derived from the optional ``.lN`` suffix, or
+        ``0`` when the suffix is absent.
     version_string : str
         Original version-directory name, for example ``v1.2.3.l4``.
     package_root : Path
@@ -175,18 +179,18 @@ class PackageIdentity:
         ------
         ValueError
             Raised when ``version_path`` does not follow the
-            ``v<upstream>.l<local>`` naming convention.
+            ``v<upstream>`` or ``v<upstream>.l<local>`` naming convention.
 
         """
         match = VERSION_DIR_NAME_RE.match(version_path.name)
         if not match:
             raise ValueError(
-                f"Invalid version directory name: {version_path.name}. Expected format: v<upstream>.l<local>"
+                f"Invalid version directory name: {version_path.name}. Expected format: v<upstream> or v<upstream>.l<local>"
             )
         return cls(
             name=package_root.name,
             version=match.group(1),
-            local_version=int(match.group(2)),
+            local_version=int(match.group(2) or 0),
             version_string=version_path.name,
             package_root=package_root,
             version_path=version_path,
@@ -287,7 +291,8 @@ def is_version_directory_name(name: str) -> bool:
     Returns
     -------
     bool
-        ``True`` when *name* matches ``v<upstream>.l<local>``.
+        ``True`` when *name* matches ``v<upstream>`` with an optional
+        ``.l<local>`` revision.
 
     """
     return VERSION_DIR_NAME_RE.match(name) is not None
@@ -311,15 +316,13 @@ def split_package_version(version: str) -> Tuple[str, int]:
     version = version.strip()
     if version.startswith("v"):
         version = version[1:]
-    if ".l" in version:
-        upstream_part, local_part = version.rsplit(".l", 1)
-        try:
-            local_revision = int(local_part)
-        except ValueError:
-            local_revision = 0
-    else:
+    local_match = re.fullmatch(r"(.+)\.l(\d+)", version)
+    if local_match is None:
         upstream_part = version
         local_revision = 0
+    else:
+        upstream_part = local_match.group(1)
+        local_revision = int(local_match.group(2))
     return upstream_part, local_revision
 
 

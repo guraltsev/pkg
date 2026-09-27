@@ -237,6 +237,129 @@ exit /b 0
             self.assertIn('"upgrade"', recorded)
             self.assertIn('"check"', recorded)
 
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_external_python_ignores_inherited_embedded_marker(self) -> None:
+        """An external interpreter cannot be reclassified as the bundled runtime."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            internal = root / "gupkg"
+            internal.mkdir()
+            shutil.copy2(SRC_ROOT / "gupkg" / "gupkg.cmd", internal / "gupkg.cmd")
+            shutil.copy2(SRC_ROOT / "gupkg" / "bootstrap.py", internal / "bootstrap.py")
+            log_file = root / "external-python.log"
+            external_python = root / "external-python.cmd"
+            external_python.write_text(
+                f'''@echo off
+> "{log_file}" echo args=%*
+exit /b 0
+''',
+                encoding="ascii",
+            )
+            env = os.environ.copy()
+            env["GUPKG_PYTHON"] = str(external_python)
+            env["GUPKG_EMBEDDED"] = "1"
+            env["GUPKG_BUNDLED_RUNTIME"] = "1"
+
+            result = self.run_wrapper(
+                internal / "gupkg.cmd", "inventory", cwd=root, env=env
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            recorded = log_file.read_text(encoding="utf-8")
+            self.assertIn("bootstrap.py", recorded)
+            self.assertNotIn("--embedded", recorded)
+            self.assertFalse((internal / "python").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_internal_bootstrap_uses_windows_py_launcher_before_downloading(self) -> None:
+        """An installed Python exposed through ``py -3`` prevents runtime bootstrap."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            internal = root / "gupkg"
+            internal.mkdir()
+            shutil.copy2(SRC_ROOT / "gupkg" / "gupkg.cmd", internal / "gupkg.cmd")
+            shutil.copy2(SRC_ROOT / "gupkg" / "bootstrap.py", internal / "bootstrap.py")
+            log_file = root / "py.log"
+            py_launcher = root / "py.cmd"
+            py_launcher.write_text(
+                f'''@echo off
+if "%~1"=="-3" shift
+if "%~1"=="-c" exit /b 0
+> "{log_file}" echo args=%*
+exit /b 0
+''',
+                encoding="ascii",
+            )
+            env = os.environ.copy()
+            env.pop("GUPKG_PYTHON", None)
+            env["PATH"] = str(root)
+
+            result = self.run_wrapper(
+                internal / "gupkg.cmd", "tui", cwd=root, env=env
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            recorded = log_file.read_text(encoding="utf-8")
+            self.assertIn("bootstrap.py", recorded)
+            self.assertIn("tui", recorded)
+            self.assertNotIn("--embedded", recorded)
+            self.assertFalse((internal / "python").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_internal_bootstrap_creates_runtime_directory_before_downloading(self) -> None:
+        """A missing runtime directory is created before the downloader writes its archive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            internal = root / "gupkg"
+            internal.mkdir()
+            shutil.copy2(SRC_ROOT / "gupkg" / "gupkg.cmd", internal / "gupkg.cmd")
+            shutil.copy2(SRC_ROOT / "gupkg" / "bootstrap.py", internal / "bootstrap.py")
+            downloader_log = root / "downloader.log"
+            runtime_log = root / "runtime.log"
+            runtime_probe = self.make_probe(root, "runtime")
+            downloader = root / "downloader.py"
+            downloader.write_text(
+                f'''import json
+import os
+from pathlib import Path
+import shutil
+import sys
+
+runtime = Path(os.environ["GUPKG_BOOTSTRAP_DIRECTORY"])
+Path({downloader_log.as_posix()!r}).write_text(str(runtime.is_dir()), encoding="utf-8")
+if not runtime.is_dir():
+    raise SystemExit(1)
+shutil.copy2(Path({SHIM.as_posix()!r}), runtime / "python.exe")
+(runtime / "python.config.toml").write_text(
+    "target = " + json.dumps(sys.executable.replace("\\\\", "/")) + "\\n"
+    + "forward_arguments = true\\n\\n"
+    + "[[argument]]\\n"
+    + "value = " + json.dumps({runtime_probe.with_suffix(".py").as_posix()!r}) + "\\n",
+    encoding="utf-8",
+)
+''',
+                encoding="utf-8",
+            )
+            powershell_directory = root / "System32" / "WindowsPowerShell" / "v1.0"
+            powershell_directory.mkdir(parents=True)
+            self.make_executable(powershell_directory, "powershell.exe", downloader)
+
+            env = os.environ.copy()
+            env.pop("GUPKG_PYTHON", None)
+            env["PATH"] = ""
+            env["SystemRoot"] = str(root)
+
+            result = self.run_wrapper(
+                internal / "gupkg.cmd", "tui", cwd=root, env=env
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertEqual(downloader_log.read_text(encoding="utf-8"), "True")
+            recorded = runtime_log.read_text(encoding="utf-8")
+            self.assertIn("bootstrap.py", recorded)
+            self.assertIn("--embedded", recorded)
+            self.assertNotIn("--embedded-root", recorded)
+
     @unittest.skipUnless(os.name == "nt", "Windows native shim behavior")
     def test_native_shim_calls_absolute_batch_without_changing_cwd(self) -> None:
         """A shell shim can launch a batch file without changing package cwd."""
