@@ -49,7 +49,7 @@ python tools\build_standalone.py ^
   --runtime C:\release-inputs\cpython-3.12.10-embed-amd64.zip ^
   --runtime-sha256 <64-hex-digest> ^
   --source . ^
-  --manifest pkgs\gupkg\vbootstrap.l1\pkg.toml ^
+  --manifest pkgs\gupkg\vbootstrap\pkg.toml ^
   --version 0.1.0 ^
   --output dist\gupkg-0.1.0.zip
 ```

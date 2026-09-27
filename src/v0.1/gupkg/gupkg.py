@@ -192,6 +192,12 @@ relative to this file; ``%NAME%`` variables use the process environment and
 ``~`` means the current user's home. Unknown variables and shell substitutions
 are errors. Missing roots are shown as incomplete and block mutation.
 
+Manager files may set the preferred native launcher in the optional ``[shims]``
+table. ``linkage = "dynamic"`` is the default and copies
+the required runtime DLLs and license notices into the bin directory; use
+``linkage = "static"`` for self-contained launchers. A one-command override is
+available through ``--shim-linkage dynamic`` or ``--shim-linkage static``.
+
 Manager list, Doctor, and update checks are read-only. ``upgrade all`` plans
 first, requires confirmation, elevates before mixed-scope mutation, and
 continues after individual failures unless ``--fail-fast`` is selected.
@@ -574,7 +580,11 @@ def download_package_update(
 
 
 def install_downloaded_update(
-    package_path: Path, *, scope: Scope = Scope.AUTO, no_checksum: bool = False
+    package_path: Path,
+    *,
+    scope: Scope = Scope.AUTO,
+    no_checksum: bool = False,
+    shim_linkage: str = "dynamic",
 ) -> ActionResult:
     """Activate the most recently downloaded update for a package.
 
@@ -587,6 +597,8 @@ def install_downloaded_update(
         Installation scope used to activate the staged version.
     no_checksum : bool, default=False
         Accepted for command consistency; checksums are verified during download.
+    shim_linkage : {"dynamic", "static"}, default="dynamic"
+        Native launcher linkage used while installing the activated update.
 
     Returns
     -------
@@ -655,7 +667,7 @@ def install_downloaded_update(
             f"exists: {newer_versions[-1]}",
             exit_code=EXIT_USER_ERROR,
         )
-    result = install_package(version_path, scope=scope)
+    result = install_package(version_path, scope=scope, shim_linkage=shim_linkage)
     if result.ok:
         receipt_paths[0].unlink(missing_ok=True)
         result.status = "installed-update"
@@ -668,6 +680,7 @@ def full_package_upgrade(
     scope: Scope = Scope.AUTO,
     no_checksum: bool = False,
     local_deps_autoinstall: bool = False,
+    shim_linkage: str = "dynamic",
 ) -> ActionResult:
     """Check, stage, and activate an available update in one operation.
 
@@ -682,6 +695,8 @@ def full_package_upgrade(
         Whether checksum verification may be bypassed while staging a payload.
     local_deps_autoinstall : bool, default=False
         Whether package-local update hooks may install missing dependencies.
+    shim_linkage : {"dynamic", "static"}, default="dynamic"
+        Native launcher linkage used while activating the downloaded update.
 
     Returns
     -------
@@ -702,7 +717,9 @@ def full_package_upgrade(
 
     # Resolve the receipt from the original package path; it identifies the
     # newly staged version without requiring the caller to change folders.
-    install_result = install_downloaded_update(package_path, scope=scope)
+    install_result = install_downloaded_update(
+        package_path, scope=scope, shim_linkage=shim_linkage
+    )
     install_result.warnings = download_result.warnings + install_result.warnings
     return install_result
 
@@ -717,6 +734,7 @@ def install_package(
     no_checksum: bool = False,
     local_deps_autoinstall: bool = False,
     install_context=None,
+    shim_linkage: str = "dynamic",
 ) -> ActionResult:
     """Install or reinstall a package and return a truthful action result.
 
@@ -749,6 +767,8 @@ def install_package(
     local_deps_autoinstall : bool, default=False
         Whether package-local update hooks may install missing dependencies
         while promoting a bootstrap package.
+    shim_linkage : {"dynamic", "static"}, default="dynamic"
+        Native launcher linkage used for generated executable wrappers.
 
     Returns
     -------
@@ -757,6 +777,14 @@ def install_package(
 
     """
     print_action_banner("install", scope)
+
+    # Reject an invalid launcher preference before package activation can make
+    # any filesystem changes.
+    if shim_linkage not in {"dynamic", "static"}:
+        return action_failure(
+            "shim linkage must be either 'dynamic' or 'static'",
+            exit_code=EXIT_USER_ERROR,
+        )
 
     # Resolve the caller's path first so every later step works from a concrete
     # version directory and knows whether ``current`` was the original target.
@@ -845,6 +873,7 @@ def install_package(
             if install_context is not None
             else compute_scope_paths(scope)
         )
+        scope_paths["shim_linkage"] = shim_linkage
     except (RuntimeError, ValueError, OSError) as exc:
         return action_failure(
             f"Failed to resolve {scope.value} scope paths: {exc}",
@@ -864,7 +893,9 @@ def install_package(
         )
         if not download_result.ok:
             return download_result
-        result = install_downloaded_update(identity.version_path, scope=scope)
+        result = install_downloaded_update(
+            identity.version_path, scope=scope, shim_linkage=shim_linkage
+        )
         result.warnings = warnings + result.warnings
         return result
 
@@ -1265,6 +1296,12 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
         default=Scope.AUTO.value,
         help="Installation scope (default: Auto; administrators use Machine unless portable-only)",
     )
+    parser.add_argument(
+        "--shim-linkage",
+        choices=["dynamic", "static"],
+        default="dynamic",
+        help="Temporarily choose dynamically or statically linked native shims",
+    )
 
     parser.add_argument(
         "--pause",
@@ -1391,6 +1428,7 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
                 refresh_app=args.refresh_app,
                 no_checksum=args.no_checksum,
                 local_deps_autoinstall=args.local_deps_autoinstall,
+                shim_linkage=args.shim_linkage,
             )
         else:
             operations = {
@@ -1421,10 +1459,14 @@ def _package_main(argv: Optional[List[str]] = None) -> int:
                     scope=scope,
                     no_checksum=args.no_checksum,
                     local_deps_autoinstall=args.local_deps_autoinstall,
+                    shim_linkage=args.shim_linkage,
                 )
             elif args.command == "upgrade":
                 result = install_downloaded_update(
-                    package_path, scope=scope, no_checksum=args.no_checksum
+                    package_path,
+                    scope=scope,
+                    no_checksum=args.no_checksum,
+                    shim_linkage=args.shim_linkage,
                 )
             elif args.operation == "update":
                 result = update_package_config(
@@ -1794,7 +1836,7 @@ def _manager_revalidate(target, configured_root: Path | None = None, *, quiet: b
 
 def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
                      fail_fast: bool, local_deps_autoinstall: bool, no_checksum: bool,
-                     toml: bool) -> int:
+                     toml: bool, shim_linkage: str | None = None) -> int:
     """Plan and optionally execute a confirmed manager-wide upgrade."""
     targets = _manager_targets(inventory, scopes)
     selected_scopes = [scope for scope in inventory.scopes if scope.scope in scopes]
@@ -1839,6 +1881,8 @@ def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
             relaunch_args.append("--local-deps-autoinstall")
         if no_checksum:
             relaunch_args.append("--no-checksum")
+        if shim_linkage is not None:
+            relaunch_args.extend(["--shim-linkage", shim_linkage])
         if toml:
             relaunch_args.append("--toml")
         if not relaunch_elevated(relaunch_args):
@@ -1854,6 +1898,7 @@ def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
                 scope=target.scope,
                 no_checksum=no_checksum,
                 local_deps_autoinstall=local_deps_autoinstall,
+                shim_linkage=shim_linkage or inventory.config.shim_linkage,
             )
 
     def revalidate_target(target):
@@ -2002,7 +2047,10 @@ def _manager_registry_search(manager, args: list[str], inventory, *, toml: bool)
     return EXIT_SUCCESS
 
 
-def _manager_registry_install(manager, inventory, selector: str, *, scope: Scope, offline: bool) -> int:
+def _manager_registry_install(
+    manager, inventory, selector: str, *, scope: Scope, offline: bool,
+    shim_linkage: str | None = None,
+) -> int:
     """Stage one validated registry seed and delegate to ordinary installation."""
     if any(character in selector for character in "\\/") or Path(selector).is_absolute() or selector in {".", ".."}:
         log_error("Path-looking install arguments must name an existing local package path")
@@ -2036,12 +2084,15 @@ def _manager_registry_install(manager, inventory, selector: str, *, scope: Scope
     result = install_package(
         target,
         scope=scope,
-        install_context=installation_context(manager, scope),
+        install_context=installation_context(manager, scope, shim_linkage=shim_linkage),
+        shim_linkage=shim_linkage or manager.shim_linkage,
     )
     return result.exit_code
 
 
-def _manager_self_command(manager, args: list[str], *, toml: bool) -> int:
+def _manager_self_command(
+    manager, args: list[str], *, toml: bool, shim_linkage: str | None = None
+) -> int:
     """Run standalone status/repair commands for the running package copy."""
     if not args or args[0] == "status":
         try:
@@ -2074,7 +2125,7 @@ def _manager_self_command(manager, args: list[str], *, toml: bool) -> int:
         scope = Scope.USER if parsed.scope == "user" else Scope.MACHINE
         result = repair_self(
             scope=scope,
-            install_context=installation_context(manager, scope),
+            install_context=installation_context(manager, scope, shim_linkage=shim_linkage),
         )
         for warning in result.warnings:
             log_warning(warning)
@@ -2137,9 +2188,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     globals_parser.add_argument("--max-depth", type=int, default=8)
     globals_parser.add_argument("--toml", action="store_true")
+    globals_parser.add_argument(
+        "--shim-linkage",
+        choices=["dynamic", "static"],
+        help="Temporarily override the manager shim linkage preference",
+    )
     globals_args, remaining = globals_parser.parse_known_args(raw)
     root = (globals_args.root or Path.cwd()).expanduser()
-    package_args = (["--toml"] if globals_args.toml else []) + remaining
+    package_args = (
+        (["--toml"] if globals_args.toml else [])
+        + (["--shim-linkage", globals_args.shim_linkage] if globals_args.shim_linkage else [])
+        + remaining
+    )
 
     # An explicit path retains package-local semantics even from a manager
     # directory; combining it with an unrelated manager config is unsafe.
@@ -2185,7 +2245,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return EXIT_USER_ERROR
             if not selector_args:
                 return _run_package_tui(target.package.root)
-            selected_package_args = (["--toml"] if globals_args.toml else []) + selector_args
+            selected_package_args = (
+                (["--toml"] if globals_args.toml else [])
+                + ["--shim-linkage", globals_args.shim_linkage or manager.shim_linkage]
+                + selector_args
+            )
             return _package_main(["--scope", target.scope.value, *selected_package_args, str(target.package.root)])
 
         command_args = list(remaining)
@@ -2228,6 +2292,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 manager,
                 manager_args.command[1:],
                 toml=globals_args.toml or manager_args.toml,
+                shim_linkage=globals_args.shim_linkage,
             )
         if manager_args.command and manager_args.command[0] == "search":
             return _manager_registry_search(
@@ -2255,6 +2320,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     else Scope.MACHINE
                 ),
                 offline=install_args.offline or manager_args.offline,
+                shim_linkage=globals_args.shim_linkage,
             )
         if manager_args.command == []:
             return _manager_list(
@@ -2277,6 +2343,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 local_deps_autoinstall=manager_args.local_deps_autoinstall,
                 no_checksum=manager_args.no_checksum,
                 toml=globals_args.toml or manager_args.toml,
+                shim_linkage=globals_args.shim_linkage,
             )
         if manager_args.command == ["doctor"]:
             return _manager_doctor(manager_inventory, scopes=scopes, toml=globals_args.toml or manager_args.toml)

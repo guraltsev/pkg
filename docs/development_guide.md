@@ -65,16 +65,16 @@ install` command activates the downloaded version through the normal install
 workflow. Check and unpack hooks are imported from `pkg.local/` as trusted
 in-process Python extensions; they are never executed as shell commands.
 
-Git payloads, including bootstrap `vbootstrap-git.l1` packages, create a new
+Git payloads, including bootstrap `vbootstrap-git` packages, create a new
 timestamped version directory. The update model has no mutable in-place mode
 and no automatic update policy.
 
-Installing a normal Git-backed `vbootstrap-git.l1` template enters the update coordinator
+Installing a normal Git-backed `vbootstrap-git` template enters the update coordinator
 before origin population or junction management. The resolved commit is staged
-directly into the timestamped version, so `vbootstrap-git.l1` never becomes an installed
+directly into the timestamped version, so `vbootstrap-git` never becomes an installed
 payload.
 
-The same coordinator accepts a `vbootstrap.l1` template backed by a trusted
+The same coordinator accepts a `vbootstrap` template backed by a trusted
 module check and ZIP or module payload. Release discovery remains
 package-specific while bootstrap staging stays generic.
 

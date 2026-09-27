@@ -185,6 +185,41 @@ def test_manager_init_proceeds_with_displayed_defaults(
     assert config.registry_cache == localappdata / "gupkg" / "registry"
 
 
+def test_manager_tui_persists_the_selected_shim_linkage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manager home exposes a linkage choice that persists to its TOML file."""
+    manager_dir = tmp_path / "manager"
+    system = tmp_path / "system"
+    user = tmp_path / "user"
+    manager_dir.mkdir()
+    system.mkdir()
+    user.mkdir()
+    config_path = manager_dir / "gupkg-config.toml"
+    config_path.write_text(
+        'mode = "manager"\nschema_version = 1\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n",
+        encoding="utf-8",
+    )
+    captured = []
+
+    from textual.app import App
+
+    monkeypatch.setattr(App, "run", lambda app, *args, **kwargs: captured.append(app))
+    config = load_manager_config(config_path)
+    assert run_manager_tui(config, discover_manager(config)) == 0
+    app = captured[0]
+
+    async def drive() -> None:
+        async with app.run_test(size=(70, 14)) as pilot:
+            await pilot.press("down", "down", "down", "enter")
+            assert app.screen.query_one("#shim-linkage-options")
+            await pilot.press("down", "enter")
+
+    asyncio.run(drive())
+    assert load_manager_config(config_path).shim_linkage == "static"
+
+
 def test_tui_outside_package_directory_opens_manager_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -172,7 +172,7 @@ def _normalize_update_candidate(
         "/" in version
         or "\\" in version
         or ".." in version
-        or not is_version_directory_name(f"v{version}.l1")
+        or not is_version_directory_name(f"v{version}")
     ):
         raise ConfigValidationError(
             "Update candidate version is unsafe for a version directory"
@@ -343,9 +343,9 @@ def _git_origin_candidate(
 def _next_version_identity(
     identity: PackageIdentity, candidate: Dict[str, Any]
 ) -> PackageIdentity:
-    """Assign a candidate local revision, pinning bootstrap promotions to ``.l1``."""
-    if identity.version.startswith("bootstrap"):
-        path = identity.package_root / f"v{candidate['version']}.l1"
+    """Assign a plain candidate version and add a local revision only on collision."""
+    path = identity.package_root / f"v{candidate['version']}"
+    if not path.exists():
         return PackageIdentity.from_version_path(
             identity.package_root, path, is_current=False
         )

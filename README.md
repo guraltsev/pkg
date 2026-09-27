@@ -59,7 +59,7 @@ one. The version directory is the unit that `gupkg` installs and updates.
 ```text
 <PackageName>/
   current/                         # NTFS junction to the active version
-  v1.2.3.l1/
+  v1.2.3/
     App/                            # application payload
     Icons/                          # optional icon assets
     Shortcuts/                      # optional package-owned assets
@@ -111,7 +111,8 @@ and disposable work files rather than application files.
 Version directories must be named `v<upstream-version>` or
 `v<upstream-version>.l<local-version>`. For example, `v1.2.3` has upstream
 version `1.2.3` and local revision `0`, while `v1.2.3.l1` has local revision
-`1`.
+`1`. New package definitions and update releases use the plain version name by
+default; `.lN` is reserved for collisions that require a local revision.
 The package name is the package-root directory name. A name ending in
 `-portable` is portable-only by convention.
 
@@ -672,7 +673,7 @@ def install_step(context):
 Versions beginning with `bootstrap` are templates rather than active payloads.
 Installing one with a Git or module update configuration downloads and
 activates the first immutable version, leaving the template itself without an `App`.
-A Git bootstrap commonly uses `vbootstrap-git.l1` with `payload.mode = "git"`.
+A Git bootstrap commonly uses `vbootstrap-git` with `payload.mode = "git"`.
 
 ## Configuration, validation, and migration
 

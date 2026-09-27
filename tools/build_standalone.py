@@ -22,7 +22,7 @@ def main() -> int:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--runtime-sha256", required=True)
     parser.add_argument("--source", type=Path, default=Path("src/gupkg"))
-    parser.add_argument("--manifest", type=Path, default=Path("pkgs/gupkg/vbootstrap.l1/pkg.toml"))
+    parser.add_argument("--manifest", type=Path, default=Path("pkgs/gupkg/vbootstrap/pkg.toml"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -30,7 +30,7 @@ def main() -> int:
     if digest.casefold() != args.runtime_sha256.casefold():
         raise SystemExit("embedded runtime digest does not match --runtime-sha256")
     with tempfile.TemporaryDirectory(prefix="gupkg-standalone-") as temporary:
-        root = Path(temporary) / f"v{args.version}.l1"
+        root = Path(temporary) / f"v{args.version}"
         payload = root / "gupkg"
         payload.mkdir(parents=True)
         shutil.copytree(args.source, payload, dirs_exist_ok=True, ignore=shutil.ignore_patterns("python"))

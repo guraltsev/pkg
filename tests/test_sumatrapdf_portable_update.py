@@ -23,7 +23,7 @@ CHECKER = (
     ROOT
     / "pkgs"
     / "SumatraPDF-portable"
-    / "vbootstrap.l1"
+    / "vbootstrap"
     / "pkg.local"
     / "check_update.py"
 )

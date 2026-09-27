@@ -20,8 +20,8 @@ from gupkg.core import PackageIdentity
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECKER = ROOT / "pkgs" / "msys2" / "vbootstrap.l1" / "pkg.local" / "check_update.py"
-UNPACKER = ROOT / "pkgs" / "msys2" / "vbootstrap.l1" / "pkg.local" / "unpack_app.py"
+CHECKER = ROOT / "pkgs" / "msys2" / "vbootstrap" / "pkg.local" / "check_update.py"
+UNPACKER = ROOT / "pkgs" / "msys2" / "vbootstrap" / "pkg.local" / "unpack_app.py"
 MANIFEST = CHECKER.parents[1] / "pkg.toml"
 NSSWITCH_CONFIGURER = (
     CHECKER.parents[1] / "config.default" / "configure_nsswitch.py"

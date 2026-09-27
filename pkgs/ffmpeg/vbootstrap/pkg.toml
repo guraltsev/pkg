@@ -1,0 +1,33 @@
+name = "ffmpeg"
+version = "bootstrap"
+localVersion = 0
+only_portable = false
+description = "Complete solution to record, convert, and stream audio and video."
+homepage = "https://ffmpeg.org/"
+
+[update]
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "zip"
+
+[[update.payload.extract]]
+src = "ffmpeg-*-essentials_build/bin/"
+dest = ""
+
+[[path]]
+value = "$App"
+
+[[bin]]
+name = "ffmpeg"
+target = "$App\\ffmpeg.exe"
+
+[[bin]]
+name = "ffprobe"
+target = "$App\\ffprobe.exe"
+
+[[bin]]
+name = "ffplay"
+target = "$App\\ffplay.exe"

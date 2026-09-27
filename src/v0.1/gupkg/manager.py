@@ -45,6 +45,7 @@ class ManagerConfig:
     user_bin: Path | None = None
     registry_cache: Path | None = None
     channel: str = "stable"
+    shim_linkage: str = "dynamic"
     schema_version: int = 1
 
 
@@ -58,12 +59,14 @@ class InstallationContext:
     manager_config: Path
     shortcut_root: Path | None = None
     registry_cache: Path | None = None
+    shim_linkage: str = "dynamic"
 
-    def as_scope_paths(self) -> dict[str, Path]:
+    def as_scope_paths(self) -> dict[str, Path | str]:
         """Return the legacy component mapping with manager paths applied."""
         paths = {"bin_dir": self.bin_dir, "collection_root": self.collection_root}
         if self.shortcut_root is not None:
             paths["shortcut_root"] = self.shortcut_root
+        paths["shim_linkage"] = self.shim_linkage
         return paths
 
 
@@ -260,14 +263,15 @@ def load_manager_config(path: Path) -> ManagerConfig:
     schema_version = raw["schema_version"]
     if type(schema_version) is not int or schema_version not in {1, 2}:
         raise ConfigValidationError("schema_version must be the integer 1 or 2")
-    allowed_top_level = (
+    required_top_level = (
         {"mode", "schema_version", "packages"}
         if schema_version == 1
         else {"mode", "schema_version", "packages", "bin", "registry"}
     )
-    if set(raw) != allowed_top_level:
-        unknown = sorted(set(raw) - {"mode", "schema_version", "packages"})
-        missing = sorted(allowed_top_level - set(raw))
+    allowed_top_level = required_top_level | {"shims"}
+    if not required_top_level.issubset(raw) or not set(raw).issubset(allowed_top_level):
+        unknown = sorted(set(raw) - allowed_top_level)
+        missing = sorted(required_top_level - set(raw))
         parts = []
         if unknown:
             parts.append(f"unknown top-level key(s): {', '.join(unknown)}")
@@ -297,8 +301,15 @@ def load_manager_config(path: Path) -> ManagerConfig:
     system_root, user_root = roots["system"], roots["user"]
     if _same_or_nested(system_root, user_root):
         raise ConfigValidationError("Configured system and user roots must be distinct and non-nested")
+    shims_table = raw.get("shims", {"linkage": "dynamic"})
+    if not isinstance(shims_table, dict) or set(shims_table) != {"linkage"}:
+        raise ConfigValidationError("Invalid [shims] table: expected exactly linkage")
+    if shims_table["linkage"] not in {"dynamic", "static"}:
+        raise ConfigValidationError("[shims].linkage must be exactly 'dynamic' or 'static'")
     if schema_version == 1:
-        return ManagerConfig(path, system_root, user_root)
+        return ManagerConfig(
+            path, system_root, user_root, shim_linkage=shims_table["linkage"]
+        )
 
     bin_table = raw.get("bin")
     registry_table = raw.get("registry")
@@ -332,6 +343,7 @@ def load_manager_config(path: Path) -> ManagerConfig:
         user_bin=bins["user"],
         registry_cache=cache,
         channel="stable",
+        shim_linkage=shims_table["linkage"],
         schema_version=2,
     )
 
@@ -361,7 +373,9 @@ def discover_manager_config(
     return None
 
 
-def installation_context(config: ManagerConfig, scope: Scope) -> InstallationContext:
+def installation_context(
+    config: ManagerConfig, scope: Scope, *, shim_linkage: str | None = None
+) -> InstallationContext:
     """Build the manager-owned destinations for one selected scope."""
     if scope == Scope.AUTO:
         raise ValueError("Installation context requires an explicit scope")
@@ -392,6 +406,7 @@ def installation_context(config: ManagerConfig, scope: Scope) -> InstallationCon
         manager_config=config.path,
         shortcut_root=shortcut_root,
         registry_cache=config.registry_cache,
+        shim_linkage=shim_linkage or config.shim_linkage,
     )
 
 
@@ -424,7 +439,9 @@ def manager_config_text(config: ManagerConfig) -> str:
         f"user = {toml_path(user_bin)}\n\n"
         '[registry]\n'
         f"cache = {toml_path(cache)}\n"
-        'channel = "stable"\n'
+        'channel = "stable"\n\n'
+        '[shims]\n'
+        f'linkage = "{config.shim_linkage}"\n'
     )
 
 
@@ -488,6 +505,7 @@ def default_manager_config(path: Path | None = None) -> ManagerConfig:
         user_bin=Path(user_profile) / "bin",
         registry_cache=Path(local_app_data) / "gupkg" / "registry",
         channel="stable",
+        shim_linkage="dynamic",
         schema_version=2,
     )
 

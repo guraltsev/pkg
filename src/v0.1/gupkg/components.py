@@ -641,9 +641,18 @@ def install_wrappers(
             config_bytes = ("\n".join(config_lines) + "\n").encode("utf-8")
 
             shim_type = wrapper_entry.get("type", "console")
-            launcher_source = (
-                Path(__file__).with_name("shim") / f"shim-{shim_type}.exe"
+            shim_linkage = scope_paths.get("shim_linkage", "dynamic")
+            if shim_linkage not in {"dynamic", "static"}:
+                raise ValueError(
+                    "shim linkage must be either 'dynamic' or 'static'"
+                )
+            launcher_name = (
+                f"shim-{shim_type}.exe"
+                if shim_linkage == "dynamic"
+                else f"shim-{shim_type}.static.exe"
             )
+            shim_directory = Path(__file__).with_name("shim")
+            launcher_source = shim_directory / launcher_name
             launcher_bytes = launcher_source.read_bytes()
             config_path = wrapper_path.with_name(
                 f"{wrapper_path.stem}.config.toml"
@@ -667,6 +676,32 @@ def install_wrappers(
                 action = "updated" if existed_before else "created"
                 log_info(f"BIN: {action}: {output_path}")
                 result.changed = True
+
+            # Dynamically linked launchers need their MinGW runtime and the
+            # accompanying distribution notices beside every installed shim.
+            # Preserve an existing shared copy so a package repair never
+            # overwrites a runtime installed for another command.
+            if shim_linkage == "dynamic":
+                dynamic_companions = (
+                    "libgcc_s_seh-1.dll",
+                    "libstdc++-6.dll",
+                    "libwinpthread-1.dll",
+                    "LICENSE-exe-shim-MIT.txt",
+                    "LICENSE-exe-shim-UNLICENSE.txt",
+                    "LICENSE-GCC-3.0.txt",
+                    "LICENSE-GCC-RUNTIME-EXCEPTION-3.1.txt",
+                    "LICENSE-libwinpthread-MIT.txt",
+                )
+                for companion_name in dynamic_companions:
+                    companion_path = bin_dir / companion_name
+                    if companion_path.exists():
+                        continue
+                    write_bytes_atomic(
+                        companion_path,
+                        (shim_directory / companion_name).read_bytes(),
+                    )
+                    log_info(f"BIN: created: {companion_path}")
+                    result.changed = True
             continue
 
         except Exception as exc:

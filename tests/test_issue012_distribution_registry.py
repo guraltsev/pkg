@@ -14,6 +14,7 @@ from unittest import mock
 import pytest
 
 from gupkg.configuration import normalize_runtime_config
+from gupkg import components
 from gupkg.core import ActionResult, ConfigValidationError, ExpansionMode, PackageIdentity, Scope, expand_text, read_toml_file
 from gupkg import gupkg as cli
 from gupkg.manager import load_manager_config
@@ -52,6 +53,64 @@ def test_manager_v2_resolves_independent_roots_bins_and_cache(tmp_path: Path, mo
     assert config.system_bin == (tmp_path / "system-bin").resolve()
     assert config.user_bin == (tmp_path / "user-bin").resolve()
     assert config.registry_cache == (tmp_path / "cache").resolve()
+
+
+def test_manager_shim_linkage_defaults_to_dynamic_and_accepts_static(tmp_path: Path) -> None:
+    """Manager configuration defaults to dynamic shims and accepts an explicit static choice."""
+    config_path = tmp_path / "gupkg-config.toml"
+    config_path.write_text(
+        'mode = "manager"\nschema_version = 2\n\n'
+        '[packages]\nsystem = "system"\nuser = "user"\n\n'
+        '[bin]\nsystem = "system-bin"\nuser = "user-bin"\n\n'
+        '[registry]\ncache = "cache"\nchannel = "stable"\n',
+        encoding="utf-8",
+    )
+    assert load_manager_config(config_path).shim_linkage == "dynamic"
+
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + '\n[shims]\nlinkage = "static"\n',
+        encoding="utf-8",
+    )
+    assert load_manager_config(config_path).shim_linkage == "static"
+
+
+def test_dynamic_shims_provision_runtime_and_licenses_but_static_shims_do_not(tmp_path: Path) -> None:
+    """Dynamic shims install their dependencies while static shims remain self-contained."""
+    identity = _identity(tmp_path)
+    dynamic_bin = tmp_path / "dynamic-bin"
+    static_bin = tmp_path / "static-bin"
+    wrapper = [{"name": "tool", "target": "$App\\payload.exe", "type": "console"}]
+
+    dynamic_result = components.install_wrappers(
+        wrapper, identity, {"bin_dir": dynamic_bin, "shim_linkage": "dynamic"}
+    )
+    static_result = components.install_wrappers(
+        wrapper, identity, {"bin_dir": static_bin, "shim_linkage": "static"}
+    )
+
+    shim_dir = Path(components.__file__).with_name("shim")
+    assert dynamic_result.ok and static_result.ok
+    assert (dynamic_bin / "tool.exe").read_bytes() == (shim_dir / "shim-console.exe").read_bytes()
+    assert (static_bin / "tool.exe").read_bytes() == (shim_dir / "shim-console.static.exe").read_bytes()
+    assert (dynamic_bin / "libstdc++-6.dll").is_file()
+    assert (dynamic_bin / "LICENSE-GCC-3.0.txt").is_file()
+    assert not (static_bin / "libstdc++-6.dll").exists()
+
+
+def test_cli_shim_linkage_option_temporarily_overrides_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI passes an explicit static linkage choice into a package install."""
+    captured: dict[str, object] = {}
+
+    def install(*args: object, **kwargs: object) -> ActionResult:
+        captured.update(kwargs)
+        return ActionResult(True)
+
+    monkeypatch.setattr(cli, "install_package", install)
+
+    assert cli._package_main(["--shim-linkage", "static", "install", str(tmp_path)]) == 0
+    assert captured["shim_linkage"] == "static"
 
 
 def test_version_root_expands_without_rebinding_literal_app(tmp_path: Path) -> None:

@@ -20,12 +20,12 @@ from gupkg.core import PackageIdentity
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "pkgs" / "vscode" / "vbootstrap.l1" / "pkg.toml"
+MANIFEST = ROOT / "pkgs" / "vscode" / "vbootstrap" / "pkg.toml"
 HOOK_PATH = (
     ROOT
     / "pkgs"
     / "vscode"
-    / "vbootstrap.l1"
+    / "vbootstrap"
     / "pkg.local"
     / "check_update.py"
 )

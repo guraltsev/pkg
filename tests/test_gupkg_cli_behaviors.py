@@ -386,7 +386,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertFalse((version_dir / "App").exists())
 
             # Installing the bootstrap template must stage and install a new
-            # immutable .l1 version rather than activating bootstrap-git itself.
+            # immutable version rather than activating bootstrap-git itself.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
@@ -395,7 +395,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             new_versions = [
                 path
-                for path in package_root.glob("v*.l*")
+                for path in package_root.glob("v*")
                 if path != version_dir
             ]
             self.assertTrue(result.ok, msg=result.errors)
@@ -405,16 +405,16 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             new_version = new_versions[0]
             self.assertRegex(
                 new_version.name,
-                re.compile(r"^v\d{8}-\d{6}-git\.l1$"),
+                re.compile(r"^v\d{8}-\d{6}-git$"),
             )
             new_config = tomllib.loads(
                 (new_version / "pkg.toml").read_text(encoding="utf-8")
             )
             self.assertEqual(new_config["name"], "ImmutableGitApp")
             self.assertEqual(
-                new_config["version"], new_version.name[1:].rsplit(".l", 1)[0]
+                new_config["version"], new_version.name[1:]
             )
-            self.assertEqual(new_config["localVersion"], 1)
+            self.assertEqual(new_config["localVersion"], 0)
             self.assertEqual(new_config["update"]["payload"]["mode"], "git")
             self.assertEqual(
                 (new_version / "App" / "payload.txt").read_text(encoding="utf-8"),
@@ -429,8 +429,8 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue((new_version / "App" / ".git").is_dir())
             self.assertFalse((version_dir / "App").exists())
 
-            # Reinstalling the same bootstrap must reuse its original .l1
-            # promotion instead of creating an otherwise identical .l2.
+            # Reinstalling the same bootstrap must reuse its original
+            # promotion instead of creating an otherwise identical local revision.
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(
                     module, "update_current_junction_if_needed", return_value=True
@@ -438,11 +438,11 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                     repeat_result = module.install_package(version_dir)
 
             concrete_versions = [
-                path for path in package_root.glob("v*.l*") if path != version_dir
+                path for path in package_root.glob("v*") if path != version_dir
             ]
             self.assertTrue(repeat_result.ok, msg=repeat_result.errors)
             self.assertEqual(concrete_versions, [new_version])
-            self.assertTrue(new_version.name.endswith(".l1"))
+            self.assertNotIn(".l", new_version.name)
 
             # A wrapper launched inside the active concrete version defaults
             # its path to ".". Accept that active version while retaining the
@@ -469,7 +469,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             updated_versions = [
                 path
-                for path in package_root.glob("v*.l*")
+                for path in package_root.glob("v*")
                 if path not in {version_dir, new_version}
             ]
             self.assertTrue(update_result.ok, msg=update_result.errors)
@@ -597,7 +597,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "ModuleBootstrap"
-            version_dir = package_root / "vbootstrap.l1"
+            version_dir = package_root / "vbootstrap"
             local_dir = version_dir / "pkg.local"
             local_dir.mkdir(parents=True)
             self.write_config(
@@ -605,7 +605,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 """
                 name = "ModuleBootstrap"
                 version = "bootstrap"
-                localVersion = 1
+                localVersion = 0
 
                 [update]
 
@@ -652,7 +652,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         ):
                             result = module.install_package(version_dir)
 
-            release_dir = package_root / "v2.0.0.l1"
+            release_dir = package_root / "v2.0.0"
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue(result.changed)
             self.assertEqual(
@@ -663,7 +663,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 (release_dir / "pkg.toml").read_text(encoding="utf-8")
             )
             self.assertEqual(release_config["version"], "2.0.0")
-            self.assertEqual(release_config["localVersion"], 1)
+            self.assertEqual(release_config["localVersion"], 0)
             self.assertFalse((version_dir / "App").exists())
 
     def test_update_install_module_runs_after_zip_payload_is_staged(self) -> None:
@@ -672,7 +672,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "SteppedBootstrap"
-            version_dir = package_root / "vbootstrap.l1"
+            version_dir = package_root / "vbootstrap"
             local_dir = version_dir / "pkg.local"
             local_dir.mkdir(parents=True)
             self.write_config(
@@ -680,7 +680,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 """
                 name = "SteppedBootstrap"
                 version = "bootstrap"
-                localVersion = 1
+                localVersion = 0
 
                 [update]
 
@@ -726,7 +726,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         ):
                             result = module.install_package(version_dir)
 
-            release_app = package_root / "v2.0.0.l1" / "App"
+            release_app = package_root / "v2.0.0" / "App"
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue((release_app / "tool.exe").exists())
             self.assertFalse((release_app / "marker.txt").exists())
@@ -737,7 +737,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "ExecutableBootstrap"
-            version_dir = package_root / "vbootstrap.l1"
+            version_dir = package_root / "vbootstrap"
             local_dir = version_dir / "pkg.local"
             local_dir.mkdir(parents=True)
             self.write_config(
@@ -745,7 +745,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 """
                 name = "ExecutableBootstrap"
                 version = "bootstrap"
-                localVersion = 1
+                localVersion = 0
 
                 [update]
 
@@ -792,7 +792,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         ):
                             result = module.install_package(version_dir)
 
-            release_dir = package_root / "v2.0.0.l1"
+            release_dir = package_root / "v2.0.0"
             self.assertTrue(result.ok, msg=result.errors)
             self.assertEqual(
                 (release_dir / "App" / "tool.exe").read_bytes(), executable
@@ -804,7 +804,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             package_root = Path(tmpdir) / "GithubBootstrap"
-            version_dir = package_root / "vbootstrap.l1"
+            version_dir = package_root / "vbootstrap"
             version_dir.mkdir(parents=True)
             archive = self.zip_bytes(
                 {
@@ -819,7 +819,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 """
                 name = "GithubBootstrap"
                 version = "bootstrap"
-                localVersion = 1
+                localVersion = 0
 
                 [origin]
                 url = "https://github.com/owner/tool"
@@ -882,7 +882,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         ):
                             result = module.install_package(version_dir)
 
-            release_dir = package_root / "v2.0.0.l1"
+            release_dir = package_root / "v2.0.0"
             self.assertTrue(result.ok, msg=result.errors)
             self.assertTrue(result.changed)
             self.assertEqual(
@@ -1624,7 +1624,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
     def test_bin_target_installs_a_native_shim_with_declared_arguments(
         self,
     ) -> None:
-        """Target-form bin entries install a native shim and adjacent configuration."""
+        """Target-form bin entries default to a dynamic shim with its runtime files."""
 
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1665,6 +1665,21 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 shim_path.read_bytes(),
                 (SRC_ROOT / "gupkg" / "shim" / "shim-console.exe").read_bytes(),
             )
+            shim_directory = SRC_ROOT / "gupkg" / "shim"
+            for filename in (
+                "libgcc_s_seh-1.dll",
+                "libstdc++-6.dll",
+                "libwinpthread-1.dll",
+                "LICENSE-exe-shim-MIT.txt",
+                "LICENSE-exe-shim-UNLICENSE.txt",
+                "LICENSE-GCC-3.0.txt",
+                "LICENSE-GCC-RUNTIME-EXCEPTION-3.1.txt",
+                "LICENSE-libwinpthread-MIT.txt",
+            ):
+                self.assertEqual(
+                    (shim_path.parent / filename).read_bytes(),
+                    (shim_directory / filename).read_bytes(),
+                )
             self.assertEqual(
                 tomllib.loads(config_path.read_text(encoding="utf-8")),
                 {

@@ -1,0 +1,26 @@
+name = "7zip"
+version = "bootstrap"
+localVersion = 1
+only_portable = false
+description = "7-Zip is a file archiver with a high compression ratio."
+homepage = "https://www.7-zip.org/"
+
+[update]
+
+[update.check]
+mode = "module"
+
+[update.payload]
+mode = "module"
+ignore_checksum = true
+
+[[shortcut]]
+name = "7-Zip File Manager"
+targetPath = "$App\\7zFM.exe"
+workingDirectory = "$App"
+description = "7-Zip File Manager"
+
+[[bin]]
+name = "7z"
+target = "$App\\7z.exe"
+working_dir = "$App"

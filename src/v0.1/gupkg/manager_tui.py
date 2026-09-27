@@ -153,6 +153,7 @@ def run_manager_tui(
             ("user-bin", "User executables", "user_bin"),
             ("registry-cache", "Registry cache", "registry_cache"),
             ("registry-channel", "Registry channel", "channel"),
+            ("shim-linkage", "Shim linkage", "shim_linkage"),
         )
 
         def compose(self) -> ComposeResult:
@@ -235,7 +236,7 @@ def run_manager_tui(
         def on_input_submitted(self, event: Input.Submitted) -> None:
             """Save the edited value into the pending configuration."""
             value: object = event.value.strip()
-            if self.attribute != "channel":
+            if self.attribute not in {"channel", "shim_linkage"}:
                 value = Path(str(value))
             self.init_screen.config = replace(
                 self.init_screen.config, **{self.attribute: value}
@@ -246,6 +247,51 @@ def run_manager_tui(
 
         def action_back(self) -> None:
             """Discard the edit and return to initialization settings."""
+            self.app.pop_screen()
+
+    class ShimLinkageScreen(Screen):
+        """Persist the preferred native shim linkage for later installations."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def compose(self) -> ComposeResult:
+            """Compose the two available launcher linkage choices."""
+            yield Label("Shim linkage")
+            yield Static(
+                "Dynamic shims are smaller and install their runtime DLLs and license notices."
+            )
+            yield OptionList(
+                Option("Dynamic (preferred)", id="dynamic"),
+                Option("Static", id="static"),
+                id="shim-linkage-options",
+            )
+
+        def on_mount(self) -> None:
+            """Focus the configured linkage so its current value is visible."""
+            options = self.query_one("#shim-linkage-options", OptionList)
+            options.highlighted = 0 if config.shim_linkage == "dynamic" else 1
+            options.focus()
+
+        def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+            """Write the selected linkage preference and return to manager home."""
+            nonlocal config, current_inventory
+            linkage = event.option.id
+            if linkage not in {"dynamic", "static"}:
+                return
+            try:
+                write_text_atomic(
+                    config.path,
+                    manager_config_text(replace(config, shim_linkage=linkage)),
+                )
+                config = load_manager_config(config.path)
+                current_inventory = discover_manager(config)
+            except (OSError, ValueError) as exc:
+                self.app.push_screen(TextScreen("Shim linkage update failed", str(exc)))
+                return
+            self.app.pop_screen()
+
+        def action_back(self) -> None:
+            """Return to manager home without changing the configuration."""
             self.app.pop_screen()
 
     class HomeScreen(Screen):
@@ -272,6 +318,7 @@ def run_manager_tui(
                 Option("Browse packages", id="browse"),
                 Option("Refresh update status", id="refresh"),
                 Option("Upgrade all installed packages", id="upgrade"),
+                Option(f"Shim linkage: {config.shim_linkage.title()}", id="shim-linkage"),
                 Option("Doctor: validate manager and packages", id="doctor"),
                 Option("gupkg version", id="version"),
                 id="manager-actions",
@@ -290,6 +337,8 @@ def run_manager_tui(
                 self.app.push_screen(RefreshScreen())
             elif action == "upgrade":
                 self.app.push_screen(UpgradePlanScreen())
+            elif action == "shim-linkage":
+                self.app.push_screen(ShimLinkageScreen())
             elif action == "doctor":
                 self.app.push_screen(DoctorScreen())
             elif action == "version":
@@ -610,6 +659,7 @@ def run_manager_tui(
                         scope=target.scope,
                         no_checksum=self.no_checksum,
                         local_deps_autoinstall=self.local_deps,
+                        shim_linkage=config.shim_linkage,
                     )
                 lines[-1] = f"{target.target_id}: {'completed' if result.ok else 'failed'}"
                 return result
