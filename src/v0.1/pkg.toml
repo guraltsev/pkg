@@ -1,9 +1,8 @@
 name = "gupkg"
 version = "0.1"
-localVersion = 1
+localVersion = 0
 description = "The standalone gupkg package manager runtime"
 homepage = "https://github.com/guraltsev/pkg"
-payloadDirectory = "gupkg"
 
 [[environment]]
 Name = "GUPKG_HOME"

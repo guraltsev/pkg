@@ -203,6 +203,8 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             options = [Option(label, id=action) for action, label in actions]
             options.append(Option("--- Settings ---", disabled=True))
             options.append(Option(f"Package path: {self.path or 'current directory'}", id="path"))
+            options.append(Option("--- Navigation ---", disabled=True))
+            options.append(Option("Go to manager mode", id="manager-mode"))
             return options
 
         def _refresh_summary(self) -> None:
@@ -235,6 +237,9 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             assert isinstance(action, str)
             if action == "path":
                 self.app.push_screen(PathScreen(self, "path"))
+            elif action == "manager-mode":
+                self.app.open_manager = True
+                self.app.exit()
             else:
                 self.app.push_screen(CommandScreen(action, self))
 
@@ -500,6 +505,7 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             """Store the package path selected by the dispatcher."""
             super().__init__()
             self.initial_path = initial_path
+            self.open_manager = False
 
         def on_mount(self) -> None:
             """Start at the action list."""
@@ -510,5 +516,10 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             if len(self.screen_stack) > 1:
                 self.pop_screen()
 
-    GupkgApp(package_path).run()
+    app = GupkgApp(package_path)
+    app.run()
+    if app.open_manager:
+        from gupkg.manager_tui import run_manager_tui
+
+        return run_manager_tui()
     return 0

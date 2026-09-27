@@ -1,4 +1,4 @@
-# Design: standalone self-hosting package and GitHub registry
+﻿# Design: standalone self-hosting package and GitHub registry
 
 Date: 2026-09-26
 Priority: High
@@ -392,9 +392,9 @@ They are valid only in fields applied during installation. Configuration
 selection stays a responsibility of the application entry point rather than a
 package expansion variable.
 
-`$VersionRoot` and `$Payload` are ordinary package variables available wherever
+`$VersionRoot` and `$VersionRoot\\gupkg` are ordinary package variables available wherever
 the existing `$App`, `$Icons`, and `$Shortcuts` variables are accepted.
-`$VersionRoot` always means `<package-root>\current`; `$Payload` means its
+`$VersionRoot` always means `<package-root>\current`; `$VersionRoot\\gupkg` means its
 configured lifecycle child; and `$App` remains `<package-root>\current\App`.
 
 ## The `gupkg` package
@@ -408,10 +408,10 @@ and update behavior without adding useful information.
 Add one optional canonical top-level field to `pkg.toml`:
 
 ```toml
-payloadDirectory = "gupkg"
+the conventional App directory = "gupkg"
 ```
 
-When absent, `payloadDirectory` defaults to `"App"`, preserving every existing
+When absent, `the conventional App directory` defaults to `"App"`, preserving every existing
 package. It names one safe immediate child directory of the version directory
 that origin and update operations populate, validate, and replace.
 It must be a nonempty relative name and must not contain separators, `.` or
@@ -425,20 +425,20 @@ and `Shortcuts`. A spelling such as `$App\..\gupkg` may normalize to the same
 place, but package definitions should use `$VersionRoot\gupkg` so they do not
 depend on a physical `App` directory being present.
 
-Add `$Payload`, resolving to
-`<package-root>\current\<payloadDirectory>`, for generic code that genuinely
+Add `$VersionRoot\\gupkg`, resolving to
+`<package-root>\current\<the conventional App directory>`, for generic code that genuinely
 means the lifecycle payload. The `gupkg` package definition should still use
 the more explicit `$VersionRoot\gupkg` spelling.
 
 Built-in origin population, payload staging, and health checks operate on the
-resolved `payloadDirectory`. Hook contexts add `PkgVars.Payload` and
+resolved `the conventional App directory`. Hook contexts add `PkgVars.Payload` and
 `paths.stagePayload`. Existing `PkgVars.App`, `$App`, and `paths.stageApp`
 continue to mean the literal `App` directory and retain their current behavior
-when `payloadDirectory = "App"`; they are not silently rebound for a custom
+when `the conventional App directory = "App"`; they are not silently rebound for a custom
 payload. The existing `[update.check].appPath` remains a Git-check override;
-its default becomes the configured `payloadDirectory`.
+its default becomes the configured `the conventional App directory`.
 
-The installer's required-payload check also uses `payloadDirectory`. Therefore
+The installer's required-payload check also uses `the conventional App directory`. Therefore
 the `gupkg` package is valid with a populated `gupkg` directory and no `App`
 entry at all; the absent literal `App` is not treated as damage.
 
@@ -479,7 +479,7 @@ gupkg\v0.13.0.l1\
 ```
 
 The `gupkg` directory is both the Python application package and the lifecycle
-payload selected by `payloadDirectory`. Its `python` child is intentionally
+payload selected by `the conventional App directory`. Its `python` child is intentionally
 ignored in the source/registry working tree and materialized by the release
 build or the internal package-local bootstrap command. The release ZIP
 includes a complete runtime so first installation needs no system Python.
@@ -554,7 +554,7 @@ manifest and a populated `gupkg` payload, including its local Python runtime.
 The important component declaration is equivalent to:
 
 ```toml
-payloadDirectory = "gupkg"
+the conventional App directory = "gupkg"
 
 [[environment]]
 Name = "GUPKG_HOME"
@@ -699,7 +699,7 @@ an actionable error rather than being overwritten.
 
 - `pkg.toml` remains the only package manifest. A neighboring `gupkg.toml` is
   not an alias and is ignored by package discovery.
-- `payloadDirectory` is case-preserving but compared case-insensitively on Windows.
+- `the conventional App directory` is case-preserving but compared case-insensitively on Windows.
   `App` and `app` therefore identify the same physical name and cannot coexist
   as distinct payloads.
 - The value must be one immediate child name. Absolute paths, drive-qualified
@@ -708,7 +708,7 @@ an actionable error rather than being overwritten.
 - A payload entry that is a symlink, junction, or other reparse point is
   rejected before origin refresh, update staging, or deletion. No payload
   operation may escape the concrete version directory.
-- `payloadDirectory` is part of the package's update contract. A staged version
+- `the conventional App directory` is part of the package's update contract. A staged version
   may change it only when the candidate manifest explicitly changes it and
   supplies a complete payload at the new location. The updater never renames
   the old version's payload in place.
@@ -824,7 +824,7 @@ an actionable error rather than being overwritten.
 - Registry hashing distinguishes declared support files from the ignored
   runtime path. An unexpected executable under a registry seed's
   `gupkg\python` is a publication error rather than silently ignored content.
-- Safe extraction applies before recognizing `payloadDirectory`; an archive cannot
+- Safe extraction applies before recognizing `the conventional App directory`; an archive cannot
   use a crafted payload name, case collision, link, or reparse point to replace
   `pkg.toml`, `gupkg-config.toml`, another version, or manager state.
 - Antivirus quarantine, sharing violations, and delayed-delete behavior are
@@ -1074,7 +1074,7 @@ write Windows integrations, or infer installed state.
 - `collection` remains responsible only for local package discovery.
 - `layout` resolves/activates package versions but no longer hard-codes manager
   bin roots.
-- `configuration` validates `payloadDirectory` and exposes one resolved
+- `configuration` validates `the conventional App directory` and exposes one resolved
   lifecycle payload path while preserving `App` as the default.
 - `origin` populates and replaces the resolved payload directory rather than a
   hard-coded `App` child.
@@ -1197,7 +1197,7 @@ Protect these user-visible behaviors:
 - explicit system scope is resolved and elevation is requested before writes;
 - path-looking arguments never fall through to registry selection;
 - staged definitions are validated before final placement;
-- `payloadDirectory` defaults to `App` and a safe `gupkg` value drives origin,
+- `the conventional App directory` defaults to `App` and a safe `gupkg` value drives origin,
   update, and health behavior without changing `$App`;
 - `$VersionRoot` targets version-local support such as `gupkg`, while `$App`
   continues to mean only the `App` sibling;
@@ -1275,10 +1275,10 @@ is implemented in Python.
 2. Introduce installation context and remove manager-mode reliance on hard-coded
    bin paths.
 3. Add `$ScopeRoot` and `$Bin` install-time expansion.
-4. Add `payloadDirectory` with `App` as its compatibility default and route
+4. Add `the conventional App directory` with `App` as its compatibility default and route
    lifecycle payload operations through the normalized path without changing
    `$App`.
-5. Add `$VersionRoot` and `$Payload` for paths beneath the active version and
+5. Add `$VersionRoot` and `$VersionRoot\\gupkg` for paths beneath the active version and
    add distinct payload paths to hook contexts.
 6. Preserve schema version 1 and package-local compatibility behavior.
 
@@ -1370,11 +1370,11 @@ The design is implemented only when all of the following are true:
 21. The `gupkg` package version contains `gupkg\`, optional
     `gupkg-config.toml`, and standard `pkg.toml` without requiring an `App`
     directory.
-22. `payloadDirectory = "gupkg"` lets lifecycle operations manage the sibling
+22. `the conventional App directory = "gupkg"` lets lifecycle operations manage the sibling
     `gupkg` directory while `$App` continues to resolve only to `current\App`.
 23. `$VersionRoot\gupkg` gives shims and environment entries a direct path to
     embedded support without depending on `$App\..` or an existing `App`.
-24. `$Payload`, `PkgVars.Payload`, and `paths.stagePayload` expose the custom
+24. `$VersionRoot\\gupkg`, `PkgVars.Payload`, and `paths.stagePayload` expose the custom
     lifecycle payload without rebinding legacy App values.
 25. Source and registry trees omit `gupkg\python`, while standalone release
     artifacts contain a verified runtime and local bootstrap uses atomic
@@ -1423,3 +1423,4 @@ placed. Managed applications still default to `C:\opt` for system scope and
 `%USERPROFILE%\opt` for user scope. In both cases `gupkg` is itself an ordinary
 managed package, and the registry is only a verified source of install
 definitions rather than a second source of truth for the machine.
+

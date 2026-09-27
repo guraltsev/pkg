@@ -124,8 +124,8 @@ After running a helper script, check at least these items:
 - wrapper script content still makes sense for the target shell
 - `[origin].url` points at a zip archive that `gupkg` should use to populate
   `App/`
-- `payloadDirectory`, when present, is a safe immediate child of the version
-  directory
+- sibling package directories should be referenced explicitly beneath
+  `$VersionRoot`
 - registry validation is treated as data-only; package-local modules are not
   imported while validating registry manifests
 

@@ -409,18 +409,86 @@ def manager_config_text(config: ManagerConfig) -> str:
         / "gupkg"
         / "registry"
     )
+    def toml_path(value: Path) -> str:
+        """Render a Windows path as a TOML literal string."""
+        return "'" + str(value).replace("\\", "/").replace("'", "''") + "'"
+
     return (
         'mode = "manager"\n'
         'schema_version = 2\n\n'
         '[packages]\n'
-        f'system = {str(config.system_root)!r}\n'
-        f'user = {str(config.user_root)!r}\n\n'
+        f"system = {toml_path(config.system_root)}\n"
+        f"user = {toml_path(config.user_root)}\n\n"
         '[bin]\n'
-        f'system = {str(system_bin)!r}\n'
-        f'user = {str(user_bin)!r}\n\n'
+        f"system = {toml_path(system_bin)}\n"
+        f"user = {toml_path(user_bin)}\n\n"
         '[registry]\n'
-        f'cache = {str(cache)!r}\n'
+        f"cache = {toml_path(cache)}\n"
         'channel = "stable"\n'
+    )
+
+
+def default_manager_config_path() -> Path:
+    """Return the per-user location used to initialize manager mode.
+
+    Returns
+    -------
+    Path
+        The roaming per-user manager configuration path.
+
+    Raises
+    ------
+    ValueError
+        If ``APPDATA`` is not available to identify the per-user location.
+    """
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        raise ValueError("APPDATA is not set; cannot initialize manager mode")
+    return Path(appdata) / "gupkg" / "gupkg-config.toml"
+
+
+def default_manager_config(path: Path | None = None) -> ManagerConfig:
+    """Build the reviewed manager configuration used by interactive initialization.
+
+    Parameters
+    ----------
+    path : Path, optional
+        Destination for the configuration file. When omitted, the per-user
+        roaming manager location is used.
+
+    Returns
+    -------
+    ManagerConfig
+        Schema-version-two defaults for the user and system collections,
+        executable directories, and registry cache.
+
+    Raises
+    ------
+    ValueError
+        If the Windows environment does not identify the required default
+        locations.
+    """
+    config_path = Path(path) if path is not None else default_manager_config_path()
+    user_profile = os.environ.get("USERPROFILE")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    system_drive = os.environ.get("SYSTEMDRIVE")
+    if not user_profile or not local_app_data or not system_drive:
+        raise ValueError(
+            "USERPROFILE, LOCALAPPDATA, and SYSTEMDRIVE are required to initialize manager mode"
+        )
+    if len(system_drive) == 2 and system_drive[1] == ":":
+        system_drive += "\\"
+    system_root = Path(system_drive) / "opt"
+    user_root = Path(user_profile) / "opt"
+    return ManagerConfig(
+        path=config_path,
+        system_root=system_root,
+        user_root=user_root,
+        system_bin=Path(system_drive) / "bin",
+        user_bin=Path(user_profile) / "bin",
+        registry_cache=Path(local_app_data) / "gupkg" / "registry",
+        channel="stable",
+        schema_version=2,
     )
 
 

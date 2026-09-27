@@ -1,4 +1,4 @@
-"""Populate application payloads from declared package origins.
+﻿"""Populate application payloads from declared package origins.
 
 Git, zip, script, and module origins prepare a complete temporary application tree
 before replacing ``App/``. Source refs, checksums, archive paths, and
@@ -48,8 +48,7 @@ def app_has_payload(
     bool
         ``True`` only when ``App`` is a directory containing at least one entry.
     """
-    payload_name = (runtime_config or {}).get("payloadDirectory", "App")
-    return _app_contains_entries(identity.version_path / payload_name)
+    return _app_contains_entries(identity.version_path / "App")
 
 
 def app_needs_origin_population(
@@ -70,18 +69,10 @@ def populate_app_from_origin(
 ) -> StepResult:
     """Populate the configured lifecycle payload from the package origin."""
     origin = runtime_config.get("origin")
-    payload_directory = runtime_config.get("payloadDirectory", "App")
-    payload_label = "App" if payload_directory == "App" else "lifecycle payload"
-    app_path = identity.version_path / payload_directory
+    payload_label = "App"
+    app_path = identity.version_path / "App"
     if origin is None:
-        if app_has_payload(identity, runtime_config):
-            return StepResult(ok=True, changed=False)
-        return StepResult(
-            ok=False,
-            errors=[
-                f"{payload_label} is missing or empty and no [origin] is configured to populate it"
-            ],
-        )
+        return StepResult(ok=True, changed=False)
 
     if not app_needs_origin_population(identity, refresh_app, runtime_config):
         log_info(f"{payload_label} is already populated; skipping origin population")
@@ -105,14 +96,12 @@ def populate_app_from_origin(
                 identity,
                 origin,
                 no_checksum=no_checksum,
-                payload_directory=runtime_config.get("payloadDirectory", "App"),
-            )
+                )
         elif origin["mode"] == "git":
             populate_app_from_git_origin(
                 identity,
                 origin,
-                payload_directory=runtime_config.get("payloadDirectory", "App"),
-            )
+                )
         elif origin["mode"] == "script":
             populate_app_from_script_origin(
                 identity, origin, runtime_config, refresh_app=refresh_app
@@ -382,7 +371,7 @@ def populate_app_from_script_origin(
 ) -> None:
     """Run a package-local origin script and verify that it populated ``App/``."""
     script_path = _resolve_origin_script_path(identity, origin["script"])
-    payload_directory = runtime_config.get("payloadDirectory", "App")
+    payload_directory = "App"
     app_path = identity.version_path / payload_directory
     if refresh_app and app_path.exists():
         resolved_app = app_path.resolve(strict=False)
@@ -445,7 +434,7 @@ def populate_app_from_module_origin(
     """Run a package-local Python origin module and verify its application tree."""
     from .updates import _load_package_module
 
-    payload_directory = runtime_config.get("payloadDirectory", "App")
+    payload_directory = "App"
     app_path = identity.version_path / payload_directory
     if refresh_app and app_path.exists():
         resolved_app = app_path.resolve(strict=False)
@@ -505,7 +494,7 @@ def build_origin_script_payload(
     identity: PackageIdentity, runtime_config: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Build the JSON object passed to origin scripts on stdin."""
-    payload_directory = runtime_config.get("payloadDirectory", "App")
+    payload_directory = "App"
     payload_path = (identity.version_path / payload_directory).resolve()
     return {
         "config": {
@@ -513,7 +502,6 @@ def build_origin_script_payload(
             "version": identity.version,
             "localVersion": identity.local_version,
             "only_portable": runtime_config["only_portable"],
-            "payloadDirectory": payload_directory,
             "origin": runtime_config.get("origin"),
             "shortcut": runtime_config["shortcut"],
             "environment": runtime_config["environment"],
@@ -529,14 +517,12 @@ def build_origin_script_payload(
         "PkgVars": {
             "PkgRoot": str(identity.version_path.resolve()),
             "App": str((identity.version_path / "App").resolve()),
-            "Payload": str(payload_path),
             "VersionRoot": str(identity.version_path.resolve()),
             "Icons": str((identity.version_path / "Icons").resolve()),
             "Shortcuts": str((identity.version_path / "Shortcuts").resolve()),
         },
         "paths": {
             "stageApp": str((identity.version_path / "App").resolve()),
-            "stagePayload": str(payload_path),
         },
     }
 
@@ -583,3 +569,5 @@ def validate_update_health(
         if not path.exists() or not path.is_file():
             errors.append(f"Update module does not exist: {item['module']}")
     return errors
+
+

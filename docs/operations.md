@@ -78,6 +78,11 @@ The first existing candidate wins. If no candidate exists, package-local mode
 is used and manager-only commands fail with a configuration error rather than
 creating a default manager.
 
+The interactive `gupkg-tui` entry point is an exception: outside a package
+directory it opens `MANAGER MODE` automatically. Without a configuration it
+offers only `Init manager mode`, which displays the defaults and writes the
+roaming configuration only after `Proceed with defaults` is selected.
+
 Use this shape for a new manager configuration:
 
 ```toml

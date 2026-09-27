@@ -1,4 +1,4 @@
-"""Normalize and validate canonical ``pkg.toml`` configuration.
+﻿"""Normalize and validate canonical ``pkg.toml`` configuration.
 
 Configuration is represented as dictionaries and lists close to the documented
 TOML schema. Strict validation produces one runtime shape while directory-derived
@@ -863,59 +863,6 @@ def normalize_update_config(
     }
 
 
-def _normalize_payload_directory(value: Any, identity: PackageIdentity) -> str:
-    """Validate the immediate child used by lifecycle payload operations."""
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigValidationError("'payloadDirectory' must be a non-empty string")
-    candidate = value.strip()
-    windows_path = PureWindowsPath(candidate)
-    reserved = {
-        "current",
-        ".gupkg",
-        "pkg.local",
-        "icons",
-        "shortcuts",
-        "pkg.toml",
-        "gupkg-config.toml",
-    }
-    invalid_device_names = {
-        "con",
-        "prn",
-        "aux",
-        "nul",
-        *(f"com{index}" for index in range(1, 10)),
-        *(f"lpt{index}" for index in range(1, 10)),
-    }
-    if (
-        windows_path.is_absolute()
-        or windows_path.drive
-        or len(windows_path.parts) != 1
-        or windows_path.parts[0] in {".", ".."}
-        or any(separator in candidate for separator in ("/", "\\", ":"))
-        or candidate.endswith((".", " "))
-        or candidate.casefold() in reserved
-        or candidate.casefold().split(".", 1)[0] in invalid_device_names
-    ):
-        raise ConfigValidationError(
-            "'payloadDirectory' must be one safe immediate child directory"
-        )
-    payload_path = identity.version_path / candidate
-    if payload_path.exists() or payload_path.is_symlink():
-        try:
-            attributes = payload_path.stat().st_file_attributes
-        except (AttributeError, OSError):
-            attributes = 0
-        if payload_path.is_symlink() or attributes & 0x400:
-            raise ConfigValidationError(
-                f"payloadDirectory resolves through a link or reparse point: {candidate}"
-            )
-        if not payload_path.is_dir():
-            raise ConfigValidationError(
-                f"payloadDirectory is not a directory: {candidate}"
-            )
-    return candidate
-
-
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
@@ -950,7 +897,6 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         "name",
         "version",
         "localVersion",
-        "payloadDirectory",
         "description",
         "homepage",
         "origin",
@@ -984,9 +930,6 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
     local_version = raw.get("localVersion")
     if local_version is not None:
         _normalize_local_version_value(local_version, field_name="localVersion")
-    payload_directory = _normalize_payload_directory(
-        raw.get("payloadDirectory", "App"), identity
-    )
     only_portable_value = raw.get("only_portable")
     normalized_only_portable = (
         identity.only_portable_by_name
@@ -1007,11 +950,10 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
         raw.get("update"), identity, normalized_origin
     )
     if normalized_update is not None and normalized_update["check"]["mode"] == "git":
-        # The update checker defaults to the configured lifecycle payload while
-        # retaining the literal App spelling when authors explicitly request it.
+        # Git checks inspect the conventional application directory by default.
         raw_check = raw.get("update", {}).get("check", {})
         if "appPath" not in raw_check:
-            normalized_update["check"]["appPath"] = payload_directory
+            normalized_update["check"]["appPath"] = "App"
     if (
         normalized_origin is not None
         and normalized_origin.get("mode") == "git"
@@ -1268,7 +1210,6 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
             bin_entries.append(normalized_bin)
 
     return {
-        "payloadDirectory": payload_directory,
         "description": _normalize_optional_string(
             raw.get("description"), field_name="description"
         ),
@@ -1458,3 +1399,4 @@ def read_runtime_config(
         f"No pkg.toml found at {toml_path}; using defaults without creating a file."
     )
     return config, {}, warnings
+

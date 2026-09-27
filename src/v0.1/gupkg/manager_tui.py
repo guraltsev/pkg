@@ -1,14 +1,18 @@
-"""Provide the interactive, read-first interface for a fixed manager directory.
+"""Provide the interactive manager interface for configured and new users.
 
 The manager app presents the same scoped inventory used by noninteractive
 commands, performs update checks in worker threads, and hands one selected
 target to the established package operation interface.  Aggregate upgrades
 use the manager planner and executor, including their safety and result rules.
+When no configuration is available, the app remains visibly in manager mode,
+offers only initialization, and writes reviewed schema defaults only after
+explicit confirmation.
 
 Usage and API
 -------------
 Call ``run_manager_tui(...)`` with a manager inventory to browse targets,
-open an individual package operation screen, or confirm a planned batch.
+open an individual package operation screen, or confirm a planned batch. Call
+it without a configuration to present the manager initialization flow.
 
 Implementation Approach
 -----------------------
@@ -23,27 +27,37 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+from dataclasses import replace
 
 from .manager import (
     ManagerConfig,
     ManagerInventory,
     ManagedTarget,
     UpgradePlan,
+    default_manager_config,
     discover_manager,
+    discover_manager_config,
     execute_upgrade_plan,
+    load_manager_config,
+    manager_config_text,
     plan_upgrade_all,
     scope_name,
 )
-from .core import Scope
+from .core import Scope, write_text_atomic
 
 
-def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = None) -> int:
+def run_manager_tui(
+    config: ManagerConfig | None = None,
+    inventory: ManagerInventory | None = None,
+) -> int:
     """Run the manager browser and open selected targets in package operations.
 
     Parameters
     ----------
-    config : ManagerConfig
+    config : ManagerConfig, optional
         Validated manager configuration whose roots are displayed and scanned.
+        When omitted, the interface opens in manager mode with an explicit
+        initialization action.
     inventory : ManagerInventory, optional
         Initial inventory, normally supplied by the dispatcher to avoid a
         duplicate scan before the home screen appears.
@@ -56,10 +70,16 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
     from textual.app import App, ComposeResult
     from textual.containers import VerticalScroll
     from textual.screen import Screen
-    from textual.widgets import Label, OptionList, Static
+    from textual.widgets import Input, Label, OptionList, Static
     from textual.widgets.option_list import Option
 
-    current_inventory = inventory or discover_manager(config)
+    # Package-mode handoff does not pass manager objects, so discover the
+    # standard manager file before presenting the initialization screen.
+    if config is None and inventory is None:
+        config_path = discover_manager_config()
+        if config_path is not None:
+            config = load_manager_config(config_path)
+    current_inventory = inventory or (discover_manager(config) if config is not None else None)
 
     def target_label(target: ManagedTarget) -> str:
         """Render all important target dimensions without color dependence."""
@@ -82,6 +102,151 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
             "Updatable": target.update_status == "available",
             "Unhealthy": target.health_status != "healthy",
         }[status_filter]
+
+    class MissingConfigScreen(Screen):
+        """Offer the only safe action when manager mode has no configuration."""
+
+        BINDINGS = [("escape", "quit", "Exit")]
+
+        def compose(self) -> ComposeResult:
+            """Compose the manager-mode entry point with one initialization action."""
+            yield Label("No manager configuration found", id="manager-init-status")
+            yield Static(
+                "Manager mode needs a configuration before it can inspect or change packages."
+            )
+            yield OptionList(
+                Option("Init manager mode", id="init-manager"),
+                id="manager-init-actions",
+            )
+
+        def on_mount(self) -> None:
+            """Focus the only available manager action."""
+            self.query_one("#manager-init-actions", OptionList).focus()
+
+        def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+            """Open the reviewed default configuration before writing anything."""
+            if event.option.id == "init-manager":
+                try:
+                    self.app.push_screen(InitManagerScreen())
+                except ValueError as exc:
+                    self.app.push_screen(TextScreen("Manager initialization unavailable", str(exc)))
+
+        def action_quit(self) -> None:
+            """Exit from the unconfigured manager entry point."""
+            self.app.exit()
+
+    class InitManagerScreen(Screen):
+        """Review, edit, and write the per-user manager configuration."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.defaults = default_manager_config()
+            self.config = self.defaults
+
+        _settings = (
+            ("config-file", "Config file", "path"),
+            ("system-root", "System packages", "system_root"),
+            ("user-root", "User packages", "user_root"),
+            ("system-bin", "System executables", "system_bin"),
+            ("user-bin", "User executables", "user_bin"),
+            ("registry-cache", "Registry cache", "registry_cache"),
+            ("registry-channel", "Registry channel", "channel"),
+        )
+
+        def compose(self) -> ComposeResult:
+            """Compose the default-first initialization menu."""
+            yield Label("Initialize manager mode")
+            yield Static(
+            "Review the values below. Edit any row, reset to defaults, or proceed when ready."
+            )
+            yield OptionList(
+                *self._options(),
+                id="manager-init-options",
+            )
+
+        def _options(self) -> list[Option]:
+            """Build initialization actions and editable settings as text rows."""
+            options = [
+                Option("Proceed", id="proceed"),
+                Option("Reset to defaults", id="reset"),
+                Option("--- Settings ---", disabled=True),
+            ]
+            options.extend(
+                Option(f"{label}: {getattr(self.config, attribute) or ''}", id=setting)
+                for setting, label, attribute in self._settings
+            )
+            return options
+
+        def on_mount(self) -> None:
+            """Focus the proceed action so Enter accepts the displayed values."""
+            self.query_one("#manager-init-options", OptionList).focus()
+
+        def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+            """Handle proceed, reset, or one editable setting."""
+            nonlocal config, current_inventory
+            selected = event.option.id
+            if selected == "reset":
+                self.config = self.defaults
+                options = self.query_one("#manager-init-options", OptionList)
+                options.set_options(self._options())
+                options.highlighted = 1
+                return
+            if selected != "proceed":
+                setting = next((item for item in self._settings if item[0] == selected), None)
+                if setting is not None:
+                    self.app.push_screen(InitValueScreen(self, setting[2]))
+                return
+            try:
+                write_text_atomic(self.config.path, manager_config_text(self.config))
+                config = load_manager_config(self.config.path)
+                current_inventory = discover_manager(config)
+            except (OSError, ValueError) as exc:
+                self.app.push_screen(TextScreen("Manager initialization failed", str(exc)))
+                return
+            self.app.pop_screen()
+            self.app.pop_screen()
+            self.app.push_screen(HomeScreen())
+
+        def action_back(self) -> None:
+            """Return to the unconfigured manager entry point without writing."""
+            self.app.pop_screen()
+
+    class InitValueScreen(Screen):
+        """Edit one manager initialization value before it is written."""
+
+        BINDINGS = [("escape", "back", "Back")]
+
+        def __init__(self, init_screen: InitManagerScreen, attribute: str) -> None:
+            super().__init__()
+            self.init_screen = init_screen
+            self.attribute = attribute
+
+        def compose(self) -> ComposeResult:
+            """Compose the single text entry for the selected setting."""
+            yield Label(f"Edit {self.attribute}")
+            yield Input(value=str(getattr(self.init_screen.config, self.attribute) or ""), id="value")
+
+        def on_mount(self) -> None:
+            """Focus the setting editor."""
+            self.query_one(Input).focus()
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            """Save the edited value into the pending configuration."""
+            value: object = event.value.strip()
+            if self.attribute != "channel":
+                value = Path(str(value))
+            self.init_screen.config = replace(
+                self.init_screen.config, **{self.attribute: value}
+            )
+            options = self.init_screen.query_one("#manager-init-options", OptionList)
+            options.set_options(self.init_screen._options())
+            self.app.pop_screen()
+
+        def action_back(self) -> None:
+            """Discard the edit and return to initialization settings."""
+            self.app.pop_screen()
 
     class HomeScreen(Screen):
         """Present manager context and read-only manager actions."""
@@ -536,9 +701,13 @@ def run_manager_tui(config: ManagerConfig, inventory: ManagerInventory | None = 
         """
         BINDINGS = [("q", "quit", "Quit")]
 
+        def compose(self) -> ComposeResult:
+            """Render a persistent header that identifies manager mode."""
+            yield Label("MANAGER MODE", id="manager-mode-header")
+
         def on_mount(self) -> None:
             """Start at the manager home screen."""
-            self.push_screen(HomeScreen())
+            self.push_screen(HomeScreen() if config is not None else MissingConfigScreen())
 
         def action_quit(self) -> None:
             """Exit from any manager screen."""

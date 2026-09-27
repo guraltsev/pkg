@@ -1772,8 +1772,8 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertEqual(code, module.EXIT_USER_ERROR)
             self.assertIn("Unsupported legacy key 'downloadURL'", output)
 
-    def test_install_rejects_a_package_without_an_app_or_origin(self) -> None:
-        """Install fails before activation when no application payload exists."""
+    def test_install_allows_a_package_without_an_app_or_origin(self) -> None:
+        """Install proceeds when no App directory or origin is configured."""
 
         module = load_gupkg_module()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1793,10 +1793,9 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             ) as junction_mock:
                 result = module.install_package(version_dir)
 
-            self.assertFalse(result.ok)
-            self.assertEqual(result.exit_code, module.EXIT_USER_ERROR)
-            self.assertIn("App is missing or empty", result.errors[0])
-            junction_mock.assert_not_called()
+            self.assertTrue(result.ok)
+            self.assertEqual(result.exit_code, module.EXIT_SUCCESS)
+            junction_mock.assert_called_once()
 
     def test_install_populates_missing_app_from_zip_origin_before_components(
         self,

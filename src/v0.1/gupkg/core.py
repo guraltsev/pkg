@@ -514,8 +514,10 @@ def read_toml_file(path: Path) -> Dict[str, Any]:
         If the parsed document is not a top-level table.
 
     """
-    with open(path, "rb") as file_handle:
-        data = tomllib.load(file_handle)
+    # Decode TOML as text so a UTF-8 BOM from common Windows editors is
+    # accepted while ordinary UTF-8 remains unchanged.
+    text = path.read_text(encoding="utf-8-sig")
+    data = tomllib.loads(text)
     if not isinstance(data, dict):
         raise ConfigValidationError(
             f"Configuration must be a TOML table, got: {type(data).__name__}"
@@ -607,14 +609,13 @@ def expand_text(
     identity: PackageIdentity,
     mode: ExpansionMode,
     *,
-    payload_directory: str = "App",
     install_context: Any | None = None,
 ) -> ExpansionResult:
     """Expand package and environment variables in text.
 
     Expansion rules:
 
-    - ``$App``, ``$Icons``, ``$Shortcuts``, ``$VersionRoot``, ``$Payload``, and
+    - ``$App``, ``$Icons``, ``$Shortcuts``, ``$VersionRoot``, and
       ``${version}`` expand in every mode.
     - ``$ScopeRoot`` and ``$Bin`` expand when an installation context supplies
       those values.
@@ -634,8 +635,6 @@ def expand_text(
         Package identity used to resolve package-variable paths.
     mode : ExpansionMode
         Expansion ruleset to apply.
-    payload_directory : str, default="App"
-        Lifecycle payload child used by ``$Payload``.
     install_context : object, optional
         Mapping or context object exposing ``collection_root`` and ``bin_dir``
         for manager-owned install values.
@@ -662,7 +661,6 @@ def expand_text(
         "Icons": str(gupkg_base / "Icons"),
         "Shortcuts": str(gupkg_base / "Shortcuts"),
         "VersionRoot": str(gupkg_base),
-        "Payload": str(gupkg_base / payload_directory),
         "version": identity.version,
     }
     if install_context is not None:

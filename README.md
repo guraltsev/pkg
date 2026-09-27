@@ -77,7 +77,7 @@ normally point at files or directories beneath `App`.
 `pkg.toml` sits beside `App` and describes the package version. It declares
 how to obtain the payload when necessary and how to expose it to Windows. The
 configuration uses package variables so that it does not need hard-coded
-machine-specific paths: `$App`, `$Payload`, `$VersionRoot`, `$Icons`, and
+machine-specific paths: `$App`, `$VersionRoot`, `$Icons`, and
 `$Shortcuts` resolve to matching directories in the installed version, while
 `${version}` resolves to the version in the directory name. For example,
 
@@ -97,9 +97,9 @@ target = "$App\\rg.exe"
 
 This creates a shortcut to the executable, stores the full `App` path in an
 environment variable, and creates a command wrapper that launches the same
-executable. A package may set `payloadDirectory` to a safe immediate child of
-the version directory when its payload is not named `App`. The exact expansion
-rules are documented in [Variables and expansion](#variables-and-expansion).
+executable. When a package needs a sibling directory, it should write that path
+explicitly beneath `$VersionRoot`. The exact expansion rules are documented in
+[Variables and expansion](#variables-and-expansion).
 
 `Icons` and `Shortcuts` are optional package-owned asset directories. `Icons`
 is a natural place for shortcut icons; `Shortcuts` is available to package
@@ -227,7 +227,8 @@ escaping activation is broken. Bootstrap definitions remain available but are
 never implicitly installed.
 
 `gupkg --manager list` reports the manager inventory. Use
-`gupkg-tui.cmd --manager` for the interactive manager interface. Upgrade All first shows a
+`gupkg-tui.cmd` automatically opens the interactive manager interface when the
+current directory is not a package directory. Upgrade All first shows a
 non-installing plan with available, current, skipped, and failed-check counts.
 The confirmation screen puts `Run planned upgrades` first and exposes scope,
 checksum, dependency auto-install, and fail-fast settings. Execution remains
@@ -248,6 +249,13 @@ gupkg-tui.cmd
 ```
 
 You can also run `gupkg.cmd tui` directly.
+
+When the TUI is outside a package directory and no manager configuration is
+found, it shows `MANAGER MODE` with one action: `Init manager mode`. That action
+opens the default-first initialization menu, where the configuration path,
+package roots, executable directories, registry cache, and stable channel are
+shown before `Proceed with defaults` writes
+`%APPDATA%\gupkg\gupkg-config.toml`.
 
 The interface exposes install, each update stage, and every configuration
 action with the same package path, scope, and applicable flags as the command
@@ -513,9 +521,8 @@ configuration carefully.
 
 ### Variables and expansion
 
-`$App`, `$Payload`, `$VersionRoot`, `$Icons`, and `$Shortcuts` expand to the
-corresponding directories in the selected version. `$Payload` is the directory
-named by `payloadDirectory` (or `App` by default), while `$VersionRoot` is the
+`$App`, `$VersionRoot`, `$Icons`, and `$Shortcuts` expand to the corresponding
+directories in the selected version. `$VersionRoot` is the
 version directory itself. `${version}` expands to the upstream version. Braced
 environment references such as `${USERPROFILE}` expand from the process
 environment and must resolve. `$$` becomes a literal dollar sign.

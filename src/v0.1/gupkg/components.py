@@ -1,4 +1,4 @@
-"""Install package shortcuts, environment settings, PATH entries, and wrappers.
+﻿"""Install package shortcuts, environment settings, PATH entries, and wrappers.
 
 Normalized configuration rows are expanded against the active package view and
 applied to the requested user or machine scope. Each component reports changes,
@@ -44,8 +44,6 @@ def install_shortcuts(
     shortcuts: List[Dict[str, str]],
     identity: PackageIdentity,
     scope_paths: Dict[str, Path],
-    *,
-    payload_directory: str = "App",
 ) -> StepResult:
     """Install every shortcut declared by a package.
 
@@ -70,7 +68,7 @@ def install_shortcuts(
         raw_display_name = raw_name or "<unnamed>"
 
         try:
-            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, payload_directory=payload_directory, install_context=scope_paths)
+            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, install_context=scope_paths)
             if name_expansion.unresolved:
                 unresolved = ", ".join(name_expansion.unresolved)
                 raise ValueError(
@@ -80,7 +78,7 @@ def install_shortcuts(
 
             target_expansion = expand_text(
                 shortcut_entry.get("targetPath", ""), identity, ExpansionMode.GENERAL,
-                payload_directory=payload_directory, install_context=scope_paths,
+                install_context=scope_paths,
             )
             if target_expansion.unresolved:
                 unresolved = ", ".join(target_expansion.unresolved)
@@ -91,7 +89,7 @@ def install_shortcuts(
 
             arguments_expansion = expand_text(
                 shortcut_entry.get("arguments", ""), identity, ExpansionMode.GENERAL,
-                payload_directory=payload_directory, install_context=scope_paths,
+                install_context=scope_paths,
             )
             if arguments_expansion.unresolved:
                 unresolved = ", ".join(arguments_expansion.unresolved)
@@ -104,7 +102,6 @@ def install_shortcuts(
                 shortcut_entry.get("workingDirectory", ""),
                 identity,
                 ExpansionMode.GENERAL,
-                payload_directory=payload_directory,
                 install_context=scope_paths,
             )
             if working_directory_expansion.unresolved:
@@ -116,7 +113,7 @@ def install_shortcuts(
 
             icon_location_expansion = expand_text(
                 shortcut_entry.get("iconLocation", ""), identity, ExpansionMode.GENERAL,
-                payload_directory=payload_directory, install_context=scope_paths,
+                install_context=scope_paths,
             )
             if icon_location_expansion.unresolved:
                 unresolved = ", ".join(icon_location_expansion.unresolved)
@@ -127,7 +124,7 @@ def install_shortcuts(
 
             description_expansion = expand_text(
                 shortcut_entry.get("description", ""), identity, ExpansionMode.GENERAL,
-                payload_directory=payload_directory, install_context=scope_paths,
+                install_context=scope_paths,
             )
             if description_expansion.unresolved:
                 unresolved = ", ".join(description_expansion.unresolved)
@@ -227,7 +224,6 @@ def install_environment_variables(
     identity: PackageIdentity,
     scope: Scope,
     *,
-    payload_directory: str = "App",
     install_context: Any | None = None,
 ) -> StepResult:
     """Install every environment variable declared by a package.
@@ -259,7 +255,7 @@ def install_environment_variables(
             continue
         expansion = expand_text(
             str(value), identity, ExpansionMode.GENERAL,
-            payload_directory=payload_directory, install_context=install_context,
+            install_context=install_context,
         )
         if expansion.unresolved:
             unresolved = ", ".join(expansion.unresolved)
@@ -361,7 +357,7 @@ def set_path(path_entries: List[str], scope: Scope) -> bool:
 
 def add_to_path(
     new_entries: List[str], identity: PackageIdentity, scope: Scope,
-    *, payload_directory: str = "App", install_context: Any | None = None,
+    *, install_context: Any | None = None,
 ) -> StepResult:
     """Append directories to PATH while avoiding duplicates.
 
@@ -387,7 +383,7 @@ def add_to_path(
     for entry in new_entries:
         expansion = expand_text(
             str(entry), identity, ExpansionMode.GENERAL,
-            payload_directory=payload_directory, install_context=install_context,
+            install_context=install_context,
         )
         if expansion.unresolved:
             unresolved = ", ".join(expansion.unresolved)
@@ -451,7 +447,6 @@ def add_to_path(
 
 def ensure_bin_in_path(
     scope_paths: Dict[str, Path], identity: PackageIdentity, scope: Scope,
-    *, payload_directory: str = "App",
 ) -> StepResult:
     """Ensure the per-scope ``bin`` directory exists and is on PATH.
 
@@ -489,7 +484,7 @@ def ensure_bin_in_path(
     if bin_key not in current_keys:
         path_result = add_to_path(
             [bin_dir_str], identity, scope,
-            payload_directory=payload_directory, install_context=scope_paths,
+            install_context=scope_paths,
         )
         path_result.changed = path_result.changed or changed
         return path_result
@@ -501,8 +496,6 @@ def install_wrappers(
     wrapper_entries: List[Dict[str, Any]],
     identity: PackageIdentity,
     scope_paths: Dict[str, Path],
-    *,
-    payload_directory: str = "App",
 ) -> StepResult:
     """Install every wrapper declared by a package.
 
@@ -529,7 +522,7 @@ def install_wrappers(
             if not raw_name:
                 raise ValueError("wrapper entry is missing name")
 
-            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, payload_directory=payload_directory, install_context=scope_paths)
+            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, install_context=scope_paths)
             if name_expansion.unresolved:
                 unresolved = ", ".join(name_expansion.unresolved)
                 raise ValueError(
@@ -555,7 +548,7 @@ def install_wrappers(
                 raw_content = wrapper_entry.get("content", "")
                 content_expansion = expand_text(
                     raw_content, identity, ExpansionMode.SCRIPT,
-                    payload_directory=payload_directory, install_context=scope_paths,
+                    install_context=scope_paths,
                 )
                 if content_expansion.unresolved:
                     unresolved = ", ".join(content_expansion.unresolved)
@@ -600,7 +593,7 @@ def install_wrappers(
                 raw_value = wrapper_entry.get(field_name) or ""
                 expansion = expand_text(
                     raw_value, identity, ExpansionMode.GENERAL,
-                    payload_directory=payload_directory, install_context=scope_paths,
+                    install_context=scope_paths,
                 )
                 if expansion.unresolved:
                     unresolved = ", ".join(expansion.unresolved)
@@ -614,7 +607,7 @@ def install_wrappers(
             for raw_argument in wrapper_entry.get("arguments", []):
                 expansion = expand_text(
                     raw_argument, identity, ExpansionMode.GENERAL,
-                    payload_directory=payload_directory, install_context=scope_paths,
+                    install_context=scope_paths,
                 )
                 if expansion.unresolved:
                     unresolved = ", ".join(expansion.unresolved)
@@ -732,8 +725,7 @@ def install_components(
             runtime_config["shortcut"],
             identity,
             scope_paths,
-            payload_directory=runtime_config.get("payloadDirectory", "App"),
-        )
+            )
 
     # Apply environment variables next so later wrapper and PATH work can rely
     # on the persisted scope values that users expect after installation.
@@ -743,7 +735,6 @@ def install_components(
         log_info("Setting environment variables...")
         environment_result = install_environment_variables(
             runtime_config["environment"], identity, scope,
-            payload_directory=runtime_config.get("payloadDirectory", "App"),
             install_context=scope_paths,
         )
 
@@ -758,13 +749,11 @@ def install_components(
     if runtime_config["bin"]:
         bin_path_result = ensure_bin_in_path(
             scope_paths, identity, scope,
-            payload_directory=runtime_config.get("payloadDirectory", "App"),
-        )
+            )
 
     if runtime_config["path"]:
         extra_path_result = add_to_path(
             runtime_config["path"], identity, scope,
-            payload_directory=runtime_config.get("payloadDirectory", "App"),
             install_context=scope_paths,
         )
 
@@ -776,8 +765,7 @@ def install_components(
         log_info("Creating executable wrappers...")
         wrapper_result = install_wrappers(
             runtime_config["bin"], identity, scope_paths,
-            payload_directory=runtime_config.get("payloadDirectory", "App"),
-        )
+            )
 
     # Merge per-step status into one result object that accurately reports
     # whether the overall install mutated state and whether any step failed.
@@ -796,3 +784,4 @@ def install_components(
     if combined.errors:
         combined.ok = False
     return combined
+

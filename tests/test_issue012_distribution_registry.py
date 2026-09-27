@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 
 from gupkg.configuration import normalize_runtime_config
-from gupkg.core import ActionResult, ConfigValidationError, ExpansionMode, PackageIdentity, Scope, expand_text
+from gupkg.core import ActionResult, ConfigValidationError, ExpansionMode, PackageIdentity, Scope, expand_text, read_toml_file
 from gupkg import gupkg as cli
 from gupkg.manager import load_manager_config
 from gupkg.registry import registry_status, search_registry, validate_registry_tree
@@ -54,20 +54,34 @@ def test_manager_v2_resolves_independent_roots_bins_and_cache(tmp_path: Path, mo
     assert config.registry_cache == (tmp_path / "cache").resolve()
 
 
-def test_custom_payload_expands_without_rebinding_literal_app(tmp_path: Path) -> None:
-    """Custom lifecycle payloads expose Payload and VersionRoot while App stays literal."""
+def test_version_root_expands_without_rebinding_literal_app(tmp_path: Path) -> None:
+    """VersionRoot provides explicit access to sibling directories while App stays literal."""
     identity = _identity(tmp_path)
-    config = normalize_runtime_config({"payloadDirectory": "gupkg"}, identity)
 
     result = expand_text(
-        "$App|$Payload|$VersionRoot",
+        "$App|$VersionRoot\\gupkg|$VersionRoot",
         identity,
         ExpansionMode.GENERAL,
-        payload_directory=config["payloadDirectory"],
     )
 
     assert result.unresolved == []
     assert result.value.endswith("current\\App|" + str(identity.package_root / "current" / "gupkg") + "|" + str(identity.package_root / "current"))
+
+
+def test_removed_payload_directory_setting_is_rejected(tmp_path: Path) -> None:
+    """The obsolete payload-directory configuration key is not accepted."""
+    identity = _identity(tmp_path)
+
+    with pytest.raises(ConfigValidationError, match="Unknown key 'payloadDirectory'"):
+        normalize_runtime_config({"payloadDirectory": "gupkg"}, identity)
+
+
+def test_toml_reader_accepts_utf8_bom(tmp_path: Path) -> None:
+    """The TOML reader accepts manifests saved with a UTF-8 BOM."""
+    manifest = tmp_path / "pkg.toml"
+    manifest.write_bytes('\ufeffname = "tool"\n'.encode("utf-8"))
+
+    assert read_toml_file(manifest)["name"] == "tool"
 
 
 def test_registry_validation_rejects_multiple_seed_versions(tmp_path: Path) -> None:

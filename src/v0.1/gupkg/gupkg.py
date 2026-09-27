@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Install and maintain local Windows packages declared by ``pkg.toml``.
 
 The module is the stable executable and Python facade for package actions. It
@@ -70,7 +70,6 @@ from gupkg.layout import (  # noqa: E402
 from gupkg.legacy_to_gupkg_toml import convert_legacy_directory  # noqa: E402
 from gupkg.metadata import update_config_file  # noqa: E402
 from gupkg.origin import (  # noqa: E402
-    app_has_payload,
     populate_app_from_origin,
     validate_origin_health,
     validate_update_health,
@@ -869,16 +868,6 @@ def install_package(
         result.warnings = warnings + result.warnings
         return result
 
-    # An install is only meaningful for a concrete application payload. Fail
-    # before junction mutations when no origin can repair the package.
-    if runtime_config.get("origin") is None and not app_has_payload(identity, runtime_config):
-        payload_label = "App" if runtime_config.get("payloadDirectory", "App") == "App" else "Configured payload"
-        return action_failure(
-            f"{payload_label} is missing or empty and no [origin] is configured to populate it",
-            exit_code=EXIT_USER_ERROR,
-            warnings=warnings,
-        )
-
     # Update the package-root ``current`` junction unless the caller already
     # targeted it directly. Older installed versions are left intact unless the
     # caller explicitly forces replacement.
@@ -913,27 +902,30 @@ def install_package(
                 exit_code=EXIT_SUCCESS,
             )
 
-    # Populate ``App/`` before installing shortcuts or wrappers so every later
-    # artifact can rely on the application payload being present.
-    log_info("")
-    origin_result = populate_app_from_origin(
-        identity,
-        runtime_config,
-        no_checksum=no_checksum,
-        refresh_app=refresh_app,
-    )
-    warnings.extend(origin_result.warnings)
-    if not origin_result.ok:
-        log_error("Origin population failed:")
-        for error in origin_result.errors:
-            log_error(f"  - {error}")
-        return ActionResult(
-            ok=False,
-            changed=junction_changed or origin_result.changed,
-            warnings=warnings,
-            errors=origin_result.errors,
-            exit_code=EXIT_MUTATION_ERROR,
+    # App population is an explicit origin operation; packages without an
+    # origin proceed directly to their declared component work.
+    origin_changed = False
+    if runtime_config.get("origin") is not None:
+        log_info("")
+        origin_result = populate_app_from_origin(
+            identity,
+            runtime_config,
+            no_checksum=no_checksum,
+            refresh_app=refresh_app,
         )
+        warnings.extend(origin_result.warnings)
+        origin_changed = origin_result.changed
+        if not origin_result.ok:
+            log_error("Origin population failed:")
+            for error in origin_result.errors:
+                log_error(f"  - {error}")
+            return ActionResult(
+                ok=False,
+                changed=junction_changed or origin_result.changed,
+                warnings=warnings,
+                errors=origin_result.errors,
+                exit_code=EXIT_MUTATION_ERROR,
+            )
 
     # Apply the fixed component sequence only after origin population succeeds.
     log_info("")
@@ -955,7 +947,7 @@ def install_package(
 
     return ActionResult(
         ok=True,
-        changed=junction_changed or origin_result.changed or component_result.changed,
+        changed=junction_changed or origin_changed or component_result.changed,
         warnings=warnings,
         exit_code=EXIT_SUCCESS,
     )
@@ -1590,8 +1582,8 @@ def _run_package_tui(package_path: Path) -> int:
         return EXIT_MUTATION_ERROR
 
 
-def _run_manager_tui(manager, inventory) -> int:
-    """Open the fixed-location manager interface for a loaded inventory."""
+def _run_manager_tui(manager=None, inventory=None) -> int:
+    """Open the manager interface, including its unconfigured entry point."""
     try:
         from gupkg.dependencies import ensure_runtime_dependencies
 
@@ -2154,7 +2146,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     explicit_path = _has_explicit_package_path(remaining)
     config_path, config_was_explicit = _manager_config_path(raw, globals_args.config)
     manager_requested = globals_args.manager or config_was_explicit
-    if globals_args.manager and config_path is None:
+    tui_requested = remaining == ["tui"]
+    if globals_args.manager and config_path is None and not tui_requested:
         log_error("--manager requires a manager configuration")
         return EXIT_USER_ERROR
     if config_path is not None and explicit_path and config_was_explicit and not globals_args.package:
@@ -2310,12 +2303,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError:
         package_context = False
     if remaining == ["tui"]:
+        if globals_args.manager:
+            return _run_manager_tui()
         if package_context:
             return _run_package_tui(root)
-        log_error(
-            "No package selected. Run from a package directory or use --manager."
-        )
-        return EXIT_USER_ERROR
+        return _run_manager_tui()
     if globals_args.package:
         try:
             selected = select_package(inventory, globals_args.package)
@@ -2381,3 +2373,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -1,4 +1,4 @@
-"""Provide staging and state primitives for explicit package upgrades.
+﻿"""Provide staging and state primitives for explicit package upgrades.
 
 Update hooks are loaded only from the package-owned ``pkg.local`` tree. Candidate
 versions are normalized, downloaded or populated into manager-owned work space,
@@ -273,8 +273,8 @@ def _check_update(
         "paths": {
             "packageRoot": identity.package_root,
             "versionRoot": identity.version_path,
-            "app": identity.version_path / config.get("payloadDirectory", "App"),
-            "payload": identity.version_path / config.get("payloadDirectory", "App"),
+            "app": identity.version_path / "App",
+            "payload": identity.version_path / "App",
         },
         "state": dict(state),
     }
@@ -377,7 +377,7 @@ def _prepare_update(
     # ``App`` is the only generated directory: the selected update payload
     # replaces it below.  Copying entries individually keeps every other
     # directory, including empty defaults such as ``config.default``.
-    payload_directory = config.get("payloadDirectory", "App")
+    payload_directory = "App"
     for source in identity.version_path.iterdir():
         if source.name.casefold() == payload_directory.casefold():
             continue
@@ -500,8 +500,7 @@ def _prepare_update(
                 stage_app,
                 payload.get("rename", []),
                 staged_identity,
-                payload_directory=payload_directory,
-            )
+                )
         else:
             module = run_with_missing_dependencies(
                 _load_package_module,
@@ -606,12 +605,10 @@ def _apply_payload_renames(
     for mapping in mappings:
         source_text = expand_text(
             mapping["src"], identity, ExpansionMode.GENERAL,
-            payload_directory=payload_directory,
-        ).value
+            ).value
         destination_text = expand_text(
             mapping["dest"], identity, ExpansionMode.GENERAL,
-            payload_directory=payload_directory,
-        ).value
+            ).value
         source = app_path / source_text
         destination = app_path / destination_text
         resolved_source = source.resolve()
@@ -636,3 +633,4 @@ def _apply_payload_renames(
         # package to replace an existing staged file or directory.
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
+
