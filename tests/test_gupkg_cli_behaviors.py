@@ -28,10 +28,8 @@ from types import ModuleType
 import unittest
 from unittest import mock
 
-from tests.runtime_paths import find_runtime_directory
-
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = find_runtime_directory(ROOT)
+SRC_ROOT = ROOT / "src"
 GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 

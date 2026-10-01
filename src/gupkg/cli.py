@@ -60,6 +60,8 @@ from .gupkg import (
 from .layout import resolve_input_path
 from .legacy_to_gupkg_toml import (
     build_config,
+    pick_all_matching,
+    pick_legacy_metadata_files,
     render_gupkg_toml,
 )
 from .metadata import sync_config_metadata_text
@@ -69,6 +71,8 @@ from .manager import (
     discover_manager_config,
     installation_context,
     load_manager_config,
+    manager_update_target,
+    manager_upgrade_target,
     scope_name,
 )
 from .registry import (
@@ -158,20 +162,43 @@ def _package_data(path: Path, scope: Scope) -> dict[str, Any]:
 
 
 def _render_human(outcome: _Outcome) -> None:
-    """Render one outcome without mixing failed diagnostics into normal output."""
+    """Render one outcome with its command-specific records.
+
+    Human output is intentionally more descriptive than the machine envelope:
+    manager commands need to expose the selected targets and registry records
+    so a user can act on the result without switching output formats.
+    """
+    def render_records() -> None:
+        """Print structured records that remain useful after a partial failure."""
+        for section in ("package", "config", "manager", "registry", "self"):
+            values = outcome.data.get(section)
+            if isinstance(values, dict):
+                for key, value in values.items():
+                    if value is not None:
+                        print(f"{section}.{key}: {value}")
+        for target in outcome.data.get("targets", []):
+            details = ", ".join(
+                f"{key}={value}" for key, value in target.items() if value not in (None, [], "")
+            )
+            print(f"target: {details}")
+        for package in outcome.data.get("registry_packages", []):
+            details = ", ".join(f"{key}={value}" for key, value in package.items())
+            print(f"registry package: {details}")
+        summary = outcome.data.get("summary")
+        if isinstance(summary, dict):
+            print("summary: " + ", ".join(f"{key}={value}" for key, value in summary.items()))
+
+    if outcome.captured:
+        print(outcome.captured, end="", file=None if outcome.result.ok else sys.stderr)
+    status = outcome.result.status or (
+        "changed" if outcome.result.changed else ("current" if outcome.result.ok else "failed")
+    )
+    print(f"{outcome.command}: {status}")
+    render_records()
     if outcome.result.ok:
-        if outcome.captured:
-            print(outcome.captured, end="")
-        status = outcome.result.status or (
-            "changed" if outcome.result.changed else "current"
-        )
-        if not outcome.captured:
-            print(f"{outcome.command}: {status}")
         for warning in outcome.result.warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
     else:
-        if outcome.captured:
-            print(outcome.captured, end="", file=sys.stderr)
         for warning in outcome.result.warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
         for error in outcome.result.errors:
@@ -371,11 +398,14 @@ def _repair_directory(path: Path | None) -> tuple[Path | None, PackageIdentity |
         resolution_error = exc if isinstance(exc, ValueError) else None
     if not candidate.is_dir():
         return None, None, _failure("config-fix", f"Package directory does not exist: {candidate}")
-    legacy_names = {
-        "opt_pkg.json", "pkg.json", "package.json", "shortcut.json", "shortcuts.json",
-        "environment.json", "env.json", "path.json", "bin.json",
-    }
-    if not any(item.is_file() and item.name.casefold() in legacy_names for item in candidate.iterdir()):
+    legacy_sources = pick_legacy_metadata_files(candidate)
+    legacy_sources.extend(
+        path
+        for prefix in ("environment", "env", "shortcut", "path", "bin")
+        for path in pick_all_matching(candidate, prefix)
+        if path not in legacy_sources
+    )
+    if not legacy_sources:
         return None, None, _failure(
             "config-fix",
             str(resolution_error)
@@ -414,13 +444,12 @@ def _config_fix(args: argparse.Namespace) -> _Outcome:
     assert directory is not None
     destination = directory / "pkg.toml"
     canonical_exists = destination.exists()
-    legacy_exists = not canonical_exists and any(
-        item.is_file() and item.name.casefold() in {
-            "opt_pkg.json", "pkg.json", "package.json", "shortcut.json", "shortcuts.json",
-            "environment.json", "env.json", "path.json", "bin.json",
-        }
-        for item in directory.iterdir()
-    )
+    legacy_exists = not canonical_exists and bool(pick_legacy_metadata_files(directory))
+    if not canonical_exists and not legacy_exists:
+        legacy_exists = any(
+            pick_all_matching(directory, prefix)
+            for prefix in ("environment", "env", "shortcut", "path", "bin")
+        )
     if args.output is not None and not legacy_exists:
         return _failure("config-fix", "--output is valid only when converting legacy metadata")
     if args.import_shortcuts != "true" and not canonical_exists:
@@ -472,6 +501,22 @@ def _config_fix(args: argparse.Namespace) -> _Outcome:
         parsed = tomllib.loads(rendered)
         if not isinstance(parsed, dict):
             raise ConfigValidationError("config-fix produced a non-table TOML document")
+        # Validate the complete replacement, including preserved unrelated
+        # fields, before creating a backup or touching the destination.
+        if identity is not None:
+            validate_runtime_config(normalize_runtime_config(parsed, identity))
+        else:
+            required = {"name", "version", "localVersion", "only_portable"}
+            if not required.issubset(parsed):
+                raise ConfigValidationError(
+                    "config-fix produced incomplete package metadata"
+                )
+            if not isinstance(parsed["name"], str) or not isinstance(parsed["version"], str):
+                raise ConfigValidationError("config-fix produced invalid package identity")
+            if not isinstance(parsed["localVersion"], int) or isinstance(parsed["localVersion"], bool):
+                raise ConfigValidationError("config-fix produced invalid localVersion")
+            if not isinstance(parsed["only_portable"], bool):
+                raise ConfigValidationError("config-fix produced invalid only_portable")
         previous = destination.read_text(encoding="utf-8") if destination.exists() else None
         if previous == rendered:
             return _result(
@@ -568,26 +613,9 @@ def _manager_list(args: argparse.Namespace, inventory: Any) -> _Outcome:
     )
 
 
-def _manifest_for_target(target: Any) -> Path | None:
-    """Find the manifest corresponding to the active target version."""
-    wanted = target.installed_version or target.local_version
-    for manifest in target.package.manifests:
-        if manifest.version_path.name == wanted:
-            return manifest.version_path
-    return None
-
-
 def _check_target(target: Any, *, allow_dependencies: bool = False) -> ActionResult:
     """Check one manager target while keeping domain progress out of reports."""
-    manifest = _manifest_for_target(target)
-    if manifest is None:
-        target.update_status = "error"
-        return ActionResult(False, errors=["No manifest is available for the active version"], exit_code=EXIT_USER_ERROR)
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        result = check_package_update(manifest, local_deps_autoinstall=allow_dependencies)
-    target.update_status = result.status or ("error" if not result.ok else "current")
-    return result
+    return manager_update_target(target, allow_dependencies=allow_dependencies)
 
 
 def _manager_update(args: argparse.Namespace, manager: ManagerConfig, inventory: Any, scope_value: str, allow_dependencies: bool) -> _Outcome:
@@ -617,15 +645,12 @@ def _manager_update(args: argparse.Namespace, manager: ManagerConfig, inventory:
             elif not args.yes and input("Run planned updates? [y/N] ").strip().casefold() not in {"y", "yes"}:
                 result = ActionResult(False, errors=["Update cancelled"], exit_code=EXIT_USER_ERROR)
             else:
-                manifest = _manifest_for_target(target)
-                assert manifest is not None
                 result = _invoke(
                     "manager.update",
-                    lambda: full_package_upgrade(
-                        manifest,
-                        scope=target.scope,
+                    lambda: manager_upgrade_target(
+                        target,
                         no_checksum=args.no_checksum,
-                        local_deps_autoinstall=allow_dependencies,
+                        allow_dependencies=allow_dependencies,
                         shim_linkage=args.shim_linkage or manager.shim_linkage,
                     ),
                 ).result
@@ -710,6 +735,7 @@ def _manager_install(args: argparse.Namespace, manager: ManagerConfig) -> _Outco
                 target,
                 scope=scope,
                 install_context=installation_context(manager, scope),
+                local_deps_autoinstall=args.allow_hook_dependency_install,
                 shim_linkage=manager.shim_linkage,
             ),
         )
@@ -783,6 +809,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         manager_parser.print_help()
         return EXIT_USER_ERROR
 
+    if args.command == "manager" and args.manager_command == "tui":
+        # Interactive commands own their terminal, so global rendering and
+        # pause behavior must never add text or wait around the TUI.
+        return _manager_command(args).result.exit_code
     if args.command == "manager":
         outcome = _manager_command(args)
     elif args.command == "config-fix":

@@ -349,15 +349,17 @@ downloaded runtime keeps manually installed packages in
 ## `pkg.toml` reference
 
 `pkg.toml` is optional for a simple pre-populated package. If it is absent,
-`install` uses defaults and does not create a file; `config update` creates a
-starter configuration. When a file exists, its schema is strict: unknown keys
-and legacy spellings are errors.
+`install` uses defaults and does not create a file. Use `config-fix` to create a
+starter configuration, synchronize directory-owned metadata, or explicitly
+convert legacy metadata. Existing files are backed up with a UTC timestamp
+before a change unless `--no-backup` or `--backup=false` is supplied. When a
+file exists, its schema is strict: unknown keys and legacy spellings are errors.
 
 `name`, `version`, `localVersion`, and `only_portable` are package-owned
 metadata. Their canonical values come from the directory name and layout.
-`config update` synchronizes those fields while preserving unrelated runtime
+`config-fix` synchronizes those fields while preserving unrelated runtime
 configuration and comments where possible. An install stops on a metadata
-mismatch. Run `gupkg config update <version-directory>` before installing to
+mismatch. Run `gupkg config-fix <version-directory>` before installing to
 synchronize it.
 
 ```toml
@@ -523,12 +525,12 @@ PowerShell, and shell variables work as expected.
 
 ## Updates
 
-Updates follow **check → download → install**. `gupkg upgrade check` only
-discovers a candidate. `gupkg upgrade download` stages a complete new version under
+Updates follow **check → download → install**. `gupkg update --check-only` only
+discovers a candidate. `gupkg update --download-only` stages a complete new version under
 `<package-root>\.gupkg\work`, commits it as a new `v<version>.lN` directory,
-and records a receipt. `gupkg upgrade install` activates the most recently
+and records a receipt. `gupkg update` activates the most recently
 downloaded version through the regular install workflow.
-`gupkg upgrade full` performs those three steps as one explicit command.
+`gupkg update` performs those three steps as one explicit command.
 Update state, locks, receipts, and disposable work files all live in
 `<package-root>\.gupkg`; package repositories should ignore `/.gupkg/`.
 
@@ -570,7 +572,7 @@ Module checks must declare `PKG_MODULE_API = 1`. Their context has
 `apiVersion`, `current` identity fields (including `appReady`),
 package/version/App paths, persisted state, and `channel`. Return `None` only
 when the upstream version is current and its payload is healthy. When
-`appReady` is false, return the current candidate again so `upgrade download`
+`appReady` is false, return the current candidate again so `update --download-only`
 can stage a repair. Candidate mappings contain non-empty `candidateId`,
 `version`, and `url`. Optional candidate fields are
 `sha256` (64 hex digits), `fileName`, `headers`, and `extractSubdir`. Candidate
@@ -666,21 +668,20 @@ A Git bootstrap commonly uses `vbootstrap-git` with `payload.mode = "git"`.
 
 ## Configuration, validation, and migration
 
-Use `config check` before deploying a package definition. It validates canonical
+Use `config-check` before deploying a package definition. It validates canonical
 TOML, directory-derived metadata, historical-origin consistency, package-local
 origin scripts, and configured update modules without modifying the package.
 
-Use `config update` to create a starter `pkg.toml` or repair metadata while
+Use `config-fix` to create a starter `pkg.toml` or repair metadata while
 keeping runtime settings. It imports `_shortcuts` `.lnk` files by default and
 archives each imported source as `.lnk.imported`; pass
-`--import-shortcuts=false` to skip that import. It does not populate `App` or
+`--import-shortcuts false` to skip that import. It does not populate `App` or
 install components.
 
-`config from-legacy` is a best-effort migration aid for older JSON-based layouts.
-It recognizes common `opt_pkg.json`, `environment*.json`/`env*.json`,
-`shortcut*.json`, and `bin*.json` inputs; unknown and malformed material may
-become warnings. Review its output before installing. Existing output is
-backed up as `pkg.toml.bak`, then incremented suffixes when necessary.
+`config-fix` is the explicit migration path for older JSON-based layouts. It
+uses the existing converter, validates the complete replacement before writing,
+and creates a timestamped sibling backup unless backup is disabled. Use
+`--output PATH` only for this conversion mode.
 
 The standalone helpers remain available from `src`:
 

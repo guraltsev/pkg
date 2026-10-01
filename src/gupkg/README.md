@@ -5,7 +5,7 @@ For operator-facing installation and recovery procedures, see
 implementation-facing modules and migration helpers.
 
 The Python modules in this directory contain the supported implementation
-domains used by the stable `gupkg/gupkg.py` executable:
+domains used by the `gupkg.cli` command boundary and package workflows:
 
 - `core.py`: shared result models, package identity, logging, expansion, and
   atomic file writes
@@ -21,12 +21,12 @@ domains used by the stable `gupkg/gupkg.py` executable:
 - `registry.py`: validated sparse Git registry cache, search, and selectors
 - `distribution.py`: standalone runtime health and scoped self-repair
 
-`gupkg/gupkg.py` remains the executable and public facade. It owns CLI dispatch and
-the high-level install, health-check, configuration, and update workflows.
+`gupkg/cli.py` owns command parsing and rendering; `gupkg/gupkg.py` exposes the
+high-level install, health-check, configuration, and update workflows.
 These runtime modules are internal implementation details and are not a
 separate public API. Legacy conversion remains implemented in
 `legacy_to_gupkg_toml.py` and is coordinated by the public
-`gupkg config from-legacy` command.
+`gupkg config-fix --output ...` command.
 
 ## Migration helpers
 
@@ -65,7 +65,7 @@ before installing the converted package.
 Supported `gupkg` action:
 
 ```bat
-gupkg.cmd config from-legacy C:\Packages\Ripgrep\v14.1.0.l1
+gupkg.cmd config-fix --output C:\Packages\Ripgrep\v14.1.0.l1\pkg.toml C:\Packages\Ripgrep\v14.1.0.l1
 ```
 
 The implementation also retains its standalone interface:

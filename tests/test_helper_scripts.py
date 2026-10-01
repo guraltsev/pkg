@@ -20,10 +20,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from tests.runtime_paths import find_runtime_directory
-
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = find_runtime_directory(ROOT)
+SRC_ROOT = ROOT / "src"
 GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 LEGACY_CONVERTER = SRC_ROOT / "gupkg" / "legacy_to_gupkg_toml.py"
 SHORTCUT_IMPORTER = SRC_ROOT / "gupkg" / "shortcuts_to_gupkg_toml.py"

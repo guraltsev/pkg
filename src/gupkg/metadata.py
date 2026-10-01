@@ -137,7 +137,7 @@ def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, s
         line[key_start].isalpha() or line[key_start] == "_"
     ):
         raise ConfigValidationError(
-            "pkg.toml contains a metadata line that config update cannot rewrite safely. Edit the line manually."
+            "pkg.toml contains a metadata line that config-fix cannot rewrite safely. Edit the line manually."
         )
     index += 1
     while index < len(line) and (line[index].isalnum() or line[index] == "_"):

@@ -25,9 +25,8 @@ an operation rebuilds the inventory through the supplied loader.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import io
 from dataclasses import replace
+from pathlib import Path
 
 from .manager import (
     ManagerConfig,
@@ -39,6 +38,9 @@ from .manager import (
     discover_manager_config,
     execute_upgrade_plan,
     load_manager_config,
+    manager_revalidate_target,
+    manager_update_target,
+    manager_upgrade_target,
     manager_config_text,
     plan_upgrade_all,
     scope_name,
@@ -478,10 +480,13 @@ def run_manager_tui(
 
         async def _refresh(self) -> None:
             """Perform provider work off the Textual event loop."""
-            from gupkg.gupkg import manager_update_target
-
             targets = list(current_inventory.targets)
-            results = await asyncio.gather(*(asyncio.to_thread(manager_update_target, target) for target in targets))
+            results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(manager_update_target, target)
+                    for target in targets
+                )
+            )
             output = "\n".join(f"{target.target_id}: {target.update_status}" for target in targets)
             self.query_one("#refresh-output", Static).update(output or "No packages discovered.")
             self.query_one("#refresh-status", Static).update(
@@ -509,8 +514,6 @@ def run_manager_tui(
             self.run_worker(self._plan(), exclusive=True)
 
         async def _plan(self) -> None:
-            from gupkg.gupkg import manager_update_target
-
             self.plan: UpgradePlan = await asyncio.to_thread(
                 plan_upgrade_all,
                 current_inventory,
@@ -548,7 +551,6 @@ def run_manager_tui(
         def __init__(self, plan: UpgradePlan) -> None:
             super().__init__()
             self.plan = plan
-            self.fail_fast = False
             self.local_deps = False
             self.no_checksum = False
 
@@ -560,7 +562,6 @@ def run_manager_tui(
                 Option("Scope: All", id="scope", disabled=True),
                 Option("Checksum: Verify", id="checksum"),
                 Option("Dependency auto-install: Off", id="deps"),
-                Option("Fail-fast: Off", id="fail-fast"),
                 id="confirm-actions",
             )
 
@@ -570,7 +571,6 @@ def run_manager_tui(
                 Option("Scope: All", id="scope", disabled=True),
                 Option(f"Checksum: {'Skip' if self.no_checksum else 'Verify'}", id="checksum"),
                 Option(f"Dependency auto-install: {'On' if self.local_deps else 'Off'}", id="deps"),
-                Option(f"Fail-fast: {'On' if self.fail_fast else 'Off'}", id="fail-fast"),
             ])
 
         def on_mount(self) -> None:
@@ -579,15 +579,12 @@ def run_manager_tui(
         def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
             selected = event.option.id
             if selected == "run":
-                self.app.push_screen(ExecutionScreen(self.plan, self.fail_fast, self.local_deps, self.no_checksum))
+                self.app.push_screen(ExecutionScreen(self.plan, self.local_deps, self.no_checksum))
             elif selected == "checksum":
                 self.no_checksum = not self.no_checksum
                 self._refresh_options()
             elif selected == "deps":
                 self.local_deps = not self.local_deps
-                self._refresh_options()
-            elif selected == "fail-fast":
-                self.fail_fast = not self.fail_fast
                 self._refresh_options()
 
         def action_back(self) -> None:
@@ -598,10 +595,9 @@ def run_manager_tui(
 
         BINDINGS = [("escape", "back", "Back")]
 
-        def __init__(self, plan: UpgradePlan, fail_fast: bool, local_deps: bool, no_checksum: bool) -> None:
+        def __init__(self, plan: UpgradePlan, local_deps: bool, no_checksum: bool) -> None:
             super().__init__()
             self.plan = plan
-            self.fail_fast = fail_fast
             self.local_deps = local_deps
             self.no_checksum = no_checksum
             self.cancel_requested = False
@@ -617,21 +613,14 @@ def run_manager_tui(
 
         async def _execute(self) -> None:
             nonlocal current_inventory
-            from gupkg.gupkg import (
-                manager_revalidate_target,
-                full_package_upgrade,
-            )
             from gupkg.windows import is_current_user_admin, relaunch_elevated
 
             eligible = [entry for entry in self.plan.entries if entry.outcome == "eligible"]
             needs_elevation = any(entry.target.scope == Scope.MACHINE for entry in eligible)
             lines: list[str] = []
             if needs_elevation and not is_current_user_admin():
-                relaunch_args = ["--config", str(config.path), "upgrade", "all", "--yes"]
-                if self.fail_fast:
-                    relaunch_args.append("--fail-fast")
-                if self.local_deps:
-                    relaunch_args.append("--local-deps-autoinstall")
+                relaunch_args = ["--allow-hook-dependency-install"] if self.local_deps else []
+                relaunch_args.extend(["manager", "--config", str(config.path), "update", "--yes"])
                 if self.no_checksum:
                     relaunch_args.append("--no-checksum")
                 accepted = await asyncio.to_thread(relaunch_elevated, relaunch_args)
@@ -653,14 +642,12 @@ def run_manager_tui(
 
             def upgrade(target: ManagedTarget):
                 lines.append(f"{target.target_id}: running")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    result = full_package_upgrade(
-                        target.package.root,
-                        scope=target.scope,
-                        no_checksum=self.no_checksum,
-                        local_deps_autoinstall=self.local_deps,
-                        shim_linkage=config.shim_linkage,
-                    )
+                result = manager_upgrade_target(
+                    target,
+                    no_checksum=self.no_checksum,
+                    allow_dependencies=self.local_deps,
+                    shim_linkage=config.shim_linkage,
+                )
                 lines[-1] = f"{target.target_id}: {'completed' if result.ok else 'failed'}"
                 return result
 
@@ -669,7 +656,6 @@ def run_manager_tui(
                 self.plan,
                 revalidate,
                 upgrade,
-                fail_fast=self.fail_fast,
                 cancel_requested=lambda: self.cancel_requested,
             )
             # The browser must observe new current/version state after even a

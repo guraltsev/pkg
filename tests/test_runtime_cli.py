@@ -15,12 +15,10 @@ import tempfile
 import tomllib
 import unittest
 
-from tests.runtime_paths import find_runtime_directory
-
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_DIRECTORY = find_runtime_directory(ROOT)
+RUNTIME_DIRECTORY = ROOT / "src"
 RELEASE_VERSION = tomllib.loads(
-    (RUNTIME_DIRECTORY / "pkg.toml").read_text(encoding="utf-8")
+    (RUNTIME_DIRECTORY / "gupkg" / "pkg.toml").read_text(encoding="utf-8")
 )["version"]
 
 
@@ -73,7 +71,7 @@ class RuntimeCommandTests(unittest.TestCase):
                 encoding="utf-8",
             )
             result = self.run_command(
-                "config", "check", str(version_directory), cwd=package_root
+                "config-check", str(version_directory), cwd=package_root
             )
 
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)

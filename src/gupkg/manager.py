@@ -14,6 +14,8 @@ unique selector.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import re
 from dataclasses import dataclass, field
@@ -25,6 +27,8 @@ from .configuration import read_runtime_config
 from .core import (
     ActionResult,
     ConfigValidationError,
+    EXIT_MUTATION_ERROR,
+    EXIT_USER_ERROR,
     PackageIdentity,
     Scope,
     compare_package_versions,
@@ -554,6 +558,145 @@ def select_target(inventory: ManagerInventory, selector: str, scope: Scope | Non
         choices = ", ".join(target.target_id for target in matches)
         raise ValueError(f"Target selector is ambiguous: {selector}; choose one of: {choices}")
     raise ValueError(f"Managed target was not found: {selector}")
+
+
+def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = False) -> ActionResult:
+    """Refresh one managed target through the shared package update workflow.
+
+    Parameters
+    ----------
+    target : ManagedTarget
+        Target whose active manifest should be checked.
+    allow_dependencies : bool, default=False
+        Whether trusted package-local hooks may install missing imports for this
+        check.
+
+    Returns
+    -------
+    ActionResult
+        The update-check outcome and its process status.
+    """
+    from .gupkg import check_package_update
+    from .updates import _load_update_state, _update_paths
+
+    wanted = target.installed_version or target.local_version
+    manifest = next(
+        (item for item in target.package.manifests if item.version_path.name == wanted),
+        None,
+    )
+    if manifest is None:
+        target.update_status = "error"
+        message = "No manifest is available for the local version"
+        target.diagnostics.append(message)
+        return ActionResult(False, errors=[message], exit_code=EXIT_USER_ERROR)
+
+    # Suppress workflow progress here; the CLI and TUI own presentation.
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = check_package_update(
+                manifest.version_path,
+                local_deps_autoinstall=allow_dependencies,
+            )
+    except (ConfigValidationError, ValueError, OSError) as exc:
+        target.update_status = "error"
+        target.diagnostics.append(str(exc))
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+    except Exception as exc:  # pragma: no cover - defensive provider boundary
+        target.update_status = "error"
+        target.diagnostics.append(str(exc))
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
+
+    target.update_status = result.status if result.status in {"available", "current"} else (
+        "not-configured" if result.ok else "error"
+    )
+    state = _load_update_state(_update_paths(target.package.root)["state"])
+    candidate_id = state.get("lastCandidateId")
+    for candidate in state.get("candidates", []):
+        if candidate.get("candidateId") == candidate_id:
+            target.candidate_version = candidate.get("version")
+            break
+    target.diagnostics.extend(result.errors)
+    return result
+
+
+def manager_revalidate_target(
+    target: ManagedTarget,
+    configured_root: Path | None = None,
+    *,
+    quiet: bool = False,
+) -> str | None:
+    """Recheck managed ownership and health immediately before mutation.
+
+    Parameters
+    ----------
+    target : ManagedTarget
+        Target whose activation and package health must still be valid.
+    configured_root : Path, optional
+        Root that must contain the target when supplied.
+    quiet : bool, default=False
+        Suppress package health-check progress when true.
+
+    Returns
+    -------
+    str or None
+        A diagnostic when revalidation fails, otherwise ``None``.
+    """
+    from .gupkg import health_check_package
+
+    try:
+        root = target.package.root.resolve()
+        if configured_root is not None and not root.is_relative_to(configured_root.resolve()):
+            return "target path escaped configured root"
+        current = inspect_current(target.package.root)
+        if current.status != "installed" or current.version_path is None:
+            return f"current changed to {current.status}"
+        if not current.version_path.resolve().is_relative_to(root):
+            return "current target escaped configured root"
+        stream = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+        with stream:
+            result = health_check_package(current.version_path, scope=target.scope)
+        if not result.ok:
+            return "health changed before upgrade"
+    except (OSError, ValueError, RuntimeError) as exc:
+        return str(exc)
+    return None
+
+
+def manager_upgrade_target(
+    target: ManagedTarget,
+    *,
+    no_checksum: bool = False,
+    allow_dependencies: bool = False,
+    shim_linkage: str | None = None,
+) -> ActionResult:
+    """Run the ordinary package update workflow for one managed target.
+
+    Parameters
+    ----------
+    target : ManagedTarget
+        Managed package to update.
+    no_checksum : bool, default=False
+        Skip an applicable payload checksum.
+    allow_dependencies : bool, default=False
+        Permit trusted package-local hooks to install missing imports.
+    shim_linkage : {"dynamic", "static"}, optional
+        Native wrapper linkage for the package installation.
+
+    Returns
+    -------
+    ActionResult
+        Structured package-update outcome.
+    """
+    from .gupkg import full_package_upgrade
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        return full_package_upgrade(
+            target.package.root,
+            scope=target.scope,
+            no_checksum=no_checksum,
+            local_deps_autoinstall=allow_dependencies,
+            shim_linkage=shim_linkage or "dynamic",
+        )
 
 
 def _expand_manager_path(value: object, base: Path, field_name: str) -> Path:

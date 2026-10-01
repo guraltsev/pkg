@@ -16,10 +16,8 @@ import types
 import unittest
 from unittest import mock
 
-from tests.runtime_paths import find_runtime_directory
-
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_DIRECTORY = find_runtime_directory(ROOT)
+RUNTIME_DIRECTORY = ROOT / "src"
 BOOTSTRAP = RUNTIME_DIRECTORY / "gupkg" / "bootstrap.py"
 DEPENDENCIES = RUNTIME_DIRECTORY / "gupkg" / "dependencies.py"
 
@@ -56,7 +54,7 @@ class EmbeddedBootstrapTests(unittest.TestCase):
             external_directory.mkdir()
             package = types.ModuleType("gupkg")
             package.__path__ = []
-            dispatcher = types.ModuleType("gupkg.gupkg")
+            dispatcher = types.ModuleType("gupkg.cli")
             dispatcher.main = lambda arguments: 0
 
             with (
@@ -64,7 +62,7 @@ class EmbeddedBootstrapTests(unittest.TestCase):
                 mock.patch.object(module, "_ensure_pip"),
                 mock.patch.dict(
                     sys.modules,
-                    {"gupkg": package, "gupkg.gupkg": dispatcher},
+                    {"gupkg": package, "gupkg.cli": dispatcher},
                 ),
                 mock.patch.dict(os.environ, {}, clear=False),
             ):

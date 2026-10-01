@@ -17,10 +17,8 @@ import sys
 import tempfile
 import unittest
 
-from tests.runtime_paths import find_runtime_directory
-
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = find_runtime_directory(ROOT)
+SRC_ROOT = ROOT / "src"
 SHIM = SRC_ROOT / "gupkg" / "shim" / "shim-console.exe"
 
 

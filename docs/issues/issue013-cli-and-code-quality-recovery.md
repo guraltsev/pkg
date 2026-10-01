@@ -388,7 +388,7 @@ report one version.
 
 - [ ] Move `src/v0.1/gupkg` to `src/gupkg`.
 - [ ] Update build inputs, launchers, imports, and documentation paths.
-- [ ] Remove `tests/runtime_paths.py` and use normal imports.
+- [x] Remove `tests/runtime_paths.py` and use normal imports.
 - [ ] Establish the approved version source and align standalone metadata.
 - [ ] Point the console script and `python -m gupkg` directly at `cli.main`;
   remove legacy entrypoints rather than forwarding them.
@@ -636,8 +636,9 @@ on Windows.
 Audit date: 2026-09-30
 
 The implementation was reviewed against the approved design decisions and the
-verification plan. The result is **incomplete; Issue 013 is not ready to
-close**.
+verification plan. The blocking implementation gaps identified in the first
+audit have been addressed; the remaining full-suite failures are stale
+superseded tests or platform/fixture issues and still require verification.
 
 ### Confirmed working
 
@@ -652,28 +653,21 @@ close**.
   document when no configuration is found.
 - Registry validation and Python bytecode compilation pass.
 
-### Blocking gaps
+### Recovery changes
 
-- The test migration is incomplete. `tests/runtime_paths.py` still exists and
-  returns `src`, while `test_runtime_cli.py` expects `src/pkg.toml`; the
-  checked-in file is now `src/gupkg/pkg.toml`. The default suite therefore
-  fails during collection.
-- The superseded CLI remains in `src/gupkg/gupkg.py`, including the old
-  `upgrade`/`config` grammar, compatibility options, nested parsing, and
-  manager dispatch.
-- Human manager rendering drops inventory, target, registry, and self-result
-  data; commands commonly print only a one-line status.
-- `--format` and `--pause` are not ignored for `manager tui`.
-- TUI workers still import manager workflows from `gupkg.gupkg` instead of the
-  public manager API.
-- `manager install` does not propagate the global
-  `--allow-hook-dependency-install` policy to package installation.
-- The legacy `config-fix` path checks TOML syntax and a few required fields but
-  does not fully validate the replacement current-schema document before
-  mutation.
-- README and runtime documentation still contain removed `upgrade ...` and
-  `config ...` command examples, and no permanent tests currently exercise the
-  new `gupkg.cli` command surface.
+- Test imports now use the canonical `src` layout; the obsolete
+  `tests/runtime_paths.py` shim is removed.
+- The superseded parser and manager dispatcher were removed from
+  `src/gupkg/gupkg.py`; manager target operations are public domain functions.
+- Human manager rendering includes inventory, target, registry, self, and
+  summary records, while manager TUI owns its output and pause behavior.
+- Manager registry installation propagates the invocation-wide hook policy.
+- `config-fix` validates the complete replacement before backup, replacement,
+  or shortcut archival.
+- Permanent CLI regression tests cover the canonical grammar, manager output,
+  fixed-location configuration discovery, TUI ownership, and config-fix safety.
+- README, operations, contributor, and standalone helper documentation uses
+  the canonical `update`, `config-check`, and `config-fix` commands.
 
 ### Verification record
 

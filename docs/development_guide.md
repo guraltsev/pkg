@@ -59,9 +59,9 @@ cache has passed manifest and path validation.
 The public update coordinator in `src/gupkg/gupkg.py` resolves the active package,
 validates its `[update]` table, acquires the package-root lock, checks for a
 candidate, asks the `updates` module to stage a complete version under
-`.gupkg/work`, and atomically commits it. A separate explicit `gupkg upgrade
-install` command activates the downloaded version through the normal install
-workflow. Check and unpack hooks are imported from `pkg.local/` as trusted
+`.gupkg/work`, and atomically commits it. `gupkg update --download-only` leaves
+the staged version inactive; a full `gupkg update` activates it. Check and
+unpack hooks are imported from `pkg.local/` as trusted
 in-process Python extensions; they are never executed as shell commands.
 
 Git payloads, including bootstrap `vbootstrap-git` packages, create a new

@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.runtime_paths import find_runtime_directory
-
-SRC_ROOT = find_runtime_directory(Path(__file__).resolve().parents[1])
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -21,11 +19,16 @@ from gupkg.core import ConfigValidationError, Scope
 from gupkg.manager import discover_manager, load_manager_config, select_target
 
 
-def _write_config(path: Path, system: str, user: str, *, extra: str = "") -> None:
+def _write_config(path: Path, system: str, user: str, *, extra: str = "", schema_version: int = 2) -> None:
     """Create a manager configuration with the requested two roots."""
     path.write_text(
-        f'mode = "manager"\nschema_version = 1\n{extra}\n[packages]\n'
-        f"system = '{system}'\nuser = '{user}'\n",
+        f'mode = "manager"\nschema_version = {schema_version}\n{extra}\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n\n"
+        "[bin]\n"
+        f"system = '{path.parent / 'system-bin'}'\nuser = '{path.parent / 'user-bin'}'\n\n"
+        "[registry]\n"
+        f"cache = '{path.parent / 'registry-cache'}'\nchannel = 'stable'\n\n"
+        "[shims]\nlinkage = 'dynamic'\n",
         encoding="utf-8",
     )
 
@@ -67,14 +70,13 @@ def test_manager_config_rejects_unknown_variables_and_nested_roots(tmp_path: Pat
 
 
 def test_manager_config_rejects_wrong_mode_schema_and_keys(tmp_path: Path) -> None:
-    """Manager configuration accepts only the version-one public schema."""
+    """Manager configuration accepts only the version-two public schema."""
     config_path = tmp_path / "gupkg-config.toml"
     _write_config(config_path, "system", "user")
     config_path.write_text(config_path.read_text().replace('mode = "manager"', 'mode = "other"'))
     with pytest.raises(ConfigValidationError, match="mode"):
         load_manager_config(config_path)
-    _write_config(config_path, "system", "user")
-    config_path.write_text(config_path.read_text().replace("schema_version = 1", "schema_version = 2"))
+    _write_config(config_path, "system", "user", schema_version=1)
     with pytest.raises(ConfigValidationError, match="schema_version"):
         load_manager_config(config_path)
     _write_config(config_path, "system", "user", extra="unexpected = true")

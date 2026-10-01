@@ -9,7 +9,7 @@ Suggested manual checks on a Windows machine:
 
 1. Run `gupkg.cmd --help`.
 2. Run `gupkg.cmd --version`.
-3. Run `gupkg.cmd config update <version-dir>` against a package without
+3. Run `gupkg.cmd config-fix <version-dir>` against a package without
    `pkg.toml` and confirm a documented starter config with commented examples
    is created.
 4. Run `gupkg.cmd <version-dir>` against a package with shortcuts,
@@ -23,7 +23,7 @@ Manager release checks:
    `list`, including a missing root, and inspect human and `--toml` output.
 2. Put one selector in both roots and verify separate scoped rows, then test
    valid, absent, broken, and bootstrap `current` entries.
-3. Run `doctor`, `upgrade check`, and `upgrade all --dry-run`. Open TUI Upgrade
+3. Run `manager doctor`, `manager update --check-only`, and `manager update --download-only`. Open TUI Upgrade
    All and verify planning performs no install, settings are visible, and the
    result scrolls with per-target states.
 4. Run a mixed-scope batch with UAC accepted and declined; declined elevation

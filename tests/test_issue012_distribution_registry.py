@@ -16,7 +16,7 @@ import pytest
 from gupkg.configuration import normalize_runtime_config
 from gupkg import components
 from gupkg.core import ActionResult, ConfigValidationError, ExpansionMode, PackageIdentity, Scope, expand_text, read_toml_file
-from gupkg import gupkg as cli
+from gupkg import cli
 from gupkg.manager import load_manager_config
 from gupkg.registry import registry_status, search_registry, validate_registry_tree
 
@@ -108,8 +108,9 @@ def test_cli_shim_linkage_option_temporarily_overrides_the_default(
         return ActionResult(True)
 
     monkeypatch.setattr(cli, "install_package", install)
+    version_path = _identity(tmp_path).version_path
 
-    assert cli._package_main(["--shim-linkage", "static", "install", str(tmp_path)]) == 0
+    assert cli.main(["install", str(version_path), "--shim-linkage", "static"]) == 0
     assert captured["shim_linkage"] == "static"
 
 
@@ -187,14 +188,22 @@ def test_manager_bare_install_token_is_resolved_as_registry_selector(
         'mode = "manager"\nschema_version = 2\n\n'
         f"[packages]\nsystem = '{system}'\nuser = '{user}'\n\n"
         f"[bin]\nsystem = '{tmp_path / 'system-bin'}'\nuser = '{tmp_path / 'user-bin'}'\n\n"
-        f"[registry]\ncache = '{cache}'\nchannel = 'stable'\n",
+            f"[registry]\ncache = '{cache}'\nchannel = 'stable'\n\n"
+            "[shims]\nlinkage = 'dynamic'\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(manager_dir)
+    assert registry_status(cache).tree_path is not None
 
     with mock.patch.object(
         cli, "install_package", return_value=ActionResult(True, exit_code=0)
     ) as install:
-        assert cli.main(["install", "tool", "--offline"]) == 0
+        assert cli.main(
+            [
+                "--scope", "user", "manager", "--config",
+                str(manager_dir / "gupkg-config.toml"),
+                "install", "tool", "--offline",
+            ]
+        ) == 0
 
     assert install.call_args.kwargs["scope"] == Scope.USER

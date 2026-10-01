@@ -470,7 +470,7 @@ def relaunch_elevated(arguments: list[str]) -> bool:
         import ctypes
 
         executable = os.sys.executable
-        params = subprocess.list2cmdline(["-m", "gupkg.gupkg", *arguments])
+        params = subprocess.list2cmdline(["-m", "gupkg", *arguments])
         result = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", executable, params, os.getcwd(), 1
         )
