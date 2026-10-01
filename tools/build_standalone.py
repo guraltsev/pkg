@@ -13,6 +13,7 @@ import ast
 import hashlib
 import shutil
 import tempfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -41,7 +42,19 @@ def main() -> int:
     parser.add_argument("--version")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    release_version = args.version or _source_version(args.source)
+    # The runtime module owns the release number; an optional command-line
+    # value is only an assertion for release scripts, never an override.
+    release_version = _source_version(args.source)
+    if args.version is not None and args.version != release_version:
+        raise SystemExit(
+            f"--version {args.version!r} does not match the runtime version {release_version!r}"
+        )
+    manifest_data = tomllib.loads(args.manifest.read_text(encoding="utf-8"))
+    if manifest_data.get("version") != release_version:
+        raise SystemExit(
+            f"standalone manifest version {manifest_data.get('version')!r} "
+            f"does not match runtime version {release_version!r}"
+        )
     digest = hashlib.sha256(args.runtime.read_bytes()).hexdigest()
     if digest.casefold() != args.runtime_sha256.casefold():
         raise SystemExit("embedded runtime digest does not match --runtime-sha256")

@@ -131,3 +131,49 @@ def test_upgrade_executor_runs_all_user_targets_before_system_targets() -> None:
     )
 
     assert calls == ["user:alpha", "user:zeta", "system:alpha", "system:beta"]
+
+
+def test_upgrade_executor_records_revalidation_failure_as_a_failed_result() -> None:
+    """A target invalidated after planning cannot retain its successful check result."""
+    target = _target("user:changed", Scope.USER)
+    plan = plan_upgrade_all(
+        _inventory([target]),
+        {Scope.USER},
+        lambda item: (setattr(item, "update_status", "available") or ActionResult(True)),
+    )
+
+    execute_upgrade_plan(
+        plan,
+        lambda item: "current changed before upgrade",
+        lambda item: ActionResult(True, changed=True),
+    )
+
+    entry = plan.entries[0]
+    assert entry.outcome == "failed"
+    assert entry.result is not None
+    assert entry.result.exit_code == 2
+    assert entry.result.ok is False
+
+
+def test_upgrade_executor_continues_after_an_operational_exception() -> None:
+    """One target exception is reported while later eligible targets still run."""
+    targets = [_target("user:first", Scope.USER), _target("user:second", Scope.USER)]
+    plan = plan_upgrade_all(
+        _inventory(targets),
+        {Scope.USER},
+        lambda item: (setattr(item, "update_status", "available") or ActionResult(True)),
+    )
+    calls: list[str] = []
+
+    def upgrade(item):
+        calls.append(item.target_id)
+        if item.target_id == "user:first":
+            raise OSError("download failed")
+        return ActionResult(True, changed=True)
+
+    execute_upgrade_plan(plan, lambda item: None, upgrade)
+
+    assert calls == ["user:first", "user:second"]
+    assert plan.entries[0].result is not None
+    assert plan.entries[0].result.exit_code == 3
+    assert plan.entries[1].outcome == "upgraded"

@@ -25,7 +25,9 @@ from gupkg.core import PackageIdentity
 from gupkg import extractors
 
 
-PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3.l1"
+# Package manifests now use the canonical ``v<version>`` directory layout;
+# the local revision is stored in ``localVersion`` rather than the directory.
+PACKAGE = ROOT / "pkgs" / "qbittorrent" / "v5.2.3"
 CHECKER = PACKAGE / "pkg.local" / "check_update.py"
 UNPACKER = PACKAGE / "pkg.local" / "unpack_app.py"
 POPULATOR = PACKAGE / "pkg.local" / "populate_app.py"

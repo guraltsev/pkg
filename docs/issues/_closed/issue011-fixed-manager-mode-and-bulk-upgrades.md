@@ -4,6 +4,10 @@ Date: 2026-08-20
 Priority: High
 Change type: Configuration, package inventory, aggregate mutation, CLI, and TUI
 
+> Superseded by Issue 013 where this design conflicts with the recovered
+> explicit `manager` command, schema-v2-only loading, or structured CLI/TUI
+> result contract. See `docs/operations.md` for the active behavior.
+
 ## Summary
 
 `gupkg` should support two equally valid deployment styles:

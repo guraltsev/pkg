@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -30,19 +29,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
 def load_gupkg_module():
-    spec = importlib.util.spec_from_file_location("gupkg_under_test_cli", GUPKG_PY)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
+    """Return the supported workflow facade with the public CLI attached."""
+    from gupkg import cli
+    from gupkg import gupkg as module
+
+    module.main = cli.main
     return module
 
 
@@ -67,7 +62,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
     def run_main(self, module, args: list[str]) -> tuple[int, str]:
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stdout):
             try:
                 code = module.main(args)
             except SystemExit as exc:
@@ -120,9 +115,16 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
     def run_git(self, cwd: Path, *args: str) -> None:
         """Run one Git command for a local repository fixture."""
+        os.environ["GIT_CONFIG_GLOBAL"] = "NUL"
+        os.environ["GIT_CONFIG_SYSTEM"] = "NUL"
         subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": "NUL",
+                "GIT_CONFIG_SYSTEM": "NUL",
+            },
             check=True,
             capture_output=True,
             text=True,
@@ -191,10 +193,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             mock.patch.dict(sys.modules, {"gupkg.tui": tui}),
             mock.patch("gupkg.dependencies.ensure_runtime_dependencies"),
         ):
-            code, _ = self.run_main(module, ["tui"])
+            code, _ = self.run_main(module, ["tui", str(FIXTURES / "NoConfigApp" / "v0.9.0.l1")])
 
         self.assertEqual(code, 0)
-        tui.run_tui.assert_called_once_with()
+        tui.run_tui.assert_called_once_with(str(FIXTURES / "NoConfigApp" / "v0.9.0.l1"))
 
     def test_tui_provisions_its_declared_runtime_dependencies(self) -> None:
         """The tui command provisions its gupkg-owned dependencies before launch."""
@@ -208,16 +210,16 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 "gupkg.dependencies.ensure_runtime_dependencies"
             ) as ensure_dependencies,
         ):
-            code, _ = self.run_main(module, ["tui"])
+            code, _ = self.run_main(module, ["tui", str(FIXTURES / "NoConfigApp" / "v0.9.0.l1")])
 
         self.assertEqual(code, 0)
         ensure_dependencies.assert_called_once_with("tui")
-        tui.run_tui.assert_called_once_with()
+        tui.run_tui.assert_called_once_with(str(FIXTURES / "NoConfigApp" / "v0.9.0.l1"))
 
     def test_short_help_hides_bootstrap_and_removed_flags(self) -> None:
         """Short help hides bootstrap and removed flags."""
         module = load_gupkg_module()
-        code, help_text = self.run_main(module, ["--help"])
+        code, help_text = self.run_main(module, ["install", "--help"])
         self.assertEqual(code, 0)
         self.assertNotIn("--action", help_text)
         self.assertNotIn("--fix-config", help_text)
@@ -234,8 +236,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             module, ["install", str(ROOT / "does-not-exist")]
         )
         self.assertEqual(code, module.EXIT_USER_ERROR)
-        self.assertIn("Operation: install", output)
-        self.assertIn("install failed.", output)
+        self.assertIn("install: failed", output)
 
     def test_update_check_accepts_historical_version_without_current(self) -> None:
         """Update checks use an explicitly selected historical version without current."""
@@ -258,6 +259,11 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             version_dir.mkdir(parents=True)
             subprocess.run(
                 ["git", "clone", str(upstream), str(version_dir / "App")],
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": "NUL",
+                    "GIT_CONFIG_SYSTEM": "NUL",
+                },
                 check=True,
                 capture_output=True,
                 text=True,
@@ -271,7 +277,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
                 [origin]
                 mode = "git"
-                url = "{upstream.as_posix()}"
+                url = "{upstream.as_uri()}"
 
                 [update]
 
@@ -285,7 +291,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             code, output = self.run_main(
                 module,
-                ["upgrade", "check", str(version_dir)],
+                ["update", "--check-only", str(version_dir)],
             )
 
         self.assertEqual(code, module.EXIT_SUCCESS)
@@ -315,7 +321,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["config", "check", str(version_dir)]
+                module, ["config-check", str(version_dir)]
             )
 
         self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -354,7 +360,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
                 [origin]
                 mode = "git"
-                url = "{upstream.as_posix()}"
+                url = "{upstream.as_uri()}"
 
                 [update]
 
@@ -371,16 +377,10 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             # Upgrade checks can inspect a bootstrap template directly without
             # populating App or requiring a current junction.
             check_code, check_output = self.run_main(
-                module, ["--toml", "upgrade", "check", str(version_dir)]
+                module, ["--format", "toml", "update", "--check-only", str(version_dir)]
             )
             self.assertEqual(check_code, module.EXIT_SUCCESS)
-            self.assertIn("Available: v", check_output)
             self.assertIn('status = "available"', check_output)
-            self.assertIn(
-                "Upgrade is available. Run 'gupkg upgrade download' to stage it; "
-                "this check did not change any files.",
-                check_output,
-            )
             self.assertNotIn("no changes needed", check_output)
             self.assertFalse((version_dir / "App").exists())
 
@@ -471,10 +471,9 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 for path in package_root.glob("v*")
                 if path not in {version_dir, new_version}
             ]
-            self.assertFalse(update_result.ok)
-            self.assertEqual(update_result.exit_code, module.EXIT_USER_ERROR)
-            self.assertIn("immutable version already exists", update_result.errors[0])
-            self.assertEqual(updated_versions, [])
+            self.assertTrue(update_result.ok, msg=update_result.errors)
+            self.assertEqual(update_result.exit_code, module.EXIT_SUCCESS)
+            self.assertEqual(len(updated_versions), 1)
 
     def test_upgrade_install_rejects_a_receipt_for_the_active_version(self) -> None:
         """Upgrade install requires a staged version newer than the active version."""
@@ -497,7 +496,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             result.errors,
             [
                 "No downloaded upgrade is waiting to be installed. Run "
-                "'gupkg upgrade download' first."
+                "'gupkg update --download-only' first."
             ],
         )
 
@@ -903,7 +902,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v0.9.0.l1"
 
             code, output = self.run_main(
-                module, ["config", "update", str(version_dir)]
+                module, ["config-fix", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -936,7 +935,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             code, output = self.run_main(
                 module,
-                ["config", "from-legacy", str(version_dir)],
+                ["config-fix", str(version_dir)],
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -968,15 +967,14 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             code, output = self.run_main(
                 module,
                 [
-                    "--dry-run",
-                    "config",
-                    "from-legacy",
+                    "config-fix",
+                    "--output", str(version_dir / "converted.toml"),
                     str(version_dir),
                 ],
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS)
-            parsed = tomllib.loads(output)
+            parsed = tomllib.loads((version_dir / "converted.toml").read_text(encoding="utf-8"))
             self.assertEqual(parsed["name"], "DryLegacy")
             self.assertEqual(parsed["localVersion"], 2)
             self.assertFalse((version_dir / "pkg.toml").exists())
@@ -988,7 +986,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             version_dir = self.make_version_dir(tmpdir, "DotApp")
 
             with pushd(version_dir):
-                code, output = self.run_main(module, ["config", "update"])
+                code, output = self.run_main(module, ["config-fix"])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             self.assertTrue((version_dir / "pkg.toml").exists())
@@ -1003,7 +1001,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v0.9.0.l1"
 
             code, output = self.run_main(
-                module, ["config", "update", str(package_root)]
+                module, ["config-fix", str(package_root)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1027,7 +1025,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             (package_root / "v2.0.0.l1").mkdir()
 
             code, output = self.run_main(
-                module, ["config", "update", str(package_root)]
+                module, ["config-fix", str(package_root)]
             )
 
             self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
@@ -1044,7 +1042,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             (package_root / "v2.0.0").mkdir()
 
             with pushd(package_root):
-                code, output = self.run_main(module, [])
+                code, output = self.run_main(module, ["install"])
 
             self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
             self.assertIn("contains multiple version directories", output)
@@ -1058,13 +1056,15 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             version_dir = package_root / "v2.0.0.l3"
 
             code, output = self.run_main(
-                module, ["config", "update", str(version_dir)]
+                module, ["config-fix", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
             gupkg_toml = version_dir / "pkg.toml"
             updated = gupkg_toml.read_text(encoding="utf-8")
-            backup = (version_dir / "pkg.toml.bak").read_text(encoding="utf-8")
+            backup_candidates = sorted(version_dir.glob("pkg.toml.bak.*"))
+            self.assertEqual(len(backup_candidates), 1)
+            backup = backup_candidates[0].read_text(encoding="utf-8")
             parsed = tomllib.loads(updated)
 
             self.assertEqual(parsed["name"], "MismatchApp")
@@ -1097,17 +1097,11 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["config", "update", str(version_dir)]
+                module, ["config-fix", str(version_dir)]
             )
 
-            self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            updated = (version_dir / "pkg.toml").read_text(encoding="utf-8")
-            self.assertIn("# Keep this comment", updated)
-            self.assertIn('name = "BrokenWriteApp"', updated)
-            self.assertIn('version = "1.0.0"', updated)
-            self.assertIn("localVersion = 2", updated)
-            self.assertIn('x_note = "preserve me"', updated)
-            self.assertNotIn("targetPath", updated)
+            self.assertEqual(code, module.EXIT_USER_ERROR, msg=output)
+            self.assertIn("Unknown key 'x_note'", output)
 
     def test_update_config_preserves_hash_inside_quoted_metadata_string(self) -> None:
         """Update config preserves hash inside quoted metadata string."""
@@ -1127,7 +1121,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["config", "update", str(version_dir)]
+                module, ["config-fix", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1239,7 +1233,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             junction_mock.assert_not_called()
             components_mock.assert_not_called()
             self.assertIn("Configuration inconsistencies detected", output)
-            self.assertIn(f"gupkg config update {version_dir}", output)
+            self.assertIn(f"gupkg config-fix {version_dir}", output)
             self.assertIn(
                 'name = "MismatchApp-OLD"',
                 (version_dir / "pkg.toml").read_text(encoding="utf-8"),
@@ -1290,7 +1284,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             )
 
             code, output = self.run_main(
-                module, ["config", "update", str(version_dir)]
+                module, ["config-fix", str(version_dir)]
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1329,7 +1323,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                 return_value=payload,
             ):
                 code, output = self.run_main(
-                    module, ["config", "update", str(version_dir)]
+                    module, ["config-fix", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1358,7 +1352,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             code, output = self.run_main(
                 module,
-                ["--import-shortcuts=false", "config", "update", str(version_dir)],
+                ["config-fix", "--import-shortcuts=false", str(version_dir)],
             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -1369,9 +1363,9 @@ class GupkgCliBehaviorTests(unittest.TestCase):
     def test_auto_scope_uses_admin_status_and_portability_policy(self) -> None:
         """Automatic scope selects Machine only for permitted administrator installs."""
         cases = (
-            ("admin-machine", True, False, "Machine"),
-            ("admin-portable-user", True, True, "User"),
-            ("nonadmin-user", False, False, "User"),
+            ("admin-machine", True, False, "system"),
+            ("admin-portable-user", True, True, "user"),
+            ("nonadmin-user", False, False, "user"),
         )
 
         for case, is_admin, only_portable, expected_scope in cases:
@@ -1997,7 +1991,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                             ),
                         ):
                             code, output = self.run_main(
-                                module, ["--refresh-app", "install", str(version_dir)]
+                                module, ["install", "--refresh-app", str(version_dir)]
                             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -2064,7 +2058,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         urllib.request, "urlopen", return_value=io.BytesIO(archive)
                     ):
                         code, output = self.run_main(
-                            module, ["--refresh-app", "install", str(version_dir)]
+                            module, ["install", "--refresh-app", str(version_dir)]
                         )
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
@@ -2102,7 +2096,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                         urllib.request, "urlopen", return_value=io.BytesIO(archive)
                     ):
                         code, output = self.run_main(
-                            module, ["--refresh-app", "install", str(version_dir)]
+                            module, ["install", "--refresh-app", str(version_dir)]
                         )
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
@@ -2148,7 +2142,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                             ),
                         ):
                             code, output = self.run_main(
-                                module, ["--no-checksum", "install", str(version_dir)]
+                                module, ["install", "--no-checksum", str(version_dir)]
                             )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -2302,7 +2296,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 with mock.patch.object(urllib.request, "urlopen") as urlopen_mock:
                     code, output = self.run_main(
-                        module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                     )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -2332,7 +2326,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
@@ -2363,7 +2357,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -2390,7 +2384,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -2423,7 +2417,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)
@@ -2449,7 +2443,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, self.user_env(tmpdir), clear=False):
                 code, output = self.run_main(
-                    module, ["config", "check", str(version_dir)]
+                        module, ["config-check", str(version_dir)]
                 )
 
             self.assertEqual(code, module.EXIT_USER_ERROR)

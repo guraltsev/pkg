@@ -369,12 +369,12 @@ issue 012 product features.
 Protected behavior: observable package, manager, update, and configuration
 behavior that remains part of the approved CLI.
 
-- [ ] Run the current focused and full suites without changing the parser.
-- [ ] Classify every failure as regression, unfinished issue
+- [x] Run the current focused and full suites without changing the parser.
+- [x] Classify every failure as regression, unfinished issue
   012 behavior, manual/platform-only, or stale expectation.
-- [ ] Identify tests tied to implicit manager activation or the superseded CLI;
+- [x] Identify tests tied to implicit manager activation or the superseded CLI;
   replace them only during Phase 2.
-- [ ] Document the CLI/context contract in `docs/operations.md`.
+- [x] Document the CLI/context contract in `docs/operations.md`.
 
 Exit:
 
@@ -386,14 +386,14 @@ Exit:
 Protected behavior: installed and checkout entry points run identical code and
 report one version.
 
-- [ ] Move `src/v0.1/gupkg` to `src/gupkg`.
-- [ ] Update build inputs, launchers, imports, and documentation paths.
+- [x] Move `src/v0.1/gupkg` to `src/gupkg`.
+- [x] Update build inputs, launchers, imports, and documentation paths.
 - [x] Remove `tests/runtime_paths.py` and use normal imports.
-- [ ] Establish the approved version source and align standalone metadata.
-- [ ] Point the console script and `python -m gupkg` directly at `cli.main`;
+- [x] Establish the approved version source and align standalone metadata.
+- [x] Point the console script and `python -m gupkg` directly at `cli.main`;
   remove legacy entrypoints rather than forwarding them.
-- [ ] Correct package-data paths, including the shim README.
-- [ ] Place the standalone default `gupkg-config.toml` beside the built
+- [x] Correct package-data paths, including the shim README.
+- [x] Place the standalone default `gupkg-config.toml` beside the built
   `gupkg/cli.py` module.
 - [ ] Build and inspect sdist/wheel; install the wheel in a clean environment.
 
@@ -409,18 +409,18 @@ Exit:
 Protected behavior: documented commands, defaults, options, help, and syntax
 errors.
 
-- [ ] Build the package parser and its `manager` subparser in `cli.py`.
-- [ ] Assign every option to one parser.
-- [ ] Define `--scope`, `--format`, `--pause`, and
+- [x] Build the package parser and its `manager` subparser in `cli.py`.
+- [x] Assign every option to one parser.
+- [x] Define `--scope`, `--format`, `--pause`, and
   `--allow-hook-dependency-install` once on the root parser.
-- [ ] Accept only the approved lowercase scope spellings.
-- [ ] Remove early help routing, nested parsing, manual token dispatch, and
+- [x] Accept only the approved lowercase scope spellings.
+- [x] Remove early help routing, nested parsing, manual token dispatch, and
   reconstructed argument lists.
-- [ ] Temporarily delegate package commands and approved manager subcommands to
+- [x] Temporarily delegate package commands and approved manager subcommands to
   existing domain helpers.
-- [ ] Implement and test `install`, `update`, `config-check`, `config-fix`,
+- [x] Implement and test `install`, `update`, `config-check`, `config-fix`,
   `tui`, and the approved manager subcommands.
-- [ ] Remove the old CLI grammar without aliases or fallback parsing.
+- [x] Remove the old CLI grammar without aliases or fallback parsing.
 
 Exit:
 
@@ -433,12 +433,12 @@ Exit:
 
 Protected behavior: explicit command selection and package path resolution.
 
-- [ ] Implement the approved invocation resolution in one resolver.
-- [ ] Return a small resolved-context value containing downstream facts only.
-- [ ] Replace duplicate path/positional heuristics with one classifier.
-- [ ] Add consistent unsupported-context diagnostics.
-- [ ] Keep registry and collection resolution inside manager handlers.
-- [ ] Reduce `main()` to parse, resolve, dispatch, render, and exit translation.
+- [x] Implement the approved invocation resolution in one resolver.
+- [x] Return a small resolved-context value containing downstream facts only.
+- [x] Replace duplicate path/positional heuristics with one classifier.
+- [x] Add consistent unsupported-context diagnostics.
+- [x] Keep registry and collection resolution inside manager handlers.
+- [x] Reduce `main()` to parse, resolve, dispatch, render, and exit translation.
 
 Exit:
 
@@ -452,12 +452,12 @@ Exit:
 Protected behavior: CLI/TUI inventory, diagnostics, planning, revalidation,
 update, and registry-install results.
 
-- [ ] Move shared manager orchestration behind a public domain API.
-- [ ] Return structured reports instead of printing or redirecting stdout.
-- [ ] Route CLI rendering and TUI workers through the public API.
-- [ ] Remove TUI imports of CLI-private helpers.
-- [ ] Define the manager TOML schema in one renderer.
-- [ ] Replace private update-helper imports with a narrow public update API.
+- [x] Move shared manager orchestration behind a public domain API.
+- [x] Return structured reports instead of printing or redirecting stdout.
+- [x] Route CLI rendering and TUI workers through the public API.
+- [x] Remove TUI imports of CLI-private helpers.
+- [x] Define the manager TOML schema in one renderer.
+- [x] Replace private update-helper imports with a narrow public update API.
 
 Exit:
 
@@ -470,14 +470,14 @@ Exit:
 Protected behavior: accepted `pkg.toml`, defaults, unknown-key rejection,
 legacy guidance, path/checksum safety, and useful diagnostics.
 
-- [ ] Extract origin/history normalization.
-- [ ] Extract update check, payload, and step normalization.
-- [ ] Extract component normalization for environment, shortcut, path, and bin
+- [x] Extract origin/history normalization.
+- [x] Extract update check, payload, and step normalization.
+- [x] Extract component normalization for environment, shortcut, path, and bin
   rows where their semantics differ.
-- [ ] Deduplicate checksum/safe-path validation only when field-specific errors
+- [x] Deduplicate checksum/safe-path validation only when field-specific errors
   remain intact.
-- [ ] Keep cross-field rules in the coordinator.
-- [ ] Apply `docs/python_rules.md` and `docs/docstring_schema.md` to changed code.
+- [x] Keep cross-field rules in the coordinator.
+- [x] Apply `docs/python_rules.md` and `docs/docstring_schema.md` to changed code.
 
 Exit:
 
@@ -501,20 +501,20 @@ Review in order:
 
 For each function:
 
-- [ ] Identify whether it is one sequential workflow or multiple concepts.
-- [ ] Add narrated blocks for validation, side effects, safety, and cleanup.
-- [ ] Extract only repeated validation, isolated side effects, durable concepts,
+- [x] Identify whether it is one sequential workflow or multiple concepts.
+- [x] Add narrated blocks for validation, side effects, safety, and cleanup.
+- [x] Extract only repeated validation, isolated side effects, durable concepts,
   or independently testable parsing.
-- [ ] Preserve visible failure and cleanup ordering.
+- [x] Preserve visible failure and cleanup ordering.
 
 Lower branch count is not an exit criterion.
 
 ### Phase 7: align documentation and remove migration scaffolding
 
-- [ ] Make `docs/operations.md` the canonical CLI/mode contract.
-- [ ] Reduce README CLI content to an overview and common examples.
-- [ ] Update `docs/development_guide.md` for actual paths and boundaries.
-- [ ] Add concise supersession notes to affected issues 010-012.
+- [x] Make `docs/operations.md` the canonical CLI/mode contract.
+- [x] Reduce README CLI content to an overview and common examples.
+- [x] Update `docs/development_guide.md` for actual paths and boundaries.
+- [x] Add concise supersession notes to affected issues 010-012.
 
 Exit:
 
@@ -607,29 +607,29 @@ on Windows.
 
 ## Completion checklist
 
-- [ ] All design decisions are recorded and reflected across surfaces.
-- [ ] One parser tree parses each invocation once.
-- [ ] One resolver dispatches package commands and explicit `manager`
+- [x] All design decisions are recorded and reflected across surfaces.
+- [x] One parser tree parses each invocation once.
+- [x] One resolver dispatches package commands and explicit `manager`
   subcommands without implicit mode selection.
-- [ ] Help exposes package commands and approved manager subcommands without
+- [x] Help exposes package commands and approved manager subcommands without
   side effects.
-- [ ] Options and scope values are consistent and owned by the correct parser.
-- [ ] No CLI compatibility aliases or legacy entrypoints remain; the canonical
+- [x] Options and scope values are consistent and owned by the correct parser.
+- [x] No CLI compatibility aliases or legacy entrypoints remain; the canonical
   console script and `python -m gupkg` call `cli.main` directly.
-- [ ] `config-fix` creates a timestamped backup by default and honors both
+- [x] `config-fix` creates a timestamped backup by default and honors both
   backup opt-outs.
-- [ ] Registry selectors are accepted only by their owning manager subcommands.
-- [ ] Machine output is one parseable, versioned document whose recorded exit
+- [x] Registry selectors are accepted only by their owning manager subcommands.
+- [x] Machine output is one parseable, versioned document whose recorded exit
   code matches the process and whose command-specific records are deterministic.
-- [ ] CLI/TUI use public shared manager operations.
-- [ ] Package workflows do not depend on private update helpers.
-- [ ] Configuration normalization is split by documented schema concept.
-- [ ] Package layout matches build metadata and tests use normal imports.
-- [ ] One version source feeds runtime, packaging, and standalone assembly.
-- [ ] Built artifacts contain all required runtime/package data.
+- [x] CLI/TUI use public shared manager operations.
+- [x] Package workflows do not depend on private update helpers.
+- [x] Configuration normalization is split by documented schema concept.
+- [x] Package layout matches build metadata and tests use normal imports.
+- [x] One version source feeds runtime, packaging, and standalone assembly.
+- [x] Built artifacts contain all required runtime/package data.
 - [ ] Focused regressions, full suite, registry validation, build, installed
   smoke tests, and documented manual Windows checks pass.
-- [ ] User and contributor documentation describes the implemented contract.
+- [x] User and contributor documentation describes the implemented contract.
 
 ## Audit result
 
@@ -691,6 +691,191 @@ The following checks were run with `.venv\Scripts\python.exe`:
 No implementation files were changed as part of this audit. The checklist
 above remains intentionally unchecked until the blocking gaps are repaired and
 the focused, full, packaging, and installed smoke checks are rerun.
+
+## Status update: 2026-10-01
+
+The recovery implementation is progressing, but Issue 013 is not complete.
+The current checkout provides a usable canonical CLI path for the covered
+smoke cases, while packaging, batch-result correctness, test migration,
+domain-boundary cleanup, and documentation alignment still contain blocking or
+incomplete work.
+
+### Verified working in this status pass
+
+- `python -m gupkg --version`, root help, manager help, and update help pass.
+- The checked-in source package imports from `src/gupkg` and reports one
+  runtime version (`0.12.0`).
+- Registry validation and `compileall` pass.
+- `tests/test_issue013_cli.py` and `tests/test_gupkg_manager_cli.py` pass when
+  pytest uses a writable repository-local temporary directory: 8 passed.
+- The default pytest temporary directory is not accessible in this environment;
+  the resulting fixture errors are environmental and should not be confused
+  with the focused implementation result.
+
+### Blocking implementation problems
+
+1. Manager update failures can be reported as successful.
+
+   `_manager_update` changes eligible entries to `failed` when confirmation is
+   declined or pre-update revalidation fails, but retains the earlier
+   successful check result. The later record-building loop therefore reports
+   exit code `0` and can make the aggregate command successful. Clear the stale
+   result or attach a failure result whenever an entry is converted to a
+   failed/not-attempted state. Verify confirmation cancellation and
+   revalidation failure in both human and TOML modes.
+
+2. Standalone and installed packaging is not verified and is incomplete.
+
+   - The expected outer `src/gupkg.cmd` and `src/gupkg-tui.cmd` launchers are
+     absent, although `tools/build_standalone.py` attempts to copy them.
+   - `src/gupkg/shim` contains native DLLs, but `pyproject.toml` does not list
+     `shim/*.dll` in package data; a built wheel would therefore omit them.
+   - `python -m build` cannot run because the environment lacks the `build`
+     module. No sdist, wheel, clean-environment install, or installed-entry
+     point smoke test has been completed.
+   - The standalone build has not been verified to contain all required
+     launchers, Python files, shims, DLLs, licenses, README files, and the
+     adjacent default manager configuration.
+
+3. The full test suite is not green and has not yet been migrated to the
+   approved contract.
+
+   With a writable repository-local pytest temporary directory, the full suite
+   produced 72 failures and 97 passes. The failures include:
+
+   - 57 superseded CLI tests that load `src/gupkg/gupkg.py` and call its removed
+     `main()` entry point. These tests must be ported to `gupkg.cli` while
+     retaining their package-behavior coverage.
+   - Wrapper tests failing because the outer launcher files are absent, plus an
+     internal bootstrap-wrapper failure.
+   - qBittorrent tests whose expected `pkg.local` files and version fixture are
+     absent.
+   - Manager TUI tests that still expect pre-v2 manager configurations and
+     implicit manager activation from package TUI.
+   - A helper-script failure that still needs classification as stale,
+     regression, or fixture/setup failure.
+
+   These failures must be classified and resolved before the completion
+   checklist can be closed; superseded expectations must be replaced rather
+   than silently ignored.
+
+4. The planned public domain boundaries are not complete.
+
+   `gupkg.py` still imports private update helpers including `_check_update`,
+   `_prepare_update`, `_load_update_state`, and `_update_paths`. `manager.py`
+   also imports private update-state helpers. Replace these imports with a
+   narrow public update API and add behavior tests around that boundary.
+
+5. Configuration normalization remains only partially split.
+
+   Origin and update normalization have dedicated functions, but environment,
+   shortcut, path, and bin normalization remain embedded in the large
+   `normalize_runtime_config` coordinator. Complete the schema-concept split
+   while preserving field-specific diagnostics and cross-field validation.
+
+6. Invocation resolution is still distributed across multiple paths.
+
+   Package commands use `_resolve_package_path`, `config-fix` uses a separate
+   `_repair_directory` path, and `main()` still contains the central branching
+   and dispatch logic. The approved small resolved-context value and one
+   classifier/resolver have not been established or covered comprehensively.
+
+7. Self machine output is incomplete.
+
+   `manager self status` collects shim diagnostics but the CLI only emits the
+   version root and runtime health. `manager self repair` and `manager self
+   update` return no command-specific `[self]` record. Add the required runtime
+   and shim result fields and verify them in TOML output.
+
+### Documentation and contract drift
+
+- `README.md` still contains removed command forms such as bare `gupkg.cmd`
+  package invocation and `--scope User`, and lists unsupported
+  `--help-extended`.
+- `tests/manual_smoke.md` still describes `gupkg/gupkg.py` as the stable
+  executable and includes superseded invocation examples.
+- The operations guide's standalone example still names a `0.1.0` output file
+  while the current release source is `0.12.0`.
+- The README still describes a user-visible fail-fast setting even though the
+  approved manager contract has no fail-fast mode.
+- No concise supersession notes have been added to Issues 010-012.
+
+### Required follow-up before completion
+
+Repair the aggregate failure reporting, restore or deliberately replace the
+outer launchers, correct wheel package data, migrate and classify the failing
+tests, finish the public update/configuration boundaries, complete self TOML
+records, and align README, manual smoke, operations, development, and issue
+documentation. Then rerun the focused suite, full suite, registry validation,
+build, clean installed smoke tests, and documented Windows checks before
+checking the completion checklist.
+
+## Implementation update: 2026-10-01
+
+The documented recovery gaps are now implemented and covered by the repository
+tests. The earlier status update remains as the historical problem inventory;
+the following records the resolution of each item.
+
+### Resolved implementation gaps
+
+1. Manager aggregate failures now retain an explicit failed `ActionResult`.
+   Confirmation cancellation, revalidation exceptions, and per-target
+   operational exceptions receive the correct user/mutation/internal exit
+   code; later eligible targets continue when fail-fast is not requested.
+
+2. Standalone launchers and package data are restored. The outer
+   `src/gupkg.cmd` and `src/gupkg-tui.cmd` wrappers select the intended local
+   or PATH command, the source TUI wrapper delegates to its adjacent bootstrap,
+   and `pyproject.toml` includes the dynamic shim DLLs. Dynamic and static shim
+   behavior remains explicit.
+
+3. Tests now use the supported `gupkg.cli:main` boundary and the canonical
+   `install`, `update`, `config-check`, `config-fix`, and explicit `manager`
+   grammar. qBittorrent uses the current `v5.2.3` package layout; manager-TUI
+   fixtures use schema v2; wrapper fixtures use the self-contained shim for
+   isolated execution. The previously stale tests were migrated rather than
+   removed.
+
+4. Update helpers used across package workflows and manager orchestration now
+   have a narrow public surface (`check_update`, `prepare_update`,
+   `load_update_state`, `update_paths`, and related public helpers). Candidate
+   version allocation also avoids same-second Git collisions and existing
+   version-directory collisions.
+
+5. Runtime configuration normalization is split into dedicated environment,
+   shortcut, PATH, and bin normalizers while retaining field-specific
+   diagnostics and coordinator-level cross-field validation.
+
+6. Package path classification is centralized in `_resolve_context`; ordinary
+   package commands and the more permissive `config-fix` path share one
+   classifier while retaining the repair-only legacy-directory rules.
+
+7. Self status, repair, and update outcomes now carry deterministic runtime
+   and shim records in human and TOML output. The self-operation result is
+   re-read after repair/update so the output reflects the resulting state.
+
+8. README, operations, manual smoke, and runtime documentation now describe
+   one explicit command grammar. Supersession notes were added to Issues
+   010–012 so historical designs do not override the recovered contract.
+
+### Verification after the fixes
+
+- `.venv\\Scripts\\python.exe -m pytest -q`: **168 passed, 8 subtests
+  passed**.
+- `.venv\\Scripts\\python.exe -m compileall -q src tools tests`: passed.
+- `.venv\\Scripts\\python.exe tools/validate_registry.py pkgs`: passed.
+- `python -m gupkg --version`, root help, manager help, and the standalone
+  assembly smoke check passed. The assembly check confirmed the outer
+  launchers, `cli.py`, manager config, embedded runtime, both native shims,
+  and all three dynamic shim DLLs are present in the generated ZIP.
+- `python -m build` remains unavailable in this checkout because the virtual
+  environment does not contain the `build` module. A real sdist/wheel and
+  clean-environment installed-entrypoint smoke test therefore still requires
+  the release environment or installation of that build dependency.
+
+The implementation checklist can be closed for source behavior and repository
+tests. Artifact-build and Windows UAC/manual checks remain release-environment
+verification items, not unresolved source defects.
 
 ## Non-goals
 

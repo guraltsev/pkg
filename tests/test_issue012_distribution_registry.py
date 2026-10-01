@@ -17,6 +17,7 @@ from gupkg.configuration import normalize_runtime_config
 from gupkg import components
 from gupkg.core import ActionResult, ConfigValidationError, ExpansionMode, PackageIdentity, Scope, expand_text, read_toml_file
 from gupkg import cli
+from gupkg import gupkg as package_workflows
 from gupkg.manager import load_manager_config
 from gupkg.registry import registry_status, search_registry, validate_registry_tree
 
@@ -107,7 +108,7 @@ def test_cli_shim_linkage_option_temporarily_overrides_the_default(
         captured.update(kwargs)
         return ActionResult(True)
 
-    monkeypatch.setattr(cli, "install_package", install)
+    monkeypatch.setattr(package_workflows, "install_package", install)
     version_path = _identity(tmp_path).version_path
 
     assert cli.main(["install", str(version_path), "--shim-linkage", "static"]) == 0
@@ -196,7 +197,7 @@ def test_manager_bare_install_token_is_resolved_as_registry_selector(
     assert registry_status(cache).tree_path is not None
 
     with mock.patch.object(
-        cli, "install_package", return_value=ActionResult(True, exit_code=0)
+        package_workflows, "install_package", return_value=ActionResult(True, exit_code=0)
     ) as install:
         assert cli.main(
             [

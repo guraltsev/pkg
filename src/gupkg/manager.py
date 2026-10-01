@@ -27,6 +27,7 @@ from .configuration import read_runtime_config
 from .core import (
     ActionResult,
     ConfigValidationError,
+    EXIT_INTERNAL_ERROR,
     EXIT_MUTATION_ERROR,
     EXIT_USER_ERROR,
     PackageIdentity,
@@ -221,12 +222,44 @@ def execute_upgrade_plan(
         if stopped:
             entry.outcome, entry.reason = "not-attempted", "fail-fast"
             continue
-        problem = revalidate_target(entry.target)
+        # Revalidate ownership and health immediately before mutation, and
+        # preserve the failure as a result so the CLI cannot retain the
+        # earlier successful check result for an invalidated target.
+        revalidation_exit_code = EXIT_USER_ERROR
+        try:
+            problem = revalidate_target(entry.target)
+        except (ConfigValidationError, ValueError, FileNotFoundError) as exc:
+            problem = str(exc)
+        except OSError as exc:
+            problem = str(exc)
+            revalidation_exit_code = EXIT_MUTATION_ERROR
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            problem = str(exc)
+            revalidation_exit_code = EXIT_INTERNAL_ERROR
         if problem:
+            entry.result = ActionResult(
+                False, errors=[problem], exit_code=revalidation_exit_code
+            )
             entry.outcome, entry.reason = "failed", problem
             stopped = fail_fast
             continue
-        entry.result = upgrade_target(entry.target)
+
+        # Isolate one target's operational failure so later eligible targets
+        # still run and the batch retains a result for every target.
+        try:
+            entry.result = upgrade_target(entry.target)
+        except (ConfigValidationError, ValueError, FileNotFoundError) as exc:
+            entry.result = ActionResult(
+                False, errors=[str(exc)], exit_code=EXIT_USER_ERROR
+            )
+        except OSError as exc:
+            entry.result = ActionResult(
+                False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            entry.result = ActionResult(
+                False, errors=[str(exc)], exit_code=EXIT_INTERNAL_ERROR
+            )
         if entry.result.ok:
             entry.outcome = "upgraded" if entry.result.changed or entry.result.status in {"installed-update", "downloaded"} else "current"
         else:
@@ -357,6 +390,15 @@ def discover_manager_config(
     """Select a manager file from the fixed, non-working-directory locations."""
     if explicit is not None:
         return Path(explicit).expanduser()
+    if module_directory is None:
+        # Keep direct TUI callers on the same first candidate as the CLI: the
+        # installed ``gupkg.cli`` module owns the adjacent default file.
+        try:
+            from . import cli
+
+            module_directory = Path(cli.__file__).resolve().parent
+        except (ImportError, AttributeError, TypeError):
+            module_directory = None
     candidates = []
     if module_directory is not None:
         candidates.append(Path(module_directory) / "gupkg-config.toml")
@@ -577,7 +619,7 @@ def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = F
         The update-check outcome and its process status.
     """
     from .gupkg import check_package_update
-    from .updates import _load_update_state, _update_paths
+    from .updates import load_update_state, update_paths
 
     wanted = target.installed_version or target.local_version
     manifest = next(
@@ -597,10 +639,14 @@ def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = F
                 manifest.version_path,
                 local_deps_autoinstall=allow_dependencies,
             )
-    except (ConfigValidationError, ValueError, OSError) as exc:
+    except (ConfigValidationError, ValueError) as exc:
         target.update_status = "error"
         target.diagnostics.append(str(exc))
         return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
+    except OSError as exc:
+        target.update_status = "error"
+        target.diagnostics.append(str(exc))
+        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
     except Exception as exc:  # pragma: no cover - defensive provider boundary
         target.update_status = "error"
         target.diagnostics.append(str(exc))
@@ -609,7 +655,7 @@ def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = F
     target.update_status = result.status if result.status in {"available", "current"} else (
         "not-configured" if result.ok else "error"
     )
-    state = _load_update_state(_update_paths(target.package.root)["state"])
+    state = load_update_state(update_paths(target.package.root)["state"])
     candidate_id = state.get("lastCandidateId")
     for candidate in state.get("candidates", []):
         if candidate.get("candidateId") == candidate_id:
@@ -696,6 +742,44 @@ def manager_upgrade_target(
             no_checksum=no_checksum,
             local_deps_autoinstall=allow_dependencies,
             shim_linkage=shim_linkage or "dynamic",
+        )
+
+
+def manager_download_target(
+    target: ManagedTarget,
+    *,
+    no_checksum: bool = False,
+    allow_dependencies: bool = False,
+) -> ActionResult:
+    """Stage one managed package update without activating it.
+
+    Parameters
+    ----------
+    target : ManagedTarget
+        Managed package whose configured update should be staged.
+    no_checksum : bool, default=False
+        Skip an applicable payload checksum while staging the update.
+    allow_dependencies : bool, default=False
+        Permit trusted package-local hooks to install missing imports.
+
+    Returns
+    -------
+    ActionResult
+        Structured staging outcome with the process status for the operation.
+
+    Notes
+    -----
+    The update check is normally performed by ``plan_upgrade_all`` before this
+    operation.  The underlying package workflow still rechecks its source so a
+    staged payload is never inferred from stale manager inventory.
+    """
+    from .gupkg import download_package_update
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        return download_package_update(
+            target.package.root,
+            no_checksum=no_checksum,
+            local_deps_autoinstall=allow_dependencies,
         )
 
 

@@ -863,6 +863,295 @@ def normalize_update_config(
     }
 
 
+def normalize_environment_entries(raw_environment: Any) -> List[Dict[str, str]]:
+    """Normalize canonical environment rows.
+
+    Parameters
+    ----------
+    raw_environment : Any
+        Parsed value of the ``environment`` configuration key.
+
+    Returns
+    -------
+    List[Dict[str, str]]
+        Canonical environment rows.
+
+    Raises
+    ------
+    ConfigValidationError
+        If the value or one of its rows has an invalid shape.
+
+    """
+    if raw_environment is None:
+        return []
+    if not isinstance(raw_environment, list):
+        raise ConfigValidationError(
+            f"'environment' must be a list, got: {type(raw_environment).__name__}"
+        )
+    entries: List[Dict[str, str]] = []
+    for index, item in enumerate(raw_environment):
+        if not isinstance(item, dict):
+            raise ConfigValidationError(
+                f"'environment[{index}]' must be a table, got: {type(item).__name__}"
+            )
+        _validate_exact_keys(
+            item,
+            allowed={"Name", "Value"},
+            context=f"environment[{index}]",
+            ordered_allowed=["Name", "Value"],
+            legacy_hints={"name": "Name", "value": "Value"},
+        )
+        entries.append(
+            {
+                "Name": _normalize_required_string(
+                    item.get("Name"), field_name=f"environment[{index}].Name"
+                ),
+                "Value": _normalize_required_string(
+                    item.get("Value"), field_name=f"environment[{index}].Value"
+                ),
+            }
+        )
+    return entries
+
+
+def normalize_shortcut_entries(raw_shortcut: Any) -> List[Dict[str, str]]:
+    """Normalize canonical shortcut rows.
+
+    Parameters
+    ----------
+    raw_shortcut : Any
+        Parsed value of the ``shortcut`` configuration key.
+
+    Returns
+    -------
+    List[Dict[str, str]]
+        Canonical shortcut rows.
+
+    Raises
+    ------
+    ConfigValidationError
+        If the value or one of its rows has an invalid shape.
+
+    """
+    if raw_shortcut is None:
+        return []
+    if not isinstance(raw_shortcut, list):
+        raise ConfigValidationError(
+            f"'shortcut' must be a list, got: {type(raw_shortcut).__name__}"
+        )
+    entries: List[Dict[str, str]] = []
+    ordered_allowed = [
+        "name",
+        "targetPath",
+        "arguments",
+        "workingDirectory",
+        "iconLocation",
+        "description",
+    ]
+    allowed = set(ordered_allowed)
+    hints = {
+        "path": "targetPath",
+        "target_path": "targetPath",
+        "args": "arguments",
+        "workdir": "workingDirectory",
+        "working_directory": "workingDirectory",
+        "icon_location": "iconLocation",
+        "desc": "description",
+    }
+    for index, item in enumerate(raw_shortcut):
+        if not isinstance(item, dict):
+            raise ConfigValidationError(
+                f"'shortcut[{index}]' must be a table, got: {type(item).__name__}"
+            )
+        _validate_exact_keys(
+            item,
+            allowed=allowed,
+            context=f"shortcut[{index}]",
+            ordered_allowed=ordered_allowed,
+            legacy_hints=hints,
+        )
+        entries.append(
+            {
+                key: _normalize_required_string(
+                    item.get(key), field_name=f"shortcut[{index}].{key}"
+                )
+                for key in (
+                    "name",
+                    "targetPath",
+                    "arguments",
+                    "workingDirectory",
+                    "iconLocation",
+                    "description",
+                )
+            }
+        )
+    return entries
+
+
+def normalize_path_entries(raw_path_entries: Any) -> List[str]:
+    """Normalize canonical PATH rows and reject unsafe row shapes.
+
+    Parameters
+    ----------
+    raw_path_entries : Any
+        Parsed value of the ``path`` configuration key.
+
+    Returns
+    -------
+    List[str]
+        Ordered PATH values.
+
+    Raises
+    ------
+    ConfigValidationError
+        If the value or one of its rows has an invalid shape.
+
+    """
+    if raw_path_entries is None:
+        return []
+    if not isinstance(raw_path_entries, list):
+        raise ConfigValidationError(
+            f"'path' must be a list of [[path]] tables, got: {type(raw_path_entries).__name__}"
+        )
+    entries: List[str] = []
+    for index, item in enumerate(raw_path_entries):
+        if not isinstance(item, dict):
+            raise ConfigValidationError(
+                f"'path[{index}]' must be a table, got: {type(item).__name__}"
+            )
+        _validate_exact_keys(
+            item,
+            allowed={"value"},
+            context=f"path[{index}]",
+            ordered_allowed=["value"],
+            legacy_hints={"path": "value"},
+        )
+        if "value" not in item:
+            raise ConfigValidationError(f"'path[{index}]' is missing required key: value")
+        value = item.get("value")
+        if not isinstance(value, str):
+            raise ConfigValidationError(
+                f"'path[{index}].value' must be a string, got: {type(value).__name__}"
+            )
+        entries.append(value)
+    return entries
+
+
+def normalize_bin_entries(raw_bin: Any) -> List[Dict[str, Any]]:
+    """Normalize executable wrapper rows.
+
+    Parameters
+    ----------
+    raw_bin : Any
+        Parsed value of the ``bin`` configuration key.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Canonical executable wrapper rows.
+
+    Raises
+    ------
+    ConfigValidationError
+        If the value or one of its rows has an invalid shape.
+
+    """
+    if raw_bin is None:
+        return []
+    if not isinstance(raw_bin, list):
+        raise ConfigValidationError(f"'bin' must be a list, got: {type(raw_bin).__name__}")
+    entries: List[Dict[str, Any]] = []
+    ordered_allowed = [
+        "name",
+        "target",
+        "type",
+        "arguments",
+        "forward_args",
+        "elevate",
+        "working_dir",
+        "content",
+    ]
+    allowed = set(ordered_allowed)
+    for index, item in enumerate(raw_bin):
+        if not isinstance(item, dict):
+            raise ConfigValidationError(
+                f"'bin[{index}]' must be a table, got: {type(item).__name__}"
+            )
+        _validate_exact_keys(
+            item,
+            allowed=allowed,
+            context=f"bin[{index}]",
+            ordered_allowed=ordered_allowed,
+        )
+        content = _normalize_required_string(
+            item.get("content"), field_name=f"bin[{index}].content"
+        )
+        target = _normalize_required_string(
+            item.get("target"), field_name=f"bin[{index}].target"
+        )
+        shim_type = _normalize_optional_string(
+            item.get("type"), field_name=f"bin[{index}].type"
+        )
+        if shim_type and shim_type not in {"console", "gui"}:
+            raise ConfigValidationError(
+                f"'bin[{index}].type' must be 'console' or 'gui', got: {shim_type!r}"
+            )
+        arguments = item.get("arguments", [])
+        if not isinstance(arguments, list) or any(
+            not isinstance(argument, str) for argument in arguments
+        ):
+            raise ConfigValidationError(
+                f"'bin[{index}].arguments' must be an array of strings"
+            )
+        forward_args = item.get("forward_args", True)
+        if not isinstance(forward_args, bool):
+            raise ConfigValidationError(
+                f"'bin[{index}].forward_args' must be a boolean, got: {type(forward_args).__name__}"
+            )
+        elevate = item.get("elevate", False)
+        if not isinstance(elevate, bool):
+            raise ConfigValidationError(
+                f"'bin[{index}].elevate' must be a boolean, got: {type(elevate).__name__}"
+            )
+        working_dir = _normalize_optional_string(
+            item.get("working_dir"), field_name=f"bin[{index}].working_dir"
+        )
+        shim_keys = {
+            "target",
+            "type",
+            "arguments",
+            "forward_args",
+            "elevate",
+            "working_dir",
+        }
+        if "content" in item and any(key in item for key in shim_keys):
+            raise ConfigValidationError(
+                f"'bin[{index}].content' cannot be combined with shim options"
+            )
+        if "\n" not in content:
+            content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
+        normalized: Dict[str, Any] = {
+            "name": _normalize_required_string(
+                item.get("name"), field_name=f"bin[{index}].name"
+            )
+        }
+        if "content" in item:
+            normalized["content"] = content
+        else:
+            normalized.update(
+                {
+                    "target": target,
+                    "type": shim_type or "console",
+                    "arguments": list(arguments),
+                    "forward_args": forward_args,
+                    "elevate": elevate,
+                    "working_dir": working_dir,
+                }
+            )
+        entries.append(normalized)
+    return entries
+
+
 def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, Any]:
     """Normalize raw config data into one canonical runtime mapping.
 
@@ -965,249 +1254,12 @@ def normalize_runtime_config(raw: Any, identity: PackageIdentity) -> Dict[str, A
             "Git origin and update check must use the same ref"
         )
 
-    environment_entries: List[Dict[str, str]] = []
-    raw_environment = raw.get("environment")
-    if raw_environment is not None:
-        if not isinstance(raw_environment, list):
-            raise ConfigValidationError(
-                f"'environment' must be a list, got: {type(raw_environment).__name__}"
-            )
-        environment_keys = {"Name", "Value"}
-        environment_legacy_key_hints = {"name": "Name", "value": "Value"}
-        for index, item in enumerate(raw_environment):
-            if not isinstance(item, dict):
-                raise ConfigValidationError(
-                    f"'environment[{index}]' must be a table, got: {type(item).__name__}"
-                )
-            _validate_exact_keys(
-                item,
-                allowed=environment_keys,
-                context=f"environment[{index}]",
-                ordered_allowed=["Name", "Value"],
-                legacy_hints=environment_legacy_key_hints,
-            )
-            environment_entries.append(
-                {
-                    "Name": _normalize_required_string(
-                        item.get("Name"), field_name=f"environment[{index}].Name"
-                    ),
-                    "Value": _normalize_required_string(
-                        item.get("Value"), field_name=f"environment[{index}].Value"
-                    ),
-                }
-            )
+    environment_entries = normalize_environment_entries(raw.get("environment"))
 
-    shortcut_entries: List[Dict[str, str]] = []
-    raw_shortcut = raw.get("shortcut")
-    if raw_shortcut is not None:
-        if not isinstance(raw_shortcut, list):
-            raise ConfigValidationError(
-                f"'shortcut' must be a list, got: {type(raw_shortcut).__name__}"
-            )
-        shortcut_keys = {
-            "name",
-            "targetPath",
-            "arguments",
-            "workingDirectory",
-            "iconLocation",
-            "description",
-        }
-        shortcut_legacy_key_hints = {
-            "path": "targetPath",
-            "target_path": "targetPath",
-            "args": "arguments",
-            "workdir": "workingDirectory",
-            "working_directory": "workingDirectory",
-            "icon_location": "iconLocation",
-            "desc": "description",
-        }
-        for index, item in enumerate(raw_shortcut):
-            if not isinstance(item, dict):
-                raise ConfigValidationError(
-                    f"'shortcut[{index}]' must be a table, got: {type(item).__name__}"
-                )
-            _validate_exact_keys(
-                item,
-                allowed=shortcut_keys,
-                context=f"shortcut[{index}]",
-                ordered_allowed=[
-                    "name",
-                    "targetPath",
-                    "arguments",
-                    "workingDirectory",
-                    "iconLocation",
-                    "description",
-                ],
-                legacy_hints=shortcut_legacy_key_hints,
-            )
-            shortcut_entries.append(
-                {
-                    "name": _normalize_required_string(
-                        item.get("name"), field_name=f"shortcut[{index}].name"
-                    ),
-                    "targetPath": _normalize_required_string(
-                        item.get("targetPath"),
-                        field_name=f"shortcut[{index}].targetPath",
-                    ),
-                    "arguments": _normalize_required_string(
-                        item.get("arguments"), field_name=f"shortcut[{index}].arguments"
-                    ),
-                    "workingDirectory": _normalize_required_string(
-                        item.get("workingDirectory"),
-                        field_name=f"shortcut[{index}].workingDirectory",
-                    ),
-                    "iconLocation": _normalize_required_string(
-                        item.get("iconLocation"),
-                        field_name=f"shortcut[{index}].iconLocation",
-                    ),
-                    "description": _normalize_required_string(
-                        item.get("description"),
-                        field_name=f"shortcut[{index}].description",
-                    ),
-                }
-            )
+    shortcut_entries = normalize_shortcut_entries(raw.get("shortcut"))
+    path_entries = normalize_path_entries(raw.get("path"))
 
-    path_entries: List[str] = []
-    raw_path_entries = raw.get("path")
-    if raw_path_entries is not None:
-        if not isinstance(raw_path_entries, list):
-            raise ConfigValidationError(
-                f"'path' must be a list of [[path]] tables, got: {type(raw_path_entries).__name__}"
-            )
-        path_keys = {"value"}
-        path_legacy_key_hints = {"path": "value"}
-        for index, item in enumerate(raw_path_entries):
-            if not isinstance(item, dict):
-                raise ConfigValidationError(
-                    f"'path[{index}]' must be a table, got: {type(item).__name__}"
-                )
-            _validate_exact_keys(
-                item,
-                allowed=path_keys,
-                context=f"path[{index}]",
-                ordered_allowed=["value"],
-                legacy_hints=path_legacy_key_hints,
-            )
-            if "value" not in item:
-                raise ConfigValidationError(
-                    f"'path[{index}]' is missing required key: value"
-                )
-            value = item.get("value")
-            if not isinstance(value, str):
-                raise ConfigValidationError(
-                    f"'path[{index}].value' must be a string, got: {type(value).__name__}"
-                )
-            path_entries.append(value)
-
-    bin_entries: List[Dict[str, Any]] = []
-    raw_bin = raw.get("bin")
-    if raw_bin is not None:
-        if not isinstance(raw_bin, list):
-            raise ConfigValidationError(
-                f"'bin' must be a list, got: {type(raw_bin).__name__}"
-            )
-        bin_keys = {
-            "name",
-            "target",
-            "type",
-            "arguments",
-            "forward_args",
-            "elevate",
-            "working_dir",
-            "content",
-        }
-        for index, item in enumerate(raw_bin):
-            if not isinstance(item, dict):
-                raise ConfigValidationError(
-                    f"'bin[{index}]' must be a table, got: {type(item).__name__}"
-                )
-            _validate_exact_keys(
-                item,
-                allowed=bin_keys,
-                context=f"bin[{index}]",
-                ordered_allowed=[
-                    "name",
-                    "target",
-                    "type",
-                    "arguments",
-                    "forward_args",
-                    "elevate",
-                    "working_dir",
-                    "content",
-                ],
-            )
-            content = _normalize_required_string(
-                item.get("content"), field_name=f"bin[{index}].content"
-            )
-            target = _normalize_required_string(
-                item.get("target"), field_name=f"bin[{index}].target"
-            )
-            shim_type = _normalize_optional_string(
-                item.get("type"), field_name=f"bin[{index}].type"
-            )
-            if shim_type and shim_type not in {"console", "gui"}:
-                raise ConfigValidationError(
-                    f"'bin[{index}].type' must be 'console' or 'gui', "
-                    f"got: {shim_type!r}"
-                )
-
-            arguments = item.get("arguments", [])
-            if not isinstance(arguments, list) or any(
-                not isinstance(argument, str) for argument in arguments
-            ):
-                raise ConfigValidationError(
-                    f"'bin[{index}].arguments' must be an array of strings"
-                )
-
-            forward_args = item.get("forward_args", True)
-            if not isinstance(forward_args, bool):
-                raise ConfigValidationError(
-                    f"'bin[{index}].forward_args' must be a boolean, "
-                    f"got: {type(forward_args).__name__}"
-                )
-            elevate = item.get("elevate", False)
-            if not isinstance(elevate, bool):
-                raise ConfigValidationError(
-                    f"'bin[{index}].elevate' must be a boolean, "
-                    f"got: {type(elevate).__name__}"
-                )
-            working_dir = _normalize_optional_string(
-                item.get("working_dir"), field_name=f"bin[{index}].working_dir"
-            )
-
-            shim_keys = {
-                "target",
-                "type",
-                "arguments",
-                "forward_args",
-                "elevate",
-                "working_dir",
-            }
-            if "content" in item and any(key in item for key in shim_keys):
-                raise ConfigValidationError(
-                    f"'bin[{index}].content' cannot be combined with shim options"
-                )
-            if "\n" not in content:
-                content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
-            normalized_bin: Dict[str, Any] = {
-                "name": _normalize_required_string(
-                    item.get("name"), field_name=f"bin[{index}].name"
-                )
-            }
-            if "content" in item:
-                normalized_bin["content"] = content
-            else:
-                normalized_bin.update(
-                    {
-                        "target": target,
-                        "type": shim_type or "console",
-                        "arguments": list(arguments),
-                        "forward_args": forward_args,
-                        "elevate": elevate,
-                        "working_dir": working_dir,
-                    }
-                )
-            bin_entries.append(normalized_bin)
+    bin_entries = normalize_bin_entries(raw.get("bin"))
 
     return {
         "description": _normalize_optional_string(

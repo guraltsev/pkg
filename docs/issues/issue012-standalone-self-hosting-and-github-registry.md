@@ -4,6 +4,11 @@ Date: 2026-09-26
 Priority: High
 Change type: Distribution, bootstrap, manager configuration, registry, installation, and release engineering
 
+> Issue 013 is the current recovery authority for the CLI boundary, package
+> layout, launcher behavior, and verification status. This design remains the
+> source for the standalone/registry feature scope where it does not conflict
+> with the recovered contract in `docs/operations.md`.
+
 ## Summary
 
 `gupkg` should become one of the packages it manages. A Windows release will

@@ -51,7 +51,7 @@ python tools\build_standalone.py ^
   --runtime-sha256 <64-hex-digest> ^
   --source src\gupkg ^
   --manifest src\gupkg\pkg.toml ^
-  --output dist\gupkg-0.1.0.zip
+  --output dist\gupkg-0.12.0.zip
 ```
 
 The runtime archive and digest are explicit inputs. The script verifies the
@@ -78,10 +78,10 @@ The first existing candidate wins. An invalid higher-priority candidate is an
 error and never falls through. The current directory and its parents are
 never searched; a missing candidate is reported with every searched path.
 
-The interactive `gupkg-tui` entry point is an exception: outside a package
-directory it opens `MANAGER MODE` automatically. Without a configuration it
-offers only `Init manager mode`, which displays the defaults and writes the
-roaming configuration only after `Proceed with defaults` is selected.
+The `gupkg-tui` launcher is a convenience wrapper for the package `tui`
+command; it does not select manager mode implicitly. Use `gupkg manager tui`
+when manager mode is intended. Without a package path, package `tui` requires
+the current directory to resolve as a package.
 
 Use this shape for a new manager configuration:
 

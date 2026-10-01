@@ -7,8 +7,8 @@ call graphs and internal normalization structures are out of scope.
 
 from __future__ import annotations
 
-import importlib.util
 import io
+import importlib.util
 import json
 import os
 import subprocess
@@ -22,21 +22,17 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-GUPKG_PY = SRC_ROOT / "gupkg" / "gupkg.py"
 LEGACY_CONVERTER = SRC_ROOT / "gupkg" / "legacy_to_gupkg_toml.py"
 SHORTCUT_IMPORTER = SRC_ROOT / "gupkg" / "shortcuts_to_gupkg_toml.py"
 EXAMPLES_ROOT = ROOT / "tests" / "fixtures" / "legacy_examples"
 
 
 def load_gupkg_module():
-    spec = importlib.util.spec_from_file_location("gupkg_under_test_helper", GUPKG_PY)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
+    """Return the supported workflow facade with the public CLI attached."""
+    from gupkg import cli
+    from gupkg import gupkg as module
+
+    module.main = cli.main
     return module
 
 

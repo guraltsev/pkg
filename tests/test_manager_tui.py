@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from gupkg import gupkg as cli
+from gupkg import cli
 from gupkg.manager import discover_manager, load_manager_config
 from gupkg.manager_tui import run_manager_tui
 
@@ -43,8 +43,10 @@ def test_manager_browser_filters_and_handoff_keep_scope_visible(
     _package(system, "alpha")
     config_path = manager_dir / "gupkg-config.toml"
     config_path.write_text(
-        'mode = "manager"\nschema_version = 1\n[packages]\n'
-        f"system = '{system}'\nuser = '{user}'\n",
+        'mode = "manager"\nschema_version = 2\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n"
+        f"[bin]\nsystem = '{manager_dir / 'bin-system'}'\nuser = '{manager_dir / 'bin-user'}'\n"
+        f"[registry]\ncache = '{manager_dir / 'cache'}'\nchannel = 'stable'\n",
         encoding="utf-8",
     )
     config = load_manager_config(config_path)
@@ -122,8 +124,10 @@ def test_manager_tui_discovers_roaming_config_when_handed_off_from_package(
     system.mkdir()
     user.mkdir()
     (manager_dir / "gupkg-config.toml").write_text(
-        'mode = "manager"\nschema_version = 1\n[packages]\n'
-        f"system = '{system}'\nuser = '{user}'\n",
+        'mode = "manager"\nschema_version = 2\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n"
+        f"[bin]\nsystem = '{manager_dir / 'bin-system'}'\nuser = '{manager_dir / 'bin-user'}'\n"
+        f"[registry]\ncache = '{manager_dir / 'cache'}'\nchannel = 'stable'\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("APPDATA", str(appdata))
@@ -197,8 +201,10 @@ def test_manager_tui_persists_the_selected_shim_linkage(
     user.mkdir()
     config_path = manager_dir / "gupkg-config.toml"
     config_path.write_text(
-        'mode = "manager"\nschema_version = 1\n[packages]\n'
-        f"system = '{system}'\nuser = '{user}'\n",
+        'mode = "manager"\nschema_version = 2\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n"
+        f"[bin]\nsystem = '{manager_dir / 'bin-system'}'\nuser = '{manager_dir / 'bin-user'}'\n"
+        f"[registry]\ncache = '{manager_dir / 'cache'}'\nchannel = 'stable'\n",
         encoding="utf-8",
     )
     captured = []
@@ -232,6 +238,19 @@ def test_tui_outside_package_directory_opens_manager_mode(
         selected.append((args, kwargs))
         return 0
 
-    monkeypatch.setattr(cli, "_run_manager_tui", capture_manager)
-    assert cli.main(["tui"]) == 0
-    assert selected == [((), {})]
+    manager_dir = tmp_path / "AppData" / "gupkg"
+    manager_dir.mkdir(parents=True)
+    system = tmp_path / "system"
+    user = tmp_path / "user"
+    system.mkdir()
+    user.mkdir()
+    (manager_dir / "gupkg-config.toml").write_text(
+        'mode = "manager"\nschema_version = 2\n[packages]\n'
+        f"system = '{system}'\nuser = '{user}'\n"
+        f"[bin]\nsystem = '{manager_dir / 'bin-system'}'\nuser = '{manager_dir / 'bin-user'}'\n"
+        f"[registry]\ncache = '{manager_dir / 'cache'}'\nchannel = 'stable'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gupkg.manager_tui.run_manager_tui", capture_manager)
+    assert cli.main(["manager", "tui"]) == 0
+    assert selected and selected[0][0][0].path == manager_dir / "gupkg-config.toml"

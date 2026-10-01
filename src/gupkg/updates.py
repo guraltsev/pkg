@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, Optional, Tuple
 
@@ -47,8 +47,19 @@ from .origin import (
 from .github_releases import check_update as check_github_release
 
 
-def _update_paths(root: Path) -> Dict[str, Path]:
-    """Return the manager-owned paths used by package update operations."""
+def update_paths(root: Path) -> Dict[str, Path]:
+    """Return the manager-owned paths used by package update operations.
+
+    Parameters
+    ----------
+    root : Path
+        Package root that owns update state and temporary work.
+
+    Returns
+    -------
+    Dict[str, Path]
+        Paths for the update state, locks, receipts, and staging workspace.
+    """
     base = root / ".gupkg"
     return {
         "base": base,
@@ -57,6 +68,8 @@ def _update_paths(root: Path) -> Dict[str, Path]:
         "state": base / "state" / "update.toml",
         "receipts": base / "receipts",
     }
+
+
 def _toml_value(value: Any) -> str:
     """Render the limited scalar values persisted by update state."""
     if isinstance(value, bool):
@@ -64,8 +77,20 @@ def _toml_value(value: Any) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _load_update_state(path: Path) -> Dict[str, Any]:
-    """Load advisory update state, preserving a corrupt file for diagnosis."""
+def load_update_state(path: Path) -> Dict[str, Any]:
+    """Load advisory update state, preserving a corrupt file for diagnosis.
+
+    Parameters
+    ----------
+    path : Path
+        TOML state file owned by one package root.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Parsed state, or an initialized state mapping when the file is absent
+        or was moved aside because it was corrupt.
+    """
     if not path.exists():
         return {"assignedVersion": []}
     try:
@@ -133,12 +158,44 @@ def _load_package_module(identity: PackageIdentity, reference: str, pycache: Pat
     return module
 
 
-def _candidate_version(state: Dict[str, Any], candidate_id: str) -> str:
-    """Reuse the UTC version assigned to a Git candidate."""
+def _candidate_version(
+    state: Dict[str, Any], candidate_id: str, package_root: Optional[Path] = None
+) -> str:
+    """Reuse a candidate version while reserving a unique UTC name.
+
+    Parameters
+    ----------
+    state : Dict[str, Any]
+        Package-owned update state containing prior candidate assignments.
+    candidate_id : str
+        Stable upstream identity for the candidate.
+    package_root : Path, optional
+        Package directory used to avoid colliding with an existing version
+        directory when state was removed or restored from an older backup.
+
+    Returns
+    -------
+    str
+        A stable ``YYYYMMDD-HHMMSS-git`` version name.
+
+    """
     for assigned in state.get("assignedVersion", []):
         if assigned.get("candidateId") == candidate_id:
             return assigned["version"]
-    version = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-git")
+    assigned_versions = {
+        assigned.get("version")
+        for assigned in state.get("assignedVersion", [])
+        if isinstance(assigned, dict)
+    }
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0)
+    while True:
+        version = timestamp.strftime("%Y%m%d-%H%M%S-git")
+        version_path = package_root / f"v{version}" if package_root else None
+        if version not in assigned_versions and not (
+            version_path is not None and version_path.exists()
+        ):
+            break
+        timestamp += timedelta(seconds=1)
     state.setdefault("assignedVersion", []).append(
         {"candidateId": candidate_id, "version": version}
     )
@@ -197,7 +254,7 @@ def _normalize_update_candidate(
     return result
 
 
-def _check_update(
+def check_update(
     identity: PackageIdentity,
     config: Dict[str, Any],
     state: Dict[str, Any],
@@ -205,7 +262,26 @@ def _check_update(
     *,
     local_deps_autoinstall: bool = False,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Discover the current or next upstream state without changing App."""
+    """Discover the current or next upstream state without changing ``App``.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version whose configured source should be checked.
+    config : Dict[str, Any]
+        Normalized package configuration containing the update declaration.
+    state : Dict[str, Any]
+        Mutable package-owned update state used for candidate continuity.
+    work : Path
+        Isolated workspace for package-local check hooks.
+    local_deps_autoinstall : bool, default=False
+        Whether trusted package-local hooks may install missing imports.
+
+    Returns
+    -------
+    Tuple[str, Optional[Dict[str, Any]]]
+        Current/available status and the normalized candidate, when available.
+    """
     update = config["update"]
     check = update["check"]
     if check["mode"] == "git":
@@ -214,7 +290,7 @@ def _check_update(
             raise ConfigValidationError("Git appPath escapes the version directory")
         origin = config.get("origin")
         if origin is not None and origin.get("mode") == "git":
-            candidate = _git_origin_candidate(identity, config, state)
+            candidate = git_origin_candidate(identity, config, state)
             if not app.is_dir():
                 return "available", candidate
             local = subprocess.run(
@@ -252,7 +328,7 @@ def _check_update(
         if local == remote:
             return "current", None
         candidate_id = f"git:{remote}"
-        version = _candidate_version(state, candidate_id)
+        version = _candidate_version(state, candidate_id, identity.package_root)
         return "available", {
             "candidateId": candidate_id,
             "version": version,
@@ -311,12 +387,27 @@ def _check_update(
     )
 
 
-def _git_origin_candidate(
+def git_origin_candidate(
     identity: PackageIdentity,
     config: Dict[str, Any],
     state: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Resolve the exact candidate declared by a configured Git origin."""
+    """Resolve the exact candidate declared by a configured Git origin.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Bootstrap or package identity used for candidate version assignment.
+    config : Dict[str, Any]
+        Normalized configuration containing matching Git origin and check refs.
+    state : Dict[str, Any]
+        Mutable update state used to reuse assigned candidate versions.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Candidate metadata suitable for staging.
+    """
     origin = config.get("origin")
     check = config["update"]["check"]
     if origin is None or origin.get("mode") != "git":
@@ -333,7 +424,7 @@ def _git_origin_candidate(
     candidate_id = f"git:{remote}"
     return {
         "candidateId": candidate_id,
-        "version": _candidate_version(state, candidate_id),
+        "version": _candidate_version(state, candidate_id, identity.package_root),
         "url": origin["url"],
         "ref": origin["ref"],
         "commit": remote,
@@ -350,7 +441,7 @@ def _next_version_identity(
     )
 
 
-def _prepare_update(
+def prepare_update(
     identity: PackageIdentity,
     config: Dict[str, Any],
     candidate: Dict[str, Any],
@@ -359,7 +450,28 @@ def _prepare_update(
     no_checksum: bool,
     local_deps_autoinstall: bool = False,
 ) -> PackageIdentity:
-    """Build a complete new version under work before a single final rename."""
+    """Build a complete new version under work before a single final rename.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Active package version whose non-payload files should be preserved.
+    config : Dict[str, Any]
+        Normalized package configuration for payload preparation.
+    candidate : Dict[str, Any]
+        Validated update candidate to stage.
+    work : Path
+        Isolated workspace that receives the complete staged version.
+    no_checksum : bool
+        Whether applicable payload checksum verification may be bypassed.
+    local_deps_autoinstall : bool, default=False
+        Whether trusted package-local hooks may install missing imports.
+
+    Returns
+    -------
+    PackageIdentity
+        Identity of the complete staged version.
+    """
     new_identity = _next_version_identity(identity, candidate)
     stage = work / "version"
     stage.mkdir(parents=True)

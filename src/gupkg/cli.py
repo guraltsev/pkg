@@ -29,7 +29,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,16 +46,9 @@ from .core import (
     EXIT_MUTATION_ERROR,
     EXIT_SUCCESS,
     EXIT_USER_ERROR,
-    is_version_directory_name,
     write_text_atomic,
 )
-from .gupkg import (
-    check_package_update,
-    download_package_update,
-    full_package_upgrade,
-    health_check_package,
-    install_package,
-)
+from . import gupkg as package_workflows
 from .layout import resolve_input_path
 from .legacy_to_gupkg_toml import (
     build_config,
@@ -73,6 +65,10 @@ from .manager import (
     load_manager_config,
     manager_update_target,
     manager_upgrade_target,
+    manager_download_target,
+    manager_revalidate_target,
+    plan_upgrade_all,
+    execute_upgrade_plan,
     scope_name,
 )
 from .registry import (
@@ -126,6 +122,17 @@ def _failure(command: str, message: str, code: int = EXIT_USER_ERROR) -> _Outcom
         command,
         ActionResult(ok=False, errors=[message], exit_code=code),
     )
+
+
+def _dispatch_failure(command: str, exc: Exception) -> _Outcome:
+    """Translate a dispatcher-boundary exception into one CLI result."""
+    if isinstance(exc, (ConfigValidationError, ValueError, FileNotFoundError)):
+        code = EXIT_USER_ERROR
+    elif isinstance(exc, OSError):
+        code = EXIT_MUTATION_ERROR
+    else:
+        code = EXIT_INTERNAL_ERROR
+    return _failure(command, str(exc), code)
 
 
 def _invoke(command: str, operation: Callable[[], ActionResult]) -> _Outcome:
@@ -184,6 +191,11 @@ def _render_human(outcome: _Outcome) -> None:
         for package in outcome.data.get("registry_packages", []):
             details = ", ".join(f"{key}={value}" for key, value in package.items())
             print(f"registry package: {details}")
+        for shim in outcome.data.get("self_shims", []):
+            details = ", ".join(
+                f"{key}={value}" for key, value in shim.items() if value not in (None, "")
+            )
+            print(f"self shim: {details}")
         summary = outcome.data.get("summary")
         if isinstance(summary, dict):
             print("summary: " + ", ".join(f"{key}={value}" for key, value in summary.items()))
@@ -253,6 +265,16 @@ def _render_toml(outcome: _Outcome) -> None:
         print("\n[[registry.package]]")
         for key, value in package.items():
             print(f"{key} = {_toml_string(str(value))}")
+    for shim in outcome.data.get("self_shims", []):
+        print("\n[[self.shim]]")
+        for key, value in shim.items():
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                rendered = "true" if value else "false"
+            else:
+                rendered = _toml_string(str(value))
+            print(f"{key} = {rendered}")
 
 
 def _add_package_path(parser: argparse.ArgumentParser) -> None:
@@ -362,11 +384,14 @@ def _manager_config(args: argparse.Namespace) -> tuple[ManagerConfig | None, _Ou
         gupkg_home=os.environ.get("GUPKG_HOME"),
         appdata=os.environ.get("APPDATA"),
     )
-    candidates = [str(module_directory / "gupkg-config.toml")]
-    if os.environ.get("GUPKG_HOME"):
-        candidates.append(str(Path(os.environ["GUPKG_HOME"]) / "gupkg-config.toml"))
-    if os.environ.get("APPDATA"):
-        candidates.append(str(Path(os.environ["APPDATA"]) / "gupkg" / "gupkg-config.toml"))
+    if explicit is not None:
+        candidates = [str(explicit.expanduser().resolve())]
+    else:
+        candidates = [str(module_directory / "gupkg-config.toml")]
+        if os.environ.get("GUPKG_HOME"):
+            candidates.append(str(Path(os.environ["GUPKG_HOME"]) / "gupkg-config.toml"))
+        if os.environ.get("APPDATA"):
+            candidates.append(str(Path(os.environ["APPDATA"]) / "gupkg" / "gupkg-config.toml"))
     if selected is None:
         return None, _failure(
             "manager", "No manager configuration found; searched: " + ", ".join(candidates)
@@ -377,42 +402,78 @@ def _manager_config(args: argparse.Namespace) -> tuple[ManagerConfig | None, _Ou
         return None, _failure("manager", str(exc))
 
 
-def _resolve_package_path(path: Path | None) -> tuple[Path | None, _Outcome | None]:
-    """Resolve an explicit or current-directory package selection once."""
+def _resolve_context(
+    path: Path | None,
+    *,
+    command: str,
+    allow_legacy_directory: bool = False,
+) -> tuple[Path | None, PackageIdentity | None, _Outcome | None]:
+    """Classify one package argument and resolve its version context.
+
+    Parameters
+    ----------
+    path : Path, optional
+        Explicit package argument, or ``None`` for the current directory.
+    command : str
+        Command name used in a structured resolution failure.
+    allow_legacy_directory : bool, default=False
+        Whether a config repair may select a legacy directory without a valid
+        canonical version identity.
+
+    Returns
+    -------
+    tuple[Path | None, PackageIdentity | None, _Outcome | None]
+        The selected version path, its identity when available, and a failure
+        outcome when the layout cannot be selected safely.
+    """
     candidate = (path or Path.cwd()).expanduser()
-    try:
-        identity, _ = resolve_input_path(candidate)
-    except (OSError, ValueError) as exc:
-        return None, _failure("package", str(exc))
-    return identity.version_path, None
-
-
-def _repair_directory(path: Path | None) -> tuple[Path | None, PackageIdentity | None, _Outcome | None]:
-    """Resolve a repair directory even when its canonical metadata is invalid."""
-    candidate = (path or Path.cwd()).expanduser().resolve()
     resolution_error: ValueError | None = None
     try:
         identity, _ = resolve_input_path(candidate)
         return identity.version_path, identity, None
     except (OSError, ValueError) as exc:
-        resolution_error = exc if isinstance(exc, ValueError) else None
+        if not allow_legacy_directory or not isinstance(exc, ValueError):
+            return None, None, _failure(command, str(exc))
+        resolution_error = exc
+
+    if resolution_error is not None and (
+        "multiple version directories" in str(resolution_error)
+        or '"current" path' in str(resolution_error)
+    ):
+        return None, None, _failure(command, str(resolution_error))
+    candidate = candidate.resolve()
     if not candidate.is_dir():
-        return None, None, _failure("config-fix", f"Package directory does not exist: {candidate}")
+        return None, None, _failure(command, f"Package directory does not exist: {candidate}")
     legacy_sources = pick_legacy_metadata_files(candidate)
     legacy_sources.extend(
-        path
+        source
         for prefix in ("environment", "env", "shortcut", "path", "bin")
-        for path in pick_all_matching(candidate, prefix)
-        if path not in legacy_sources
+        for source in pick_all_matching(candidate, prefix)
+        if source not in legacy_sources
     )
     if not legacy_sources:
         return None, None, _failure(
-            "config-fix",
+            command,
             str(resolution_error)
             if resolution_error is not None
             else f"Path is not a valid version or recognized legacy package directory: {candidate}",
         )
     return candidate, None, None
+
+
+def _resolve_package_path(path: Path | None) -> tuple[Path | None, _Outcome | None]:
+    """Resolve an ordinary package command through the shared classifier."""
+    version_path, _, error = _resolve_context(path, command="package")
+    return version_path, error
+
+
+def _repair_directory(path: Path | None) -> tuple[Path | None, PackageIdentity | None, _Outcome | None]:
+    """Resolve a repair directory, including recognized legacy layouts."""
+    return _resolve_context(
+        path,
+        command="config-fix",
+        allow_legacy_directory=True,
+    )
 
 
 def _backup_name(destination: Path) -> Path:
@@ -455,10 +516,21 @@ def _config_fix(args: argparse.Namespace) -> _Outcome:
     if args.import_shortcuts != "true" and not canonical_exists:
         return _failure("config-fix", "--import-shortcuts applies only to current canonical metadata")
 
+    legacy_warnings: list[str] = []
     try:
         if legacy_exists:
             destination = args.output.expanduser().resolve() if args.output else destination
-            rendered = render_gupkg_toml(build_config(directory))
+            # The established converter reports best-effort field diagnostics
+            # through stdout.  Capture them so machine mode remains one TOML
+            # document and human mode can render them as warnings.
+            converter_output = io.StringIO()
+            with contextlib.redirect_stdout(converter_output):
+                rendered = render_gupkg_toml(build_config(directory))
+            legacy_warnings = [
+                line.strip()
+                for line in converter_output.getvalue().splitlines()
+                if line.strip()
+            ]
             parsed_legacy = tomllib.loads(rendered)
             required = {"name", "version", "localVersion"}
             if not required.issubset(parsed_legacy) or not isinstance(parsed_legacy["name"], str) or not isinstance(parsed_legacy["version"], str):
@@ -521,7 +593,12 @@ def _config_fix(args: argparse.Namespace) -> _Outcome:
         if previous == rendered:
             return _result(
                 "config-fix",
-                ActionResult(ok=True, changed=False, status="unchanged"),
+                ActionResult(
+                    ok=True,
+                    changed=False,
+                    warnings=legacy_warnings,
+                    status="unchanged",
+                ),
                 data={"config": {"path": _normal_path(destination), "operation": operation}},
             )
         backup_path = _atomic_config_replacement(destination, rendered, backup=args.backup)
@@ -529,7 +606,12 @@ def _config_fix(args: argparse.Namespace) -> _Outcome:
             from .shortcuts_to_gupkg_toml import archive_imported_shortcuts
 
             archive_imported_shortcuts(directory / "_shortcuts")
-        result = ActionResult(ok=True, changed=True, status="fixed")
+        result = ActionResult(
+            ok=True,
+            changed=True,
+            warnings=legacy_warnings,
+            status="fixed",
+        )
         return _result(
             "config-fix",
             result,
@@ -564,25 +646,42 @@ def _target_record(target: Any, result: ActionResult | None = None) -> dict[str,
     }
 
 
+def _self_report_data(report: dict[str, Any], *, operation: str | None = None) -> dict[str, Any]:
+    """Serialize standalone runtime and shim diagnostics for both renderers."""
+    self_data: dict[str, Any] = {}
+    if operation is not None:
+        self_data["operation"] = operation
+    for key in ("version_root", "runtime"):
+        value = report.get(key)
+        if value is not None:
+            self_data[key] = _normal_path(Path(value))
+    if "runtime_healthy" in report:
+        self_data["runtime_healthy"] = bool(report["runtime_healthy"])
+
+    shims: list[dict[str, Any]] = []
+    for shim in report.get("shims", []):
+        scope = getattr(shim, "scope", None)
+        path = getattr(shim, "path", None)
+        config_path = getattr(shim, "config_path", None)
+        shims.append(
+            {
+                "scope": scope_name(scope).casefold() if scope is not None else None,
+                "path": _normal_path(Path(path)) if path is not None else None,
+                "config_path": _normal_path(Path(config_path)) if config_path is not None else None,
+                "target": getattr(shim, "target", None),
+                "healthy": bool(getattr(shim, "healthy", False)),
+                "diagnostic": getattr(shim, "diagnostic", None),
+            }
+        )
+    shims.sort(key=lambda item: (item["scope"] or "", item["path"] or ""))
+    return {"self": self_data, "self_shims": shims}
+
+
 def _selected_scopes(value: str) -> set[Scope]:
     """Resolve aggregate manager scope, where auto means both roots."""
     if value == "auto":
         return {Scope.USER, Scope.MACHINE}
     return {Scope.USER if value == "user" else Scope.MACHINE}
-
-
-def _manager_inventory(args: argparse.Namespace) -> tuple[ManagerConfig | None, Any, _Outcome | None]:
-    """Load manager configuration and its bounded inventory."""
-    manager, error = _manager_config(args)
-    if error is not None:
-        return None, None, error
-    assert manager is not None
-    if args.max_depth < 1:
-        return None, None, _failure("manager", "--max-depth must be at least 1")
-    try:
-        return manager, discover_manager(manager, max_depth=args.max_depth), None
-    except (OSError, ValueError, ConfigValidationError) as exc:
-        return None, None, _failure("manager", str(exc))
 
 
 def _manager_list(args: argparse.Namespace, inventory: Any) -> _Outcome:
@@ -619,43 +718,86 @@ def _check_target(target: Any, *, allow_dependencies: bool = False) -> ActionRes
 
 
 def _manager_update(args: argparse.Namespace, manager: ManagerConfig, inventory: Any, scope_value: str, allow_dependencies: bool) -> _Outcome:
-    """Plan and execute manager updates while retaining every target result."""
-    selected = [target for target in inventory.targets if target.scope in _selected_scopes(scope_value)]
-    selected.sort(key=lambda item: (item.target_id.casefold(), item.target_id))
+    """Plan and execute manager updates while retaining every target result.
+
+    The manager domain owns eligibility, revalidation, and per-target failure
+    handling.  This wrapper only translates those structured entries into the
+    CLI result records and applies the one interactive confirmation required by
+    a full update.
+    """
+    scopes = _selected_scopes(scope_value)
+    plan = plan_upgrade_all(
+        inventory,
+        scopes,
+        lambda target: _check_target(target, allow_dependencies=allow_dependencies),
+    )
+
+    # Full updates are the only manager mode that may ask for confirmation;
+    # checks and staging remain suitable for automation and never prompt.
+    confirmation_error: str | None = None
+    if not args.check_only and not args.download_only:
+        eligible = any(entry.outcome == "eligible" for entry in plan.entries)
+        if eligible and not args.yes:
+            if args.format == "toml":
+                confirmation_error = "manager update requires --yes when --format toml is selected"
+            elif not sys.stdin.isatty():
+                confirmation_error = "manager update requires --yes in non-interactive mode"
+            elif input("Run planned updates? [y/N] ").strip().casefold() not in {"y", "yes"}:
+                confirmation_error = "Update cancelled"
+        if confirmation_error is not None:
+            for entry in plan.entries:
+                if entry.outcome == "eligible":
+                    # The planner stores the successful check result on an
+                    # eligible entry. Replace it before reporting cancellation
+                    # so that confirmation failure cannot look successful.
+                    entry.result = None
+                    entry.outcome = "failed"
+                    entry.reason = confirmation_error
+
+    if confirmation_error is None and not args.check_only:
+        def revalidate(target: Any) -> str | None:
+            root = manager.system_root if target.scope == Scope.MACHINE else manager.user_root
+            return manager_revalidate_target(target, root, quiet=True)
+
+        action = (
+            manager_download_target
+            if args.download_only
+            else manager_upgrade_target
+        )
+
+        def execute(target: Any) -> ActionResult:
+            if args.download_only:
+                return action(
+                    target,
+                    no_checksum=args.no_checksum,
+                    allow_dependencies=allow_dependencies,
+                )
+            return action(
+                target,
+                no_checksum=args.no_checksum,
+                allow_dependencies=allow_dependencies,
+                shim_linkage=args.shim_linkage or manager.shim_linkage,
+            )
+
+        execute_upgrade_plan(plan, revalidate, execute)
+
     target_results: list[dict[str, Any]] = []
     highest = EXIT_SUCCESS
-    for target in selected:
-        if target.installation_status != "installed" or target.health_status != "healthy":
-            target_results.append(_target_record(target))
-            continue
-        check_result = _check_target(target, allow_dependencies=allow_dependencies)
-        if not check_result.ok:
-            target_results.append(_target_record(target, check_result))
-            highest = max(highest, check_result.exit_code)
-            continue
-        if args.check_only or args.download_only:
-            result = check_result
-        elif target.update_status != "available":
-            result = check_result
-        else:
-            if not args.yes and args.format == "toml":
-                result = ActionResult(False, errors=["manager update requires --yes when --format toml is selected"], exit_code=EXIT_USER_ERROR)
-            elif not args.yes and not sys.stdin.isatty():
-                result = ActionResult(False, errors=["manager update requires --yes in non-interactive mode"], exit_code=EXIT_USER_ERROR)
-            elif not args.yes and input("Run planned updates? [y/N] ").strip().casefold() not in {"y", "yes"}:
-                result = ActionResult(False, errors=["Update cancelled"], exit_code=EXIT_USER_ERROR)
-            else:
-                result = _invoke(
-                    "manager.update",
-                    lambda: manager_upgrade_target(
-                        target,
-                        no_checksum=args.no_checksum,
-                        allow_dependencies=allow_dependencies,
-                        shim_linkage=args.shim_linkage or manager.shim_linkage,
-                    ),
-                ).result
-        target_results.append(_target_record(target, result))
-        highest = max(highest, result.exit_code)
+    for entry in plan.entries:
+        result = entry.result
+        if result is None and entry.outcome == "failed":
+            result = ActionResult(
+                ok=False,
+                errors=[entry.reason or "manager target failed"],
+                exit_code=EXIT_USER_ERROR,
+            )
+        record = _target_record(entry.target, result)
+        if result is None:
+            record["status"] = entry.reason or entry.outcome
+        if entry.target.candidate_version is not None:
+            record["candidate_version"] = entry.target.candidate_version
+        target_results.append(record)
+        highest = max(highest, record["exit_code"])
     changed = any(record["changed"] for record in target_results)
     ok = highest == EXIT_SUCCESS
     status = "checked" if args.check_only else ("downloaded" if args.download_only else "updated")
@@ -693,6 +835,9 @@ def _registry_outcome(args: argparse.Namespace, manager: ManagerConfig) -> _Outc
         sync_result = _invoke("manager.search", lambda: sync_registry(cache)).result
         if not sync_result.ok:
             return _result("manager.search", sync_result)
+        # Read the committed state again so the result describes the cache
+        # that the search actually used, including its new revision.
+        state = registry_status(cache)
     try:
         matches = search_registry(cache, args.query or "")
     except (FileNotFoundError, ValueError, ConfigValidationError) as exc:
@@ -712,7 +857,12 @@ def _manager_install(args: argparse.Namespace, manager: ManagerConfig) -> _Outco
     cache = manager.registry_cache
     if cache is None:
         return _failure("manager.install", "Manager configuration has no registry cache")
-    if any(part in args.selector for part in ("/", "\\")) or Path(args.selector).is_absolute() or args.selector in {".", ".."}:
+    if (
+        any(part in args.selector for part in ("/", "\\"))
+        or Path(args.selector).is_absolute()
+        or bool(Path(args.selector).drive)
+        or args.selector in {".", "..", "~"}
+    ):
         return _failure("manager.install", "Registry selectors cannot be paths")
     try:
         state = registry_status(cache)
@@ -731,7 +881,7 @@ def _manager_install(args: argparse.Namespace, manager: ManagerConfig) -> _Outco
             shutil.copytree(package.version_path, target)
         result = _invoke(
             "manager.install",
-            lambda: install_package(
+            lambda: package_workflows.install_package(
                 target,
                 scope=scope,
                 install_context=installation_context(manager, scope),
@@ -751,14 +901,27 @@ def _manager_command(args: argparse.Namespace) -> _Outcome:
     """Resolve manager configuration and dispatch its explicit subcommand."""
     if args.manager_command is None:
         return _failure("manager", "manager requires a subcommand")
-    manager, inventory, error = _manager_inventory(args)
+    if args.max_depth < 1:
+        return _failure("manager", "--max-depth must be at least 1")
+
+    # Registry and self workflows use only their own configured state.  Avoid
+    # traversing package roots for those commands so a missing or inaccessible
+    # root cannot hide a usable registry or standalone diagnostic.
+    manager, error = _manager_config(args)
     if error is not None:
         return error
     assert manager is not None
+    inventory = None
+    if args.manager_command in {"tui", "list", "doctor", "update"}:
+        try:
+            inventory = discover_manager(manager, max_depth=args.max_depth)
+        except (OSError, ValueError, ConfigValidationError) as exc:
+            return _failure("manager", str(exc))
     if args.manager_command == "tui":
         from .dependencies import ensure_runtime_dependencies
         from .manager_tui import run_manager_tui
 
+        assert inventory is not None
         ensure_runtime_dependencies("tui")
         code = run_manager_tui(manager, inventory)
         return _result(
@@ -767,8 +930,10 @@ def _manager_command(args: argparse.Namespace) -> _Outcome:
             data={"manager": {"interactive": True}},
         )
     if args.manager_command in {"list", "doctor"}:
+        assert inventory is not None
         return _manager_list(args, inventory)
     if args.manager_command == "update":
+        assert inventory is not None
         return _manager_update(args, manager, inventory, args.scope, args.allow_hook_dependency_install)
     if args.manager_command == "install":
         return _manager_install(args, manager)
@@ -785,7 +950,7 @@ def _manager_command(args: argparse.Namespace) -> _Outcome:
             return _result(
                 "manager.self.status",
                 ActionResult(report["runtime_healthy"], status="healthy" if report["runtime_healthy"] else "unhealthy", exit_code=0 if report["runtime_healthy"] else EXIT_MUTATION_ERROR),
-                data={"self": {"version_root": _normal_path(report["version_root"]), "runtime_healthy": report["runtime_healthy"]}},
+                data=_self_report_data(report),
             )
         from .distribution import repair_self
 
@@ -797,7 +962,14 @@ def _manager_command(args: argparse.Namespace) -> _Outcome:
                 install_context=installation_context(manager, scope, shim_linkage=args.shim_linkage),
             ),
         )
-        return result
+        try:
+            from .distribution import self_status
+
+            report = self_status()
+            data = _self_report_data(report, operation=args.self_command)
+        except (OSError, ConfigValidationError, ValueError):
+            data = {"self": {"operation": args.self_command}}
+        return _result(result.command, result.result, data=data, captured=result.captured)
     return _failure("manager", f"Unsupported manager command: {args.manager_command}")
 
 
@@ -812,9 +984,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "manager" and args.manager_command == "tui":
         # Interactive commands own their terminal, so global rendering and
         # pause behavior must never add text or wait around the TUI.
-        return _manager_command(args).result.exit_code
+        try:
+            return _manager_command(args).result.exit_code
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            return _dispatch_failure("manager.tui", exc).result.exit_code
     if args.command == "manager":
-        outcome = _manager_command(args)
+        try:
+            outcome = _manager_command(args)
+        except Exception as exc:  # pragma: no cover - defensive process boundary
+            outcome = _dispatch_failure("manager", exc)
     elif args.command == "config-fix":
         outcome = _config_fix(args)
     elif args.command == "tui":
@@ -837,7 +1015,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scope = _scope(args.scope)
             outcome = _invoke(
                 "install",
-                lambda: install_package(
+                lambda: package_workflows.install_package(
                     package_path,
                     scope=scope,
                     allow_downgrade=args.allow_downgrade,
@@ -851,15 +1029,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "update":
             scope = _scope(args.scope)
             if args.check_only:
-                outcome = _invoke("update", lambda: check_package_update(package_path, local_deps_autoinstall=args.allow_hook_dependency_install))
+                outcome = _invoke("update", lambda: package_workflows.check_package_update(package_path, local_deps_autoinstall=args.allow_hook_dependency_install))
             elif args.download_only:
-                outcome = _invoke("update", lambda: download_package_update(package_path, no_checksum=args.no_checksum, local_deps_autoinstall=args.allow_hook_dependency_install))
+                outcome = _invoke("update", lambda: package_workflows.download_package_update(package_path, no_checksum=args.no_checksum, local_deps_autoinstall=args.allow_hook_dependency_install))
             else:
-                outcome = _invoke("update", lambda: full_package_upgrade(package_path, scope=scope, no_checksum=args.no_checksum, local_deps_autoinstall=args.allow_hook_dependency_install, shim_linkage=args.shim_linkage))
+                outcome = _invoke("update", lambda: package_workflows.full_package_upgrade(package_path, scope=scope, no_checksum=args.no_checksum, local_deps_autoinstall=args.allow_hook_dependency_install, shim_linkage=args.shim_linkage))
             outcome.data["package"] = _package_data(package_path, scope)
         elif args.command == "config-check":
             scope = _scope(args.scope)
-            outcome = _invoke("config-check", lambda: health_check_package(package_path, scope=scope))
+            outcome = _invoke("config-check", lambda: package_workflows.health_check_package(package_path, scope=scope))
             outcome.data["config"] = {"path": _normal_path(package_path), "operation": "check"}
         else:
             outcome = _failure("package", f"Unsupported command: {args.command}")

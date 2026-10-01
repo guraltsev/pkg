@@ -61,13 +61,13 @@ from gupkg.origin import (  # noqa: E402
     validate_update_health,
 )
 from gupkg.updates import (  # noqa: E402
-    _check_update,
-    _git_origin_candidate,
-    _load_update_state,
+    check_update,
+    git_origin_candidate,
+    load_update_state,
     _next_version_identity,
-    _prepare_update,
+    prepare_update,
     _toml_value,
-    _update_paths,
+    update_paths,
     _write_update_state,
 )
 from gupkg.windows import is_current_user_admin  # noqa: E402
@@ -192,7 +192,7 @@ def check_package_update(
 
     # Acquire the package-root update lock before creating work files so
     # concurrent checks and updates cannot overwrite each other's state.
-    paths = _update_paths(identity.package_root)
+    paths = update_paths(identity.package_root)
     paths["locks"].mkdir(parents=True, exist_ok=True)
     lock = paths["locks"] / "update.toml"
     try:
@@ -213,13 +213,13 @@ def check_package_update(
     try:
         # Persist timing and candidate identity only after the source check
         # returns a normalized result.
-        state = _load_update_state(paths["state"])
+        state = load_update_state(paths["state"])
         state["lastAttemptedCheck"] = datetime.now(timezone.utc).isoformat()
         if bootstrap and config["update"]["check"]["mode"] == "git":
             status = "available"
-            candidate = _git_origin_candidate(identity, config, state)
+            candidate = git_origin_candidate(identity, config, state)
         else:
-            status, candidate = _check_update(
+            status, candidate = check_update(
                 identity,
                 config,
                 state,
@@ -290,7 +290,7 @@ def download_package_update(
     bootstrap = _is_update_bootstrap(identity, config)
 
     # Serialize discovery and staging beneath one package-root lock.
-    paths = _update_paths(identity.package_root)
+    paths = update_paths(identity.package_root)
     paths["locks"].mkdir(parents=True, exist_ok=True)
     lock = paths["locks"] / "update.toml"
     try:
@@ -309,12 +309,12 @@ def download_package_update(
     try:
         # Every explicit download contacts the configured source and records its
         # resulting candidate before deciding whether a payload is needed.
-        state = _load_update_state(paths["state"])
+        state = load_update_state(paths["state"])
         if bootstrap and update["check"]["mode"] == "git":
             status = "available"
-            candidate = _git_origin_candidate(identity, config, state)
+            candidate = git_origin_candidate(identity, config, state)
         else:
-            status, candidate = _check_update(
+            status, candidate = check_update(
                 identity,
                 config,
                 state,
@@ -356,7 +356,7 @@ def download_package_update(
                 )
             log_info(f"Downloaded: {new_identity.version_string}")
             return ActionResult(True, warnings=warnings, status="downloaded")
-        staged = _prepare_update(
+        staged = prepare_update(
             identity,
             config,
             candidate,
@@ -421,7 +421,7 @@ def install_downloaded_update(
         identity, _ = resolve_input_path(package_path)
     except ValueError as exc:
         return action_failure(str(exc), exit_code=EXIT_USER_ERROR)
-    receipts = _update_paths(identity.package_root)["receipts"]
+    receipts = update_paths(identity.package_root)["receipts"]
     receipt_paths = sorted(
         receipts.glob("v*.toml"), key=lambda path: path.stat().st_mtime, reverse=True
     ) if receipts.exists() else []

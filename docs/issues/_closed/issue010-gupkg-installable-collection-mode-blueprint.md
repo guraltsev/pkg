@@ -4,6 +4,10 @@ Date: 2026-08-03
 Priority: High
 Change type: Product rename, packaging, package discovery, aggregate CLI, and TUI design
 
+> Superseded by Issue 013 for the canonical command grammar, entrypoint
+> ownership, and source-layout recovery. The historical product goals remain
+> useful context; current behavior is defined by `docs/operations.md`.
+
 ## Goal
 
 Turn the source-tree tool currently named `gupkg` into an installable Python

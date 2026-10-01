@@ -92,3 +92,47 @@ def test_manager_tui_owns_format_and_pause(monkeypatch: pytest.MonkeyPatch) -> N
     assert cli.main(["--format", "toml", "--pause", "manager", "tui"]) == 7
     command.assert_called_once()
     pause.assert_not_called()
+
+
+def test_registry_status_does_not_require_package_roots(tmp_path: Path) -> None:
+    """Registry status reports the configured cache even when roots are unavailable."""
+    manager_dir = tmp_path / "manager"
+    manager_dir.mkdir()
+    config = _config(
+        manager_dir,
+        tmp_path / "missing-system",
+        tmp_path / "missing-user",
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = cli.main(
+            [
+                "--format",
+                "toml",
+                "manager",
+                "--config",
+                str(config),
+                "registry",
+                "status",
+            ]
+        )
+
+    document = tomllib.loads(output.getvalue())
+    assert code == 0
+    assert document["command"] == "manager.registry.status"
+    assert document["ok"] is True
+
+
+def test_manager_max_depth_rejects_nonpositive_values_without_loading_config() -> None:
+    """A nonpositive discovery bound is a user error before manager I/O begins."""
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = cli.main(
+            ["--format", "toml", "manager", "--max-depth", "0", "list"]
+        )
+
+    document = tomllib.loads(output.getvalue())
+    assert code == 2
+    assert document["ok"] is False
+    assert "max-depth" in document["errors"][0]

@@ -26,10 +26,13 @@ version = { attr = "gupkg._version.__version__" }
 
 [tool.setuptools.package-data]
 gupkg = [
+    "README.md",
     "pkg.toml",
-    "7zip/*.dll",
-    "7zip/*.exe",
+    "gupkg.cmd",
+    "gupkg-tui.cmd",
+    "7zip/*",
     "shim/*.exe",
+    "shim/*.dll",
     "shim/LICENSE-*",
     "shim/README-exe-shim.md",
 ]

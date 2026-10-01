@@ -1,18 +1,19 @@
 # Manual smoke checklist
 
-This snapshot uses `gupkg/gupkg.py` as the stable executable and action facade.
-Implementation domains live directly under `gupkg/`, covering shared
+The supported executable boundary is `gupkg.cli:main`, available as `gupkg`,
+`python -m gupkg`, or the source-checkout wrapper. Implementation domains live
+directly under `gupkg/`, covering shared
 utilities, Windows integration, package layout, configuration, metadata
 editing, components, origins, and update staging.
 
 Suggested manual checks on a Windows machine:
 
-1. Run `gupkg.cmd --help`.
-2. Run `gupkg.cmd --version`.
-3. Run `gupkg.cmd config-fix <version-dir>` against a package without
+1. Run `gupkg --help`.
+2. Run `gupkg --version`.
+3. Run `gupkg config-fix <version-dir>` against a package without
    `pkg.toml` and confirm a documented starter config with commented examples
    is created.
-4. Run `gupkg.cmd <version-dir>` against a package with shortcuts,
+4. Run `gupkg install <version-dir>` against a package with shortcuts,
    environment variables, PATH entries, and wrapper files.
 5. Confirm the package `current` junction points to the expected version.
 6. Confirm shortcuts and environment changes land in the selected scope.
@@ -41,21 +42,21 @@ Standalone and registry checks:
    contains the embedded runtime, `pkg.toml`, and native shims.
 2. Install the release once with `gupkg-bootstrap.exe --scope user`, then
    repeat the install/repair path. Confirm it does not require elevation and
-   that `gupkg self status` reports a healthy embedded runtime.
-3. Run `gupkg self repair --scope user` after removing or renaming only a
+   that `gupkg manager self status` reports a healthy embedded runtime.
+3. Run `gupkg --scope user manager self repair` after removing or renaming only a
    user-scope shim/configuration file. Confirm repair restores it. Repeat in
    system scope with UAC accepted and declined; a declined prompt must leave
    system files unchanged.
 4. Create a schema-v2 manager config with separate package roots, bin roots,
-   and an external registry cache. Verify `gupkg doctor`, `gupkg registry
-   status`, and `gupkg search --offline` are read-only and do not create
+   and an external registry cache. Verify `gupkg manager doctor`, `gupkg manager
+   registry status`, and `gupkg manager search --offline` are read-only and do not create
    missing package roots.
-5. Run `gupkg registry sync` with network available, then run `gupkg search`
+5. Run `gupkg manager registry sync` with network available, then run `gupkg manager search`
    and install one known selector. Disconnect the network and verify cached
    `search --offline` still works while a selector absent from the cache fails
    cleanly.
 6. Corrupt or make unavailable a temporary registry checkout and retry sync.
    Confirm the last validated active tree remains usable and the failed sync
    does not replace it.
-7. Copy a v1 manager config for rollback, run `gupkg migrate-config`, and
-   verify the resulting v2 file includes `[bin]` and `[registry]` sections.
+7. Confirm that a v1 manager config is rejected with a migration diagnostic;
+   schema migration is an explicit administrative task outside the runtime CLI.

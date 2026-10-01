@@ -19,7 +19,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-SHIM = SRC_ROOT / "gupkg" / "shim" / "shim-console.exe"
+# The dynamic launcher requires its MinGW runtime DLLs beside the executable.
+# These isolated wrapper tests intentionally copy one file, so use the
+# self-contained build and keep the packaging test responsible for dynamic
+# dependency provisioning.
+SHIM = SRC_ROOT / "gupkg" / "shim" / "shim-console.static.exe"
 
 
 class WrapperScriptTests(unittest.TestCase):

@@ -15,7 +15,7 @@ For a release install, run the shipped bootstrap wrapper with
 `--scope user` or `--scope system`; the embedded runtime and native shims are
 part of the versioned artifact. For a source-checkout development setup, copy
 the `src` directory to a folder such as `C:\opt\gupkg\` and run
-`src\gupkg\gupkg.cmd`. It uses an available system Python 3.11+ when present.
+`src\gupkg.cmd install [PATH]`. It uses an available system Python 3.11+ when present.
 Otherwise it downloads verified x64 CPython and pip into the copied
 directory's ignored `python\` folder on first use. The outer `src\gupkg.cmd`
 is only a thin selector for a package-local native command or a `gupkg.exe`
@@ -130,14 +130,14 @@ versions are retained.
 From a version directory:
 
 ```bat
-gupkg.cmd
+gupkg install
 ```
 
 Or pass a version directory or package root:
 
 ```bat
-gupkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
-gupkg.cmd C:\Packages\Ripgrep
+gupkg install C:\Packages\Ripgrep\v14.1.0.l1
+gupkg install C:\Packages\Ripgrep
 ```
 
 The default `auto` scope uses system scope for an administrator unless the
@@ -145,7 +145,7 @@ package is portable-only; otherwise it uses User scope. Select a scope
 explicitly when needed:
 
 ```bat
-gupkg.cmd --scope User C:\Packages\Ripgrep
+gupkg --scope user install C:\Packages\Ripgrep
 gupkg --scope system install C:\Packages\Ripgrep
 ```
 
@@ -229,10 +229,10 @@ never implicitly installed.
 `gupkg manager tui` for the interactive manager interface. Manager update first shows a
 non-installing plan with available, current, skipped, and failed-check counts.
 The confirmation screen puts `Run planned upgrades` first and exposes scope,
-checksum, dependency auto-install, and fail-fast settings. Execution remains
-scrollable with per-target states and final totals, then refreshes inventory.
-Elevation occurs before any mixed-scope mutation; declining it leaves packages
-unchanged. Without fail-fast, later safe targets continue after a failure.
+checksum, and dependency auto-install settings. Execution remains scrollable
+with per-target states and final totals, then refreshes inventory. Elevation
+occurs before any mixed-scope mutation; declining it leaves packages unchanged.
+Later safe targets continue after a failure.
 To recover, fix the failed target and safely rerun the same check/confirm flow;
 successful targets are revalidated and remain current. This migration changes
 only orchestration: package content, version directories, `current`, and
@@ -243,21 +243,18 @@ only orchestration: package content, version directories, `current`, and
 Run the simple interactive interface:
 
 ```bat
-gupkg-tui.cmd
+gupkg-tui.cmd C:\Packages\Example
 ```
 
 You can also run `gupkg tui [PATH]` directly.
 
-When the TUI is outside a package directory and no manager configuration is
-found, it shows `MANAGER MODE` with one action: `Init manager mode`. That action
-opens the default-first initialization menu, where the configuration path,
-package roots, executable directories, registry cache, and stable channel are
-shown before `Proceed with defaults` writes
-`%APPDATA%\gupkg\gupkg-config.toml`.
+To open the manager interface, use `gupkg manager tui`. Manager selection is
+always explicit; a package TUI invocation outside a package directory reports
+an invalid package selection instead of switching modes.
 
-The interface exposes install, each update stage, and every configuration
-action with the same package path, scope, and applicable flags as the command
-line. It intentionally uses selections and plain output instead of a
+The interface exposes install, update, and every configuration action with the
+same package path, scope, and applicable flags as the command line. It
+intentionally uses selections and plain output instead of a
 frame-heavy terminal layout. On first use, `gupkg` automatically installs its
 Textual dependency into `%LOCALAPPDATA%\gupkg\embedded\site-packages` when
 using a system Python; the bundled runtime uses its own
@@ -326,7 +323,7 @@ they have an effect.
 | `--check-only`, `--download-only` | Limit `update` or manager update work. |
 | `--pause` | Waits for a keypress before exit. |
 | `--version` | Prints the `gupkg` version and exits. |
-| `--help`, `--help-extended` | Prints standard or expanded CLI help and exits. |
+| `--help` | Prints command help and exits. |
 
 Exit status is `0` for success, `2` for a user/configuration error, `3` for a
 mutation failure, and `4` for an unexpected internal error.
