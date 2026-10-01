@@ -8,7 +8,7 @@ file.
 Usage and API
 -------------
 Call ``main(...)`` from the internal launcher. It prepares an embedded runtime
-when requested and forwards the remaining arguments to ``gupkg.gupkg.main``.
+when requested and forwards the remaining arguments to ``gupkg.cli.main``.
 
 Implementation Approach
 -----------------------
@@ -49,7 +49,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--embedded", action="store_true")
-    parser.add_argument("--root", type=Path)
     options, command_args = parser.parse_known_args(argv)
 
     # Make the sibling package importable regardless of the caller's cwd.
@@ -64,14 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _prepare_embedded_runtime(runtime_directory)
         os.environ["GUPKG_BUNDLED_RUNTIME"] = "1"
 
-    # Preserve the existing root contract while keeping bootstrap-only flags
-    # out of the public command parser.
-    from gupkg.gupkg import main as gupkg_main
+    # Keep bootstrap-only flags out of the public command parser.
+    from gupkg.cli import main as cli_main
 
-    public_args = list(command_args)
-    if options.root is not None:
-        public_args[0:0] = ["--root", str(options.root)]
-    return int(gupkg_main(public_args))
+    return int(cli_main(list(command_args)))
 
 
 def _prepare_embedded_runtime(runtime_directory: Path) -> None:

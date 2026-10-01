@@ -631,6 +631,73 @@ on Windows.
   smoke tests, and documented manual Windows checks pass.
 - [ ] User and contributor documentation describes the implemented contract.
 
+## Audit result
+
+Audit date: 2026-09-30
+
+The implementation was reviewed against the approved design decisions and the
+verification plan. The result is **incomplete; Issue 013 is not ready to
+close**.
+
+### Confirmed working
+
+- The installable source package is present at `src/gupkg`, with a single
+  `_version.py` source and the console script pointing to `gupkg.cli:main`.
+- The new argparse tree provides context-free root, manager, and package
+  command help. A missing command and the removed `upgrade` grammar fail with
+  exit code 2.
+- The public scope choices are limited to `auto`, `user`, and `system`.
+- Manager configuration discovery uses fixed locations, rejects an invalid
+  higher-priority candidate without falling through, and returns a TOML error
+  document when no configuration is found.
+- Registry validation and Python bytecode compilation pass.
+
+### Blocking gaps
+
+- The test migration is incomplete. `tests/runtime_paths.py` still exists and
+  returns `src`, while `test_runtime_cli.py` expects `src/pkg.toml`; the
+  checked-in file is now `src/gupkg/pkg.toml`. The default suite therefore
+  fails during collection.
+- The superseded CLI remains in `src/gupkg/gupkg.py`, including the old
+  `upgrade`/`config` grammar, compatibility options, nested parsing, and
+  manager dispatch.
+- Human manager rendering drops inventory, target, registry, and self-result
+  data; commands commonly print only a one-line status.
+- `--format` and `--pause` are not ignored for `manager tui`.
+- TUI workers still import manager workflows from `gupkg.gupkg` instead of the
+  public manager API.
+- `manager install` does not propagate the global
+  `--allow-hook-dependency-install` policy to package installation.
+- The legacy `config-fix` path checks TOML syntax and a few required fields but
+  does not fully validate the replacement current-schema document before
+  mutation.
+- README and runtime documentation still contain removed `upgrade ...` and
+  `config ...` command examples, and no permanent tests currently exercise the
+  new `gupkg.cli` command surface.
+
+### Verification record
+
+The following checks were run with `.venv\Scripts\python.exe`:
+
+- `python -m gupkg --version`, root help, manager help, and update help:
+  passed.
+- Removed grammar rejection and missing-manager-configuration TOML output:
+  passed.
+- `tools\validate_registry.py pkgs`: passed.
+- `python -m compileall -q src tests tools`: passed.
+- `python -m pytest -q`: failed during collection because
+  `C:\Users\guraltsev\Documents\devel\gupkg\src\pkg.toml` is missing.
+- Running the broader suite while excluding that collection failure produced
+  58 passed, 67 failed, and 37 errors; the failures include stale superseded
+  CLI/schema expectations and environment-specific temporary-directory errors,
+  so this is not a clean post-migration baseline.
+- `python -m build` could not run because the environment does not have the
+  `build` module installed.
+
+No implementation files were changed as part of this audit. The checklist
+above remains intentionally unchecked until the blocking gaps are repaired and
+the focused, full, packaging, and installed smoke checks are rerun.
+
 ## Non-goals
 
 - Replacing argparse.

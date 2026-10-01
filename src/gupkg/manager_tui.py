@@ -478,10 +478,10 @@ def run_manager_tui(
 
         async def _refresh(self) -> None:
             """Perform provider work off the Textual event loop."""
-            from gupkg.gupkg import _manager_update
+            from gupkg.gupkg import manager_update_target
 
             targets = list(current_inventory.targets)
-            results = await asyncio.gather(*(asyncio.to_thread(_manager_update, target) for target in targets))
+            results = await asyncio.gather(*(asyncio.to_thread(manager_update_target, target) for target in targets))
             output = "\n".join(f"{target.target_id}: {target.update_status}" for target in targets)
             self.query_one("#refresh-output", Static).update(output or "No packages discovered.")
             self.query_one("#refresh-status", Static).update(
@@ -509,13 +509,13 @@ def run_manager_tui(
             self.run_worker(self._plan(), exclusive=True)
 
         async def _plan(self) -> None:
-            from gupkg.gupkg import _manager_update
+            from gupkg.gupkg import manager_update_target
 
             self.plan: UpgradePlan = await asyncio.to_thread(
                 plan_upgrade_all,
                 current_inventory,
                 {Scope.USER, Scope.MACHINE},
-                _manager_update,
+                manager_update_target,
             )
             available = sum(entry.outcome == "eligible" for entry in self.plan.entries)
             current = sum(entry.reason == "current" for entry in self.plan.entries)
@@ -618,7 +618,7 @@ def run_manager_tui(
         async def _execute(self) -> None:
             nonlocal current_inventory
             from gupkg.gupkg import (
-                _manager_revalidate,
+                manager_revalidate_target,
                 full_package_upgrade,
             )
             from gupkg.windows import is_current_user_admin, relaunch_elevated
@@ -649,7 +649,7 @@ def run_manager_tui(
 
             def revalidate(target: ManagedTarget) -> str | None:
                 root = config.system_root if target.scope == Scope.MACHINE else config.user_root
-                return _manager_revalidate(target, root, quiet=True)
+                return manager_revalidate_target(target, root, quiet=True)
 
             def upgrade(target: ManagedTarget):
                 lines.append(f"{target.target_id}: running")

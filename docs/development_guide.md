@@ -1,10 +1,9 @@
 # Development architecture
 
-`src/gupkg/gupkg.py` is the stable executable and public Python facade. It contains CLI
-dispatch and the high-level command workflows, so a maintainer can read an
-install or update from validation through its final result without following a
-generic pipeline. Significant implementation domains live directly in
-`src/gupkg/`.
+`src/gupkg/cli.py` is the sole command-line boundary: it owns grammar, one-time
+context resolution, dispatch, rendering, and exit translation. `gupkg.py` owns
+public single-package workflows and has no CLI compatibility entrypoint.
+Significant implementation domains live directly in `src/gupkg/`.
 
 The runtime package has one-way domain boundaries:
 
@@ -22,14 +21,14 @@ The runtime package has one-way domain boundaries:
 - `distribution` owns standalone runtime health, bootstrap metadata checks, and
   scoped self-repair.
 
-The facade imports only the names needed by its workflows. It does not provide
-compatibility re-exports or a provider framework. Update payload preparation
+The CLI imports only the names needed by its workflows. It does not provide
+compatibility aliases or a provider framework. Update payload preparation
 supports a small declarative sequence of built-in payload and trusted
 package-local module steps; ordinary component installation remains fixed. New
 implementation code should be placed in the module that owns its state or side
 effect. Legacy format conversion remains implemented in
-`legacy_to_gupkg_toml.py`; `gupkg config from-legacy` coordinates its public CLI
-result.
+`legacy_to_gupkg_toml.py`; `gupkg config-fix` coordinates its explicit public
+conversion result.
 
 ## Manager integration
 

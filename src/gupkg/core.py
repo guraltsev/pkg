@@ -25,6 +25,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from ._version import __version__
+
 __copyright__ = "Copyright (C) 2025 Gennady Uraltsev. All rights reserved."
 __license__ = "MIT"
 
@@ -34,11 +36,6 @@ EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
 VERSION_DIR_NAME_RE = re.compile(r"^v(.+?)(?:\.l(\d+))?$")
-
-# Keep the release identifier explicit.  The release test verifies that this
-# value matches the immutable directory selected for the shipped runtime.
-__version__ = "0.1"
-
 
 class ConfigValidationError(ValueError):
     """Raised when ``pkg.toml`` content is structurally invalid.
@@ -58,9 +55,9 @@ class Scope(Enum):
     therefore usually requires Administrator privileges.
     """
 
-    AUTO = "Auto"
-    USER = "User"
-    MACHINE = "Machine"
+    AUTO = "auto"
+    USER = "user"
+    MACHINE = "system"
 
 
 @dataclass

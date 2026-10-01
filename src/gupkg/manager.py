@@ -46,7 +46,7 @@ class ManagerConfig:
     registry_cache: Path | None = None
     channel: str = "stable"
     shim_linkage: str = "dynamic"
-    schema_version: int = 1
+    schema_version: int = 2
 
 
 @dataclass(frozen=True)
@@ -248,7 +248,7 @@ _VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 
 
 def load_manager_config(path: Path) -> ManagerConfig:
-    """Read and strictly validate one version-one or version-two manager file."""
+    """Read and strictly validate one schema-version-two manager file."""
     path = Path(path).expanduser().absolute()
     if not path.is_file():
         raise ConfigValidationError(f"Manager configuration is not a regular file: {path}")
@@ -261,13 +261,12 @@ def load_manager_config(path: Path) -> ManagerConfig:
             "Invalid manager configuration: missing required top-level key(s)"
         )
     schema_version = raw["schema_version"]
-    if type(schema_version) is not int or schema_version not in {1, 2}:
-        raise ConfigValidationError("schema_version must be the integer 1 or 2")
-    required_top_level = (
-        {"mode", "schema_version", "packages"}
-        if schema_version == 1
-        else {"mode", "schema_version", "packages", "bin", "registry"}
-    )
+    if type(schema_version) is not int or schema_version != 2:
+        raise ConfigValidationError(
+            "schema_version must be the integer 2; older manager configurations "
+            "must be explicitly migrated"
+        )
+    required_top_level = {"mode", "schema_version", "packages", "bin", "registry"}
     allowed_top_level = required_top_level | {"shims"}
     if not required_top_level.issubset(raw) or not set(raw).issubset(allowed_top_level):
         unknown = sorted(set(raw) - allowed_top_level)
@@ -277,8 +276,9 @@ def load_manager_config(path: Path) -> ManagerConfig:
             parts.append(f"unknown top-level key(s): {', '.join(unknown)}")
         if missing:
             parts.append(f"missing top-level key(s): {', '.join(missing)}")
-        prefix = "schema_version 2 requires the [bin] and [registry] tables; " if schema_version == 2 else ""
-        raise ConfigValidationError(prefix + "Invalid manager configuration: " + "; ".join(parts))
+        raise ConfigValidationError(
+            "Invalid manager configuration: " + "; ".join(parts)
+        )
     if raw["mode"] != "manager":
         raise ConfigValidationError("mode must be exactly 'manager'")
     packages = raw["packages"]
@@ -306,11 +306,6 @@ def load_manager_config(path: Path) -> ManagerConfig:
         raise ConfigValidationError("Invalid [shims] table: expected exactly linkage")
     if shims_table["linkage"] not in {"dynamic", "static"}:
         raise ConfigValidationError("[shims].linkage must be exactly 'dynamic' or 'static'")
-    if schema_version == 1:
-        return ManagerConfig(
-            path, system_root, user_root, shim_linkage=shims_table["linkage"]
-        )
-
     bin_table = raw.get("bin")
     registry_table = raw.get("registry")
     if not isinstance(bin_table, dict) or set(bin_table) != {"system", "user"}:
@@ -351,25 +346,25 @@ def load_manager_config(path: Path) -> ManagerConfig:
 def discover_manager_config(
     explicit: Path | None = None,
     *,
-    cwd: Path | None = None,
-    version_root: Path | None = None,
+    module_directory: Path | None = None,
+    gupkg_home: str | None = None,
     appdata: str | None = None,
 ) -> Path | None:
-    """Select the manager file using the documented precedence without writing it."""
+    """Select a manager file from the fixed, non-working-directory locations."""
     if explicit is not None:
         return Path(explicit).expanduser()
-    current = (cwd or Path.cwd()) / "gupkg-config.toml"
-    if current.exists():
-        return current
+    candidates = []
+    if module_directory is not None:
+        candidates.append(Path(module_directory) / "gupkg-config.toml")
+    home = gupkg_home if gupkg_home is not None else os.environ.get("GUPKG_HOME")
+    if home:
+        candidates.append(Path(home) / "gupkg-config.toml")
     roaming_root = appdata if appdata is not None else os.environ.get("APPDATA")
     if roaming_root:
-        roaming = Path(roaming_root) / "gupkg" / "gupkg-config.toml"
-        if roaming.exists():
-            return roaming
-    if version_root is not None:
-        local = Path(version_root) / "gupkg-config.toml"
-        if local.exists():
-            return local
+        candidates.append(Path(roaming_root) / "gupkg" / "gupkg-config.toml")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
     return None
 
 
@@ -518,7 +513,7 @@ def migrate_manager_config(path: Path, output: Path | None = None) -> Path:
     return destination
 
 
-def discover_manager(config: ManagerConfig) -> ManagerInventory:
+def discover_manager(config: ManagerConfig, *, max_depth: int = 8) -> ManagerInventory:
     """Discover both configured roots and return scoped, deterministic targets."""
     scopes: list[ManagedScope] = []
     targets: list[ManagedTarget] = []
@@ -532,7 +527,7 @@ def discover_manager(config: ManagerConfig) -> ManagerInventory:
             if not root.is_dir():
                 raise OSError("root is not a directory")
             # Let the collection boundary report traversal failures verbatim.
-            inventory = discover_collection(root)
+            inventory = discover_collection(root, max_depth=max_depth)
             complete = inventory.complete
             diagnostics.extend(inventory.diagnostics)
         except OSError as exc:

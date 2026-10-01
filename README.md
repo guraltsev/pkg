@@ -2,10 +2,9 @@
 
 `gupkg` is installable with `python -m pip install .`, `python -m pip install
 -e .`, `pipx install .`, or `uv tool install .`. Run either `gupkg` or
-`python -m gupkg`; both use the same dispatcher. A directory of package roots
-is a collection: `gupkg list`, `gupkg config check`, and `gupkg upgrade check`
-operate across its discovered packages. Use `--package NAME` (or a nested
-selector such as `editors/vscode`) before a mutating command.
+`python -m gupkg`; both use the same dispatcher. Package commands are explicit:
+`install`, `update`, `config-check`, `config-fix`, and `tui`. Manager workflows
+are grouped below the explicit `manager` command.
 
 For the supported standalone/operator workflow, read
 [docs/operations.md](docs/operations.md). It covers release installation,
@@ -141,17 +140,17 @@ gupkg.cmd C:\Packages\Ripgrep\v14.1.0.l1
 gupkg.cmd C:\Packages\Ripgrep
 ```
 
-The default `Auto` scope uses Machine scope for an administrator unless the
+The default `auto` scope uses system scope for an administrator unless the
 package is portable-only; otherwise it uses User scope. Select a scope
 explicitly when needed:
 
 ```bat
 gupkg.cmd --scope User C:\Packages\Ripgrep
-gupkg.cmd --scope Machine C:\Packages\Ripgrep
+gupkg --scope system install C:\Packages\Ripgrep
 ```
 
-Machine scope requires Administrator privileges. Portable-only packages cannot
-be installed in Machine scope.
+System scope requires Administrator privileges. Portable-only packages cannot
+be installed in system scope.
 
 | Scope | Start Menu shortcut root | Registry environment and PATH | Wrapper directory |
 | --- | --- | --- | --- |
@@ -174,18 +173,18 @@ explicitly rebuild `App` from its origin before that repair.
 
 ## Commands and options
 
-`gupkg` uses a small verb-based command line. Every update is explicit: check
-what is available, download it into a new version directory, then choose when
-to make that downloaded version current.
+`gupkg` uses one explicit command grammar. `update` performs a full update by
+default; `--check-only` and `--download-only` limit it without changing the
+package. The root options are `--scope auto|user|system`, `--format
+human|toml`, `--pause`, and `--allow-hook-dependency-install`.
 
 ### Central manager mode
 
 The centrally installed executable and package-local mode are both supported.
 Package-local launchers and explicit package paths keep existing behavior.
-Manager mode is opt-in: use `--manager` with a discovered configuration, or
-use an explicit `--config PATH`. A discovered `gupkg-config.toml` never changes
-a normal package invocation into manager mode by itself. Without a selected
-package or an explicit manager request, the command reports an error.
+Manager mode is explicit: use the `manager` command with an optional
+`--config PATH`. A discovered `gupkg-config.toml` never changes a package
+invocation into manager mode.
 
 The current manager schema is:
 
@@ -214,22 +213,20 @@ leading `~` expands to the current user's home. Unknown variables and shell
 substitutions are rejected. A missing root is reported as an incomplete scope
 and blocks mutation; loading never creates roots. Scope comes from the
 configured root, so a user target cannot silently become a machine
-installation. Schema v1 remains readable and can be rewritten with
-`gupkg migrate-config`.
+installation. Only schema version 2 is accepted; older files must be migrated
+explicitly before manager commands can use them.
 
-Manager workflows include `gupkg list`, `gupkg doctor`, `gupkg upgrade check`,
-`gupkg upgrade all [--dry-run] [--yes]`, `gupkg registry sync|status`,
-`gupkg search`, `gupkg install <selector>`, `gupkg self status`, and
-`gupkg self repair|update`. `list` is local-only except for the `updatable`
-filter, which performs fresh checks. Doctor validates configuration, roots,
-`current`, and manifests without contacting providers. A valid `current` is
+Manager workflows include `gupkg manager list`, `gupkg manager doctor`,
+`gupkg manager update`, `gupkg manager registry sync|status`,
+`gupkg manager search`, `gupkg manager install`, and
+`gupkg manager self status|repair|update`. `list` is local-only. Doctor
+validates configuration, roots, `current`, and manifests without contacting providers. A valid `current` is
 authoritative: a lone version directory is not installed, and a broken or
 escaping activation is broken. Bootstrap definitions remain available but are
 never implicitly installed.
 
-`gupkg --manager list` reports the manager inventory. Use
-`gupkg-tui.cmd` automatically opens the interactive manager interface when the
-current directory is not a package directory. Upgrade All first shows a
+`gupkg --scope auto manager list` reports the manager inventory. Use
+`gupkg manager tui` for the interactive manager interface. Manager update first shows a
 non-installing plan with available, current, skipped, and failed-check counts.
 The confirmation screen puts `Run planned upgrades` first and exposes scope,
 checksum, dependency auto-install, and fail-fast settings. Execution remains
@@ -249,7 +246,7 @@ Run the simple interactive interface:
 gupkg-tui.cmd
 ```
 
-You can also run `gupkg.cmd tui` directly.
+You can also run `gupkg tui [PATH]` directly.
 
 When the TUI is outside a package directory and no manager configuration is
 found, it shows `MANAGER MODE` with one action: `Init manager mode`. That action
@@ -268,72 +265,65 @@ using a system Python; the bundled runtime uses its own
 `--pause` is omitted because the interface stays open after each operation.
 
 ```text
-gupkg.cmd [options] <command> [subcommand] [path]
+gupkg [global-options] <command> [command-options]
 ```
 
 ### Install
 
 ```bat
-gupkg.cmd install C:\Packages\Tool
+gupkg install C:\Packages\Tool
 ```
 
 `install` activates the chosen version and applies its package definition. With
 no path it installs the package in the current directory.
 
-### Upgrade
+### Update
 
 ```bat
-gupkg.cmd upgrade check C:\Packages\Tool
-gupkg.cmd upgrade download C:\Packages\Tool
-gupkg.cmd upgrade install C:\Packages\Tool
-gupkg.cmd upgrade full C:\Packages\Tool
+gupkg update C:\Packages\Tool
+gupkg update C:\Packages\Tool --check-only
+gupkg update C:\Packages\Tool --download-only
 ```
 
-`upgrade check` is read-only and reports either `Available: ...` or `Current: ...`.
-When it reports an available release, it also tells you to run `upgrade download`;
-the check summary explicitly says that no files were changed.
-`upgrade download` checks again, downloads and verifies the release, and stages
+`update --check-only` is read-only and reports either an available release or
+the current state. `update --download-only` checks again, downloads and verifies the release, and stages
 it as a new version directory without changing `current`. A missing or empty
 `App` remains repairable when upstream reports the same version if the plain
-candidate version is not already present. `upgrade install`
-activates the most recently downloaded version and applies its shortcuts,
+candidate version is not already present. A full `update` activates the staged
+version and applies its shortcuts,
 environment settings, PATH entries, and wrappers. There is no automatic update
 policy or background update action. A successful activation consumes its
-download receipt, so `upgrade install` cannot silently reinstall an old staged
-version; run `upgrade download` before each activation. `upgrade full` performs
-one discovery/download pass and then activates the staged result from the
-current package directory or package root.
+download receipt, and the limiting modes never activate a staged version.
 
 ### Configuration
 
 ```bat
-gupkg.cmd config check C:\Packages\Ripgrep
-gupkg.cmd config update C:\Packages\Ripgrep\v14.1.0.l1
-gupkg.cmd --dry-run config from-legacy C:\OldPackages\Ripgrep
+gupkg config-check C:\Packages\Ripgrep
+gupkg config-fix C:\Packages\Ripgrep\v14.1.0.l1
+gupkg config-fix --output C:\OldPackages\Ripgrep\pkg.toml C:\OldPackages\Ripgrep
 ```
 
-`config check` validates a package without installing it. `config update`
-creates a starter `pkg.toml` when absent or synchronizes its directory-owned
-metadata. By default it also imports `.lnk` files under `_shortcuts` and renames
-each source to `.lnk.imported`; use `--import-shortcuts=false` to leave them
-untouched. `config from-legacy` is a one-time, best-effort migration tool for
-older package formats.
+`config-check` validates a package without changing it. `config-fix` creates a
+starter file, synchronizes directory-owned metadata, or explicitly converts
+recognized legacy files. It creates a timestamped backup before replacement by
+default; `--no-backup` and `--backup=false` suppress it. Shortcut import is
+controlled by `--import-shortcuts true|false`.
 
 All options are accepted by the command parser; the following table notes where
 they have an effect.
 
 | Option | Meaning |
 | --- | --- |
-| `--scope Auto\|User\|Machine` | Selects installation scope; defaults to `Auto`. Relevant to install and activation actions. |
-| `--use-defaults` | For `Install`, continues with defaults when an existing `pkg.toml` cannot be parsed or validated. |
+| `--scope auto\|user\|system` | Selects installation scope; defaults to `auto`. |
+| `--format human\|toml` | Selects human output or one parseable TOML result document. |
 | `--allow-downgrade` | For `install`, permits replacing `current` when it already targets a newer version. |
 | `--refresh-app` | For `Install`, replaces `App` from `[origin]`, even when it is populated. |
 | `--no-checksum` | Bypasses configured origin or update checksum verification and emits a warning. |
-| `--local-deps-autoinstall` | Allows trusted `pkg.local` update hooks to install missing imports. Hooks otherwise report unavailable dependencies without installing anything. |
-| `--import-shortcuts true\|false` | For `config update`, imports `.lnk` files from `_shortcuts` and archives them as `.lnk.imported`; defaults to `true`. |
-| `--output <path>` | Selects `config from-legacy` output; the default is `<path>\pkg.toml`. |
-| `--dry-run` | For `config from-legacy`, writes generated TOML to standard output without changing files. |
-| `--toml` | Adds `ok`, `changed`, and `status` fields to normal output. |
+| `--allow-hook-dependency-install` | Allows trusted `pkg.local` update hooks to install missing imports for this invocation. |
+| `--import-shortcuts true\|false` | For `config-fix`, imports `.lnk` files from `_shortcuts`; defaults to `true`. |
+| `--output <path>` | Selects `config-fix` output for legacy conversion only. |
+| `--no-backup`, `--backup=false` | Suppress the default timestamped `config-fix` backup. |
+| `--check-only`, `--download-only` | Limit `update` or manager update work. |
 | `--pause` | Waits for a keypress before exit. |
 | `--version` | Prints the `gupkg` version and exits. |
 | `--help`, `--help-extended` | Prints standard or expanded CLI help and exits. |
@@ -341,9 +331,9 @@ they have an effect.
 Exit status is `0` for success, `2` for a user/configuration error, `3` for a
 mutation failure, and `4` for an unexpected internal error.
 
-The convenience scripts call the same entry point and add `--pause` where
-appropriate. They use the same `install`, `upgrade`, and `config` commands
-documented above.
+The convenience scripts call the same `gupkg.cli:main` entry point. The
+console script and `python -m gupkg` therefore use identical parsing and
+version information.
 
 The internal `src\gupkg\gupkg.cmd` locates Python in this order:
 `GUPKG_PYTHON`, `gupkg.python` beside the launcher, an existing

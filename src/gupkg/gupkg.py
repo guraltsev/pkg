@@ -7,7 +7,7 @@ updates while focused implementation domains live in the ``gupkg`` package.
 
 Usage and API
 -------------
-Call ``main(...)`` for command-line execution. Embedders may call
+Call the package workflow functions directly. Embedders may call
 ``install_package(...)``, ``update_package_config(...)``,
 ``convert_legacy_config(...)``, ``health_check_package(...)``,
 ``check_package_update(...)``, ``download_package_update(...)``, or
@@ -831,7 +831,7 @@ def install_package(
         for message in inconsistencies:
             log_error(f"  - {message}")
         log_info("Run this command before installing:")
-        log_info(f"  gupkg config update {identity.version_path}")
+        log_info(f"  gupkg config-fix {identity.version_path}")
         return ActionResult(
             ok=False,
             changed=False,
@@ -1665,7 +1665,7 @@ def _manager_targets(inventory, scopes: set[Scope]):
     return [target for target in inventory.targets if target.scope in scopes]
 
 
-def _manager_update(target) -> ActionResult:
+def manager_update_target(target) -> ActionResult:
     """Refresh one target's update state while keeping CLI output suppressed."""
     manifest = next(
         (item for item in target.package.manifests if item.version_path.name == (target.installed_version or target.local_version)),
@@ -1748,7 +1748,7 @@ def _manager_list(inventory, *, scopes: set[Scope], filter_name: str, toml: bool
     highest = EXIT_SUCCESS
     if filter_name == "updatable":
         for target in targets:
-            highest = max(highest, _manager_update(target).exit_code)
+            highest = max(highest, manager_update_target(target).exit_code)
         # Failed checks remain visible so an updatable view does not hide the
         # reason a candidate could not be established.
         targets = [target for target in targets if target.update_status in {"available", "error"}]
@@ -1809,7 +1809,7 @@ def _manager_check(inventory, *, scopes: set[Scope], toml: bool) -> int:
     targets = _manager_targets(inventory, scopes)
     highest = EXIT_SUCCESS
     for target in targets:
-        highest = max(highest, _manager_update(target).exit_code)
+        highest = max(highest, manager_update_target(target).exit_code)
     complete = all(scope.complete for scope in inventory.scopes if scope.scope in scopes)
     if not complete:
         highest = max(highest, EXIT_USER_ERROR)
@@ -1822,7 +1822,7 @@ def _manager_check(inventory, *, scopes: set[Scope], toml: bool) -> int:
     return highest
 
 
-def _manager_revalidate(target, configured_root: Path | None = None, *, quiet: bool = False) -> str | None:
+def manager_revalidate_target(target, configured_root: Path | None = None, *, quiet: bool = False) -> str | None:
     """Recheck ownership, activation, and health immediately before mutation."""
     try:
         root = target.package.root.resolve()
@@ -1852,7 +1852,7 @@ def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
     selected_scopes = [scope for scope in inventory.scopes if scope.scope in scopes]
     inventory_complete = all(scope.complete for scope in selected_scopes)
 
-    plan = plan_upgrade_all(inventory, scopes, _manager_update)
+    plan = plan_upgrade_all(inventory, scopes, manager_update_target)
     eligible = [entry for entry in plan.entries if entry.outcome == "eligible"]
     system_work = any(entry.target.scope == Scope.MACHINE for entry in eligible)
     if not toml:
@@ -1914,7 +1914,7 @@ def _manager_upgrade(inventory, *, scopes: set[Scope], yes: bool, dry_run: bool,
     def revalidate_target(target):
         configured_root = (inventory.config.user_root if target.scope == Scope.USER
                            else inventory.config.system_root)
-        return _manager_revalidate(target, configured_root, quiet=toml)
+        return manager_revalidate_target(target, configured_root, quiet=toml)
 
     execute_upgrade_plan(plan, revalidate_target, upgrade_target, fail_fast=fail_fast)
     return _render_upgrade_plan(inventory, plan, toml=toml)
@@ -2167,8 +2167,8 @@ def _has_explicit_package_path(arguments: list[str]) -> bool:
     )
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Dispatch package commands and collection-wide read-only commands.
+def _legacy_main(argv: Optional[List[str]] = None) -> int:
+    """Retain the superseded dispatcher only for source-level archaeology.
 
     Parameters
     ----------
@@ -2461,6 +2461,4 @@ def main(argv: Optional[List[str]] = None) -> int:
     return _package_main(remaining)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
 

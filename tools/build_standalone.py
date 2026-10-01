@@ -9,11 +9,26 @@ payload for the native bootstrap artifact.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+
+
+def _source_version(source: Path) -> str:
+    """Read the release value from the runtime's single version module."""
+    version_source = source / "_version.py"
+    tree = ast.parse(version_source.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__version__":
+                    value = ast.literal_eval(node.value)
+                    if isinstance(value, str):
+                        return value
+    raise ValueError(f"No string __version__ found in {version_source}")
 
 
 def main() -> int:
@@ -22,15 +37,16 @@ def main() -> int:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--runtime-sha256", required=True)
     parser.add_argument("--source", type=Path, default=Path("src/gupkg"))
-    parser.add_argument("--manifest", type=Path, default=Path("pkgs/gupkg/vbootstrap/pkg.toml"))
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--manifest", type=Path, default=Path("src/gupkg/pkg.toml"))
+    parser.add_argument("--version")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    release_version = args.version or _source_version(args.source)
     digest = hashlib.sha256(args.runtime.read_bytes()).hexdigest()
     if digest.casefold() != args.runtime_sha256.casefold():
         raise SystemExit("embedded runtime digest does not match --runtime-sha256")
     with tempfile.TemporaryDirectory(prefix="gupkg-standalone-") as temporary:
-        root = Path(temporary) / f"v{args.version}"
+        root = Path(temporary) / f"v{release_version}"
         payload = root / "gupkg"
         payload.mkdir(parents=True)
         shutil.copytree(args.source, payload, dirs_exist_ok=True, ignore=shutil.ignore_patterns("python"))
@@ -42,6 +58,24 @@ def main() -> int:
             shutil.copy2(shim, payload / "gupkg-tui.exe")
         (payload / "gupkg.config.toml").write_text(
             'target = "%COMSPEC%"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "/d"\n\n[[argument]]\nvalue = "/s"\n\n[[argument]]\nvalue = "/c"\n\n[[argument]]\nvalue = "gupkg.cmd"\n',
+            encoding="utf-8",
+        )
+        # Keep manager discovery deterministic in a standalone payload while
+        # leaving user roaming configuration as the normal override.
+        (payload / "gupkg-config.toml").write_text(
+            'mode = "manager"\n'
+            'schema_version = 2\n\n'
+            '[packages]\n'
+            'system = "../system"\n'
+            'user = "../user"\n\n'
+            '[bin]\n'
+            'system = "../bin-system"\n'
+            'user = "../bin-user"\n\n'
+            '[registry]\n'
+            'cache = "../registry"\n'
+            'channel = "stable"\n\n'
+            '[shims]\n'
+            'linkage = "dynamic"\n',
             encoding="utf-8",
         )
         (payload / "gupkg-tui.config.toml").write_text(

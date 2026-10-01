@@ -36,7 +36,7 @@ from .core import (
 def update_config_file(identity: PackageIdentity) -> StepResult:
     """Synchronize directory-owned metadata back to ``pkg.toml``.
 
-    ``config update`` uses this function. It
+    ``config-fix`` uses this function. It
     intentionally works from explicit inputs only: one package identity and the
     current file contents on disk. Missing configs become documented starter
     templates; existing configs are rewritten only when they already use the
@@ -124,7 +124,7 @@ def _parse_editable_top_level_metadata_line(line: str) -> Tuple[str, str, str, s
     """Parse one editable top-level metadata line.
 
     The helper is intentionally narrow: it supports the single-line assignment
-    shape that ``config update`` rewrites safely and understands ``#`` only when
+    shape that ``config-fix`` rewrites safely and understands ``#`` only when
     it appears outside quoted strings.
     """
     index = 0
@@ -405,7 +405,7 @@ def create_starter_config(identity: PackageIdentity) -> str:
     lines = [
         "# Generated automatically by `gupkg`.",
         "",
-        "# `gupkg config update` keeps these fields aligned with the package folder name.",
+        "# `gupkg config-fix` keeps these fields aligned with the package folder name.",
         f"name = {_to_toml_scalar(metadata['name'])}",
         f"version = {_to_toml_scalar(metadata['version'])}",
         f"localVersion = {_to_toml_scalar(metadata['localVersion'])}",
@@ -457,8 +457,8 @@ def create_starter_config(identity: PackageIdentity) -> str:
         '# url = "https://example.invalid/tool-current.zip"',
         "",
         "# Update examples:",
-        "# Use `gupkg upgrade check`, `gupkg upgrade download`, and",
-        "# `gupkg upgrade install` to update explicitly.",
+        "# Use `gupkg update --check-only`, `gupkg update --download-only`, or",
+        "# `gupkg update` to update explicitly.",
         "#",
         "# Git origin workflow (App is a Git work tree). The update check",
         "# inherits Git mode and ref from [origin]. The ordinary git payload",

@@ -13,16 +13,17 @@ installed `gupkg` should discover packages in separate user and system roots.
 
 | Need | Entry point |
 | --- | --- |
-| Install or repair one package | `gupkg install <version-dir-or-root>` |
-| Inspect all managed packages | `gupkg list`, `gupkg doctor` |
-| Check or apply managed updates | `gupkg upgrade check`, `gupkg upgrade all` |
-| Find packages in the GitHub registry | `gupkg registry sync`, `gupkg search` |
-| Install a registry selector | `gupkg install <selector>` |
-| Check or repair the standalone runtime | `gupkg self status`, `gupkg self repair` |
+| Install or repair one package | `gupkg install [PATH]`, `gupkg config-fix [PATH]` |
+| Inspect or update one package | `gupkg config-check [PATH]`, `gupkg update [PATH]` |
+| Inspect all managed packages | `gupkg manager list`, `gupkg manager doctor` |
+| Check or apply managed updates | `gupkg manager update [--check-only|--download-only]` |
+| Find packages in the registry | `gupkg manager registry sync`, `gupkg manager search` |
+| Install a registry selector | `gupkg --scope user|system manager install SELECTOR` |
+| Open an interactive interface | `gupkg tui [PATH]`, `gupkg manager tui` |
 
-Local paths continue to mean local packages. In manager mode, a bare token such
-as `ripgrep` is a registry selector; an existing path or path-looking argument
-continues to use the local package workflow.
+Every invocation names its command explicitly. Package paths are optional only
+when the current directory resolves as a package. Manager selection never
+occurs implicitly from the current directory.
 
 ## Standalone installation
 
@@ -48,9 +49,8 @@ The repository-side assembly tool is:
 python tools\build_standalone.py ^
   --runtime C:\release-inputs\cpython-3.12.10-embed-amd64.zip ^
   --runtime-sha256 <64-hex-digest> ^
-  --source . ^
-  --manifest pkgs\gupkg\vbootstrap\pkg.toml ^
-  --version 0.1.0 ^
+  --source src\gupkg ^
+  --manifest src\gupkg\pkg.toml ^
   --output dist\gupkg-0.1.0.zip
 ```
 
@@ -70,13 +70,13 @@ available for development. It may use `GUPKG_PYTHON`, `gupkg.python`, a local
 Manager mode is enabled by a v2 `gupkg-config.toml`. The discovery order is:
 
 1. an explicit `--config PATH`;
-2. `gupkg-config.toml` in the current directory;
-3. `%APPDATA%\gupkg\gupkg-config.toml`;
-4. the version-local manager configuration beside the installed executable.
+2. the file beside the imported `gupkg.cli` module;
+3. `%GUPKG_HOME%\gupkg-config.toml`;
+4. `%APPDATA%\gupkg\gupkg-config.toml`.
 
-The first existing candidate wins. If no candidate exists, package-local mode
-is used and manager-only commands fail with a configuration error rather than
-creating a default manager.
+The first existing candidate wins. An invalid higher-priority candidate is an
+error and never falls through. The current directory and its parents are
+never searched; a missing candidate is reported with every searched path.
 
 The interactive `gupkg-tui` entry point is an exception: outside a package
 directory it opens `MANAGER MODE` automatically. Without a configuration it
@@ -111,16 +111,8 @@ case-insensitive process environment, and a leading `~` means the current
 user's home directory. Unknown variables, shell substitutions, and unsafe path
 relationships are rejected.
 
-Schema v1 remains readable for migration, but it has no `[bin]` or `[registry]`
-section. Validate and rewrite it with:
-
-```bat
-gupkg --config C:\path\gupkg-config.toml migrate-config
-```
-
-Migration rewrites the selected file atomically. Copy the original first when
-you need a rollback artifact, then review the generated v2 file and create
-missing directories deliberately.
+Only schema version 2 is accepted. Older files must be converted as a separate
+administrative operation before they can select manager mode.
 
 ## Registry workflow
 
@@ -131,11 +123,10 @@ does not import or execute package code. A failed sync leaves the previous
 validated active tree in place.
 
 ```bat
-gupkg registry sync
-gupkg registry status
-gupkg search ripgrep
-gupkg search --installed
-gupkg search --available
+gupkg manager registry sync
+gupkg manager registry status
+gupkg manager search ripgrep
+gupkg manager search --offline
 ```
 
 Use `--offline` with `search` when network access is forbidden. Offline search
@@ -145,9 +136,8 @@ tree state without downloading.
 Install a registry package by its selector:
 
 ```bat
-gupkg install ripgrep
-gupkg install editors/vscode --scope user
-gupkg install ripgrep --offline
+gupkg --scope user manager install ripgrep
+gupkg --scope user manager install vscode --offline
 ```
 
 The selector resolves to a validated manifest, then the normal package install
@@ -162,13 +152,13 @@ The self commands inspect the embedded runtime, bootstrap metadata, and the
 scope-specific shim/configuration pair:
 
 ```bat
-gupkg self status
-gupkg self repair --scope user
-gupkg self repair --scope system
-gupkg self update --scope user
+gupkg manager self status
+gupkg --scope user manager self repair
+gupkg --scope system manager self repair
+gupkg --scope user manager self update
 ```
 
-`self status` is read-only. `self repair` restores missing or inconsistent
+`manager self status` is read-only. `manager self repair` restores missing or inconsistent
 standalone launch metadata and shims from the installed version. `self update`
 uses the same self-package path as repair; a newer release must be present in
 the configured release/update source before it can be activated. System scope
@@ -180,17 +170,17 @@ Python files.
 
 When a manager command fails, preserve the evidence before changing anything:
 
-1. Run `gupkg registry status` and `gupkg doctor`.
-2. Run `gupkg list --toml` to capture scoped inventory and health fields.
-3. For a registry problem, retry `gupkg registry sync`; if it fails, continue
+1. Run `gupkg manager registry status` and `gupkg manager doctor`.
+2. Run `gupkg --format toml manager list` to capture scoped inventory and health fields.
+3. For a registry problem, retry `gupkg manager registry sync`; if it fails, continue
    using the previous validated cache or add `--offline`.
 4. For a package problem, fix the package root or manifest, then run
-   `gupkg config check <path>` and `gupkg install <path>`.
-5. For a standalone problem, run `gupkg self status`, then the appropriate
-   scoped `self repair`.
+   `gupkg config-check <path>` and `gupkg install <path>`.
+5. For a standalone problem, run `gupkg manager self status`, then the appropriate
+   scoped `manager self repair`.
 
-Manager upgrade planning is non-mutating. Use `gupkg upgrade check` before
-`gupkg upgrade all`; a failed target does not invalidate successful targets,
+Manager update planning is non-mutating. Use `gupkg --scope auto manager update
+--check-only` before a confirmed full update; a failed target does not invalidate successful targets,
 and a later safe rerun revalidates already-current packages. Declining mixed
 scope elevation must leave user packages unchanged.
 
