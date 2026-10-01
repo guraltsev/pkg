@@ -1,792 +1,598 @@
-# Issue 013: recover a coherent CLI and reduce branching at domain boundaries
+# Issue 013: CLI and code-quality recovery plan
 
 Date: 2026-09-30
 Priority: Critical
 Change type: Behavior stabilization, CLI redesign, source layout, and targeted refactoring
 
-## Summary
+## Objective
 
-The repository no longer has one coherent command-line contract or one clear
-source-of-truth layout. The current executable works by parsing the same
-argument list in several stages, inferring an operating mode from paths and
-configuration, forwarding reconstructed arguments into a second parser, and
-then dispatching through long condition chains. At the same time, manager,
-collection, package, registry, self-management, and TUI behavior have been
-added to a facade that was originally shaped around one package.
+Restore one discoverable CLI, one context-resolution path, shared CLI/TUI
+operations, and one installable source/version layout. Refactor only the
+measured domain-boundary hotspots needed to reach that state.
 
-This is now causing observable regressions, not merely aesthetic debt:
+Current problems include conflicting manager-activation rules, broken help,
+inconsistent scope syntax, mixed human/TOML output, and a source tree that does
+not match `pyproject.toml`.
 
-- four focused manager CLI tests fail because current-directory manager
-  configuration is discovered but not used to select manager mode;
-- subcommand help is routed to the package parser and either omits the command
-  or fails on valid manager/global options;
-- documented commands are absent from top-level help;
-- public scope spellings and option placement depend on which parser happens
-  to consume the token;
-- the installable source layout declared by `pyproject.toml` does not match the
-  checked-in runtime layout; and
-- the CLI facade and configuration module contain several hundred-line
-  functions with dozens of independent decisions.
+## Design decisions
 
-The remedy should not be a framework rewrite. It should establish one CLI
-grammar, resolve execution context exactly once, move orchestration behind
-public domain operations shared by CLI and TUI, restore a conventional
-installable source tree, and split only the two measured complexity hotspots
-along real domain boundaries.
+Approved decisions are binding for this plan. Resolve the remaining decisions
+before Phase 1. Any later change must also update tests, CLI help, README, the
+operations guide, and TUI behavior.
 
-## User impact
+### 1. Manager configuration discovery - approved
 
-The current state makes the program difficult to predict:
+Manager configuration is loaded only beneath the `manager` command.
 
-1. `gupkg --help` describes only package-local commands even though the README
-   presents manager, collection, registry, search, and self commands.
-2. `gupkg list --help`, `gupkg search --help`, and similar leaf help requests
-   are intercepted before mode resolution and sent to the wrong parser.
-3. A `gupkg-config.toml` in the current directory is found, but the dispatcher
-   does not currently activate manager mode from it. This contradicts the
-   closed manager design and its behavior tests.
-4. `--scope` means `Auto|User|Machine` to package commands but
-   `user|system|all` to manager commands.
-5. Options are presented as global even when they affect only one leaf
-   command. Invalid combinations can therefore parse successfully and be
-   silently irrelevant.
-6. A source checkout, a wheel installation, and the tests do not derive the
-   package from the same directory model.
+- `gupkg manager --config PATH <subcommand>` uses that exact file.
 
-For maintainers, a small behavior change can require edits to parser setup,
-mode detection, argument reconstruction, dispatch branches, TUI imports,
-documentation, and several test suites. That is the core quality problem this
-issue addresses.
+Without `--config`, use the first existing `gupkg-config.toml` in this order:
 
-## Evidence from the current tree
+1. The directory containing the imported `gupkg.cli` module, resolved as
+   `Path(gupkg.cli.__file__).resolve().parent`. The standalone builder places
+   its default `gupkg-config.toml` in that same directory beside `cli.py`.
+2. The directory named by `GUPKG_HOME`.
+3. `%APPDATA%\gupkg`, the Windows roaming application-data directory.
 
-### 1. The public CLI is assembled from multiple parsers
+- An unset `GUPKG_HOME` or `APPDATA` location is skipped.
+- If a higher-priority candidate exists but is invalid, exit with code 2; do
+  not fall through to a lower-priority file.
+- If no candidate exists, exit with code 2 and list the searched locations.
+- `--config` is owned by `manager` and appears before its subcommand.
+- Do not inspect the current directory or search parent directories.
+- A missing or invalid selected manager configuration exits with code 2.
+- Accept only the current manager schema, `schema_version = 2`. Reject older
+  manager schemas; do not convert or normalize them.
+- Package commands never load manager configuration.
 
-`src/v0.1/gupkg/gupkg.py` currently contains all of these mechanisms:
+### 2. Canonical command grammar - approved
 
-- `_package_main()` creates the package parser at line 1258;
-- `main()` creates a separate parser with `add_help=False` at line 2190;
-- that outer parser uses `parse_known_args()` at line 2206;
-- selected global flags are reconstructed into `package_args` at lines
-  2208-2212;
-- manager mode creates another parser at line 2266 and stores the remaining
-  command as `nargs="*"`;
-- search creates a leaf parser at line 2020;
-- registry commands parse tokens manually at lines 1975-2015;
-- self repair/update creates another leaf parser at line 2132;
-- registry install creates another parser at line 2315; and
-- collection list creates another parser at line 2442.
-
-This means there is no single parser tree that can answer basic questions such
-as which commands exist, which options belong to them, or how to render help.
-The parsing strategy itself creates much of the branching in `main()`.
-
-### 2. Help bypasses the dispatcher and is observably wrong
-
-At lines 2185-2188, any occurrence of `--help`, `--help-extended`, or
-`--version` sends the complete raw argument list directly to `_package_main()`.
-Consequences observed from the checked-in runtime include:
-
-- top-level help lists only `install`, `upgrade`, `config`, and `tui`;
-- it does not list `list`, `doctor`, `registry`, `search`, `self`, or
-  `migrate-config`;
-- it does not describe `--manager`, `--config`, `--package`, `--root`, or
-  `--max-depth`;
-- `gupkg --manager --help` is handled by a parser that does not define
-  `--manager`; and
-- `gupkg list --help` is handled by a parser that does not define `list`.
-
-Help must be generated by the same grammar that executes commands. A separate
-extended-help string may remain for tutorials, but it must not substitute for
-the command tree.
-
-### 3. Manager-mode policy contradicts itself and currently regresses
-
-The closed design in
-`docs/issues/_closed/issue011-fixed-manager-mode-and-bulk-upgrades.md` says a
-valid current-directory `gupkg-config.toml` selects manager mode. The focused
-tests in `tests/test_gupkg_manager_cli.py` protect that observable behavior,
-including invalid-marker failure and selected-target scope ownership.
-
-The top-level README now says manager mode is opt-in through `--manager` or an
-explicit `--config`. The current dispatcher implements the README wording at
-lines 2217-2231 by setting `manager_requested` only from those explicit flags,
-even though it also discovers the current-directory file.
-
-The focused command below currently reports four failures and thirteen passes:
-
-```text
-.venv\Scripts\python.exe -m pytest -q tests/test_runtime_cli.py tests/test_gupkg_manager_cli.py tests/test_gupkg_collection.py tests/test_manager_tui.py
-```
-
-The failures are all in manager CLI behavior:
-
-- the implicit marker does not select manager list;
-- a malformed current-directory marker falls through to a generic
-  no-package error;
-- `--package` selects the ad-hoc collection rather than the configured manager
-  inventory; and
-- manager `doctor` and upgrade dry-run do not run from the marker directory.
-
-This issue adopts the issue 011 contract: an exact current-directory marker
-activates manager context, parent directories are not searched, a malformed
-marker is fatal, and an explicit local package path takes precedence. If that
-product decision is intentionally reversed, the reversal must be made once in
-the CLI contract, tests, README, operations guide, and TUI rather than left as
-the current split state.
-
-### 4. Context selection and command dispatch are interleaved
-
-`main()` simultaneously performs all of the following:
-
-- early information-command routing;
-- global option parsing;
-- manager configuration discovery;
-- local-path-versus-registry-selector heuristics;
-- manager config loading and inventory discovery;
-- package selection and scope rewriting;
-- manager command parsing and execution;
-- collection discovery;
-- package-context probing;
-- TUI selection;
-- collection mutation guards; and
-- fallback into the package parser.
-
-This makes precedence hard to verify. For example, `_has_explicit_package_path()`
-at lines 2149-2167 partially recognizes path syntax, while a second expression
-at lines 2408-2413 decides whether positional arity implies an explicit path.
-These are overlapping answers to the same question.
-
-There are also redundant branches at lines 2436-2439: both arms call
-`_package_main(package_args)`. This is small by itself, but representative of
-control flow that has grown through incremental conditions rather than a
-stable dispatch model.
-
-### 5. Measured complexity is concentrated in a few functions
-
-An AST-based inventory of decision nodes gives the following approximate
-hotspots. The exact number is a prioritization aid, not a quality gate.
-
-| Function | Lines | Approximate decisions | Primary concern |
-| --- | ---: | ---: | --- |
-| `gupkg.main` | 292 | 87 | Parsing, context resolution, and execution mixed together |
-| `configuration.normalize_update_config` | 316 | 80 | Check, payload, mapping, rename, and step schemas in one function |
-| `gupkg._package_main` | 292 | 49 | Parser construction, validation, execution, and rendering mixed together |
-| `configuration.normalize_runtime_config` | 361 | 46 | Top-level and four component schemas normalized together |
-| `github_releases.check_update` | 160 | 38 | Provider-specific parsing and selection |
-| `updates._prepare_update` | 185 | 37 | Staging workflow with several failure/cleanup paths |
-| `manager.load_manager_config` | 99 | 37 | Two schema versions plus path safety validation |
-| `components.install_wrappers` | 221 | 34 | Several wrapper forms and filesystem side effects |
-| `gupkg.install_package` | 258 | 31 | High-level install workflow |
-
-Not every large function should be split. `install_package()` and staging
-functions describe sequential workflows and can remain cohesive when their
-blocks are narrated. The two parsers/dispatchers and the two configuration
-normalizers contain separable domains and should be addressed first.
-
-### 6. The facade is importing private implementation details
-
-At lines 77-85, `gupkg.py` imports seven underscore-prefixed names from
-`updates.py`. That makes the purported public facade depend on private update
-storage and preparation details.
-
-The dependency also points in the other direction:
-
-- `manager_tui.py` imports `_manager_update`, `_manager_revalidate`, and
-  `full_package_upgrade` from `gupkg.gupkg` inside event handlers;
-- `distribution.py` imports `install_package` from `gupkg.gupkg`; and
-- `bootstrap.py` imports the facade's `main()`.
-
-The manager CLI and manager TUI therefore share behavior by reaching into CLI
-private functions, not by calling a public manager orchestration boundary.
-This makes CLI cleanup risky and invites drift between interactive and
-noninteractive behavior.
-
-### 7. Output generation is coupled to execution
-
-Manager helpers mutate target objects, suppress nested stdout with
-`redirect_stdout`, print either prose or TOML, and compute exit severity in the
-same call chain. `_manager_toml()` and `_render_upgrade_plan()` duplicate parts
-of the manager document schema.
-
-The package CLI similarly executes a workflow and then contains a long status
-message chain at lines 1520-1547. The result model already exists, but rendering
-has not become a clear boundary.
-
-This coupling explains why `--toml` is vulnerable to stray human-readable
-errors. The current failing manager test demonstrates the result: `tomllib`
-receives `ERROR: No package selected...` instead of one TOML document.
-
-### 8. The declared package layout does not match the repository
-
-`pyproject.toml` declares:
-
-```toml
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["gupkg*"]
-```
-
-The Python package is actually under `src/v0.1/gupkg`. There is no
-`src/gupkg` directory. The README, development guide, operations guide, and
-standalone build tool nevertheless refer to `src/gupkg` as if it exists.
-
-Tests work around this through `tests/runtime_paths.py`, which searches for the
-sole versioned directory and inserts it into `sys.path`. Consequently the test
-import path does not validate the installable layout declared by the build
-metadata.
-
-Related release metadata is also split:
-
-- `pyproject.toml` declares project version `0.12.0`;
-- `src/v0.1/pkg.toml` declares package version `0.1`; and
-- `src/v0.1/gupkg/core.py` declares `__version__ = "0.1"`.
-
-Package data also names `shim/README.md`, while the checked-in file is
-`shim/README-exe-shim.md`. These inconsistencies must be resolved before a
-refactor can rely on wheel/install smoke tests.
-
-### 9. Documentation reflects several eras of architecture
-
-The closed issue 008 was based on a deliberate single-main-file design, then
-received an architecture note saying runtime domains now belong in separate
-modules. The current development guide describes those newer domain
-boundaries, but still points to nonexistent `src/gupkg` paths. The open issue
-012 is partially implemented while its introduction says major parts remain
-planned.
-
-This history is useful, but new work should not treat every old constraint as
-simultaneously active. This issue supersedes only the CLI/source-layout quality
-parts of earlier plans. It does not change package, update, registry, or
-standalone product semantics defined by issue 012.
-
-## Design principles
-
-1. **One grammar.** One parser tree defines every public command and option.
-2. **One context decision.** Resolve manager/package/collection context once,
-   after parsing syntax and before executing a command.
-3. **Leaf-owned options.** Put an option on the command that uses it. Keep only
-   genuinely universal options at the root.
-4. **Public orchestration boundaries.** CLI and TUI call the same public
-   manager/package operations; neither imports the other's private helpers.
-5. **Results before rendering.** Domain operations return structured results;
-   CLI renderers produce human or machine output without suppressing arbitrary
-   nested stdout.
-6. **Explicit code over a command framework.** Argparse subparsers and small
-   named handlers are sufficient. Do not add a plugin registry, dependency
-   injection container, base command class, or generic middleware pipeline.
-7. **Split by owned behavior.** Extract only concepts that have a real name,
-   invariants, reuse, or side-effect boundary.
-8. **Preserve behavior deliberately.** Compatibility is a list of documented
-   command contracts, not whatever the current multi-parser fallthrough happens
-   to accept.
-9. **Test observable commands.** Do not write tests for parser construction,
-   module placement, handler maps, or private call graphs.
-
-## Target CLI contract
-
-### Root grammar
-
-Use one conventional shape:
+Require an explicit command. The package path remains optional only for a
+command that can resolve the current directory as a package:
 
 ```text
 gupkg [global-options] <command> [command-options]
+
+gupkg [global-options] install [PATH] [--allow-downgrade] [--refresh-app]
+      [--no-checksum] [--shim-linkage dynamic|static]
+gupkg [global-options] update [PATH] [--check-only | --download-only]
+      [--no-checksum] [--shim-linkage dynamic|static]
+gupkg [global-options] config-check [PATH]
+gupkg [global-options] config-fix [PATH] [--no-backup | --backup=false]
+      [--import-shortcuts true|false] [--output PATH]
+gupkg [global-options] tui [PATH]
+gupkg [global-options] manager [manager-options] <subcommand>
 ```
 
-The parser should expose these command families in top-level help:
+Package behavior:
+
+- `gupkg install` installs the package resolved from the current directory.
+- `gupkg install PATH` installs the package at `PATH`.
+- `gupkg update [PATH]` checks, downloads, and installs an update.
+- `gupkg update [PATH] --check-only` checks without downloading or installing.
+- `gupkg update [PATH] --download-only` checks and stages without installing.
+- `--check-only` and `--download-only` are mutually exclusive.
+- `--no-checksum` and `--shim-linkage` are accepted in every update mode.
+  `--no-checksum` has an effect only when a payload is verified;
+  `--shim-linkage` has an effect only when wrappers are installed. Ignore them
+  when the selected mode does not reach that work.
+- `config-check [PATH]` validates package configuration without changing it.
+- `config-fix [PATH]` repairs or normalizes package configuration and reports
+  the changes made.
+- `config-fix` creates a timestamped backup before changing an existing file.
+  `--no-backup` and `--backup=false` are equivalent opt-outs.
+- Old package-metadata versions are converted only through an explicit
+  `config-fix` invocation; ordinary commands do not convert them implicitly.
+- `config-fix --output PATH` is valid only for old-metadata conversion.
+  `--import-shortcuts` is valid only when repairing current metadata. Reject
+  either option when it does not apply.
+- `tui [PATH]` opens package operations for the selected package.
+- Omitting `PATH` is allowed only when the current directory resolves as a
+  package.
+
+Use one argparse grammar and parse once. Simplify only the repetitive update
+verbs: replace `upgrade check`, `upgrade download`, `upgrade install`, and
+`upgrade full` with one `update` command and its two limiting flags.
+
+Decision 4 defines the manager subcommand tree.
+
+#### `config-fix` contract
+
+Resolve package layout without requiring valid metadata. An explicit path may
+name a version directory, package root, `current`, or legacy package directory.
+When `PATH` is omitted, apply the same structural resolution to the current
+directory. Ambiguous package roots fail without writing.
+
+Select exactly one repair mode:
+
+1. If canonical `pkg.toml` exists, synchronize only directory-owned metadata
+   (`name`, `version`, `localVersion`, and `only_portable`) and optionally
+   import shortcuts.
+2. If legacy package metadata exists, use the existing
+   `legacy_to_gupkg_toml.py` migration implementation to interpret it and
+   produce current `pkg.toml`.
+3. If neither metadata form exists but the directory is a valid version
+   directory, create the documented starter `pkg.toml`.
+
+Legacy conversion is best-effort within the formats recognized by the existing
+migration code. Consume every recognized legacy source, tolerate missing
+optional values, and retain its established directory-derived defaults. If the
+converter cannot produce one unambiguous, valid current document, report exit
+code 2 and leave every file unchanged. Do not add a second legacy parser.
+
+Do not guess at malformed canonical TOML, unknown canonical keys, or ambiguous
+layouts. Preserve comments, ordering, and unrelated canonical fields when
+synchronizing an existing document.
+
+Construct and validate the complete replacement before any side effect. If the
+destination content is unchanged, report no change and create no backup. Before
+replacing an existing destination, create a sibling timestamped backup named
+`<name>.bak.<YYYYMMDDTHHMMSSffffffZ>` unless backup is disabled. If that name
+already exists, append the next integer suffix. Abort before replacement if
+backup creation fails. Write the destination atomically. Archive imported
+shortcut files only after the replacement succeeds. A failed write must leave
+the original destination intact.
+
+### 3. Option ownership - approved
+
+The root parser owns `--help`, `--version`, `--scope`, `--format`, `--pause`,
+and `--allow-hook-dependency-install`. All other options belong to the command
+that uses them. A global option may be accepted and ignored when it does not
+apply to the selected command; for example, `--format` has no effect on either
+TUI command.
+
+| Option                | Owner                | Purpose                                                                                    |
+| --------------------- | :------------------- | ------------------------------------------------------------------------------------------ |
+| `PATH`                | Package command      | Package or version directory; may be omitted only when the current directory is a package. |
+| `--check-only`        | `update`             | Stop after checking update availability.                                                   |
+| `--download-only`     | `update`             | Stop after checking and staging the update.                                                |
+| `--allow-downgrade`   | `install`            | Permit activation when a newer version is currently active.                                |
+| `--refresh-app`       | `install`            | Replace populated application payload from the declared origin.                            |
+| `--no-checksum`       | Install/update leaves | Bypass an applicable checksum with a warning.                                              |
+| `--shim-linkage`      | Binary-install leaves | Select dynamic or static native wrappers.                                                  |
+| `--import-shortcuts`  | `config-fix`         | Control shortcut import while repairing current metadata; defaults to true.                |
+| `--scope`             | Global               | Select installation scope; manager commands limit it to configured roots.                  |
+| `--allow-hook-dependency-install` | Global   | Allow trusted package hooks to install missing Python imports for this invocation.          |
+| `--pause`             | Global               | Wait for a keypress after a non-TUI command completes.                                      |
+| `--config PATH`       | Manager              | Override the fixed manager configuration search with one exact file.                       |
+| `--max-depth N`       | Manager              | Bound discovery below configured roots; defaults to 8 and requires `N >= 1`.                |
+| `--format human|toml` | Global               | Select output format; defaults to `human`.                                                  |
+| `--no-backup`         | `config-fix`          | Disable the default timestamped backup.                                                    |
+| `--backup=false`      | `config-fix`          | Alias for `--no-backup`.                                                                   |
+
+Remove the `--manager` flag; manager behavior is selected by the `manager`
+command.
+Remove `--root`; manager configuration owns collection roots. Remove
+`--use-defaults` and `--dry-run`. Keep `--shim-linkage` leaf-owned; it applies
+to `install`, full `update`, `manager self repair`, and `manager self update`.
+
+`--allow-hook-dependency-install` is an invocation-wide, non-persistent security
+policy. It defaults to false and permits trusted `pkg.local` hooks to install
+and retry missing Python imports during update checks, update downloads,
+manager updates, and bootstrap promotion during install. It does not control
+installation of gupkg's own optional runtime dependencies. Ignore it when the
+selected workflow cannot execute a package-local hook.
+
+`--pause` applies to non-TUI CLI commands. Write its prompt to stderr so TOML
+stdout remains parseable. Ignore it for TUI commands.
+
+Do not retain aliases for the old command grammar, scope spellings, entry
+point, or argument placement. The only compatibility feature is the explicit
+old-to-new package-metadata conversion workflow.
+
+### 4. Manager subcommand surface - approved
+
+Group manager workflows beneath `manager`, with a specific subcommand for each
+operation. `gupkg manager` without a subcommand prints manager help and does not
+open the TUI implicitly; it exits with status 2 because the required subcommand
+is missing.
 
 ```text
-install TARGET?
-upgrade check TARGET?
-upgrade download TARGET?
-upgrade install TARGET?
-upgrade full TARGET?
-upgrade all
-config check TARGET?
-config update TARGET?
-config from-legacy TARGET?
-list
-doctor
-registry sync
-registry status
-search QUERY?
-self status
-self repair
-self update
-migrate-config
-tui
+gupkg [global-options] manager [--config PATH] [--max-depth N] tui
+gupkg [global-options] manager [--config PATH] [--max-depth N] list [--filter FILTER]
+gupkg [global-options] manager [--config PATH] [--max-depth N] doctor
+gupkg [global-options] manager [--config PATH] [--max-depth N] update
+      [--check-only | --download-only] [--yes]
+      [--no-checksum] [--shim-linkage dynamic|static]
+gupkg [global-options] manager [--config PATH] [--max-depth N] install SELECTOR [--offline]
+gupkg [global-options] manager [--config PATH] registry sync
+gupkg [global-options] manager [--config PATH] registry status
+gupkg [global-options] manager [--config PATH] search [QUERY] [--offline]
+gupkg [global-options] manager [--config PATH] self status
+gupkg [global-options] manager [--config PATH] self repair [--shim-linkage dynamic|static]
+gupkg [global-options] manager [--config PATH] self update [--shim-linkage dynamic|static]
 ```
 
-`upgrade check` is intentionally context-sensitive: with a selected package it
-checks that package; in manager/collection context it checks the inventory.
-The parser should represent the syntax once, and the context dispatcher should
-choose the operation after context resolution. It must not reparse the tokens.
+Manager `update` owns `--check-only`, `--download-only`, `--yes`,
+`--no-checksum`, and `--shim-linkage`. `list` owns `--filter`; `install` and
+`search` own `--offline`; `self repair` and `self update` own
+`--shim-linkage`.
 
-### Global options
+`--max-depth` defaults to 8 and accepts only positive integers. `list --filter`
+accepts `all`, `installed`, `uninstalled`, `updatable`, or `unhealthy` and
+defaults to `all`. `manager search` without `QUERY` lists every entry in the
+active registry cache.
 
-Only context/output options that are meaningful before leaf selection should
-be global:
+`manager install SELECTOR` resolves a case-insensitive exact selector only from
+the configured registry cache; it does not select from installed inventory.
+Reject path-looking, missing, duplicate, or invalid selectors. Online mode
+synchronizes the registry only when no active cached tree exists. `--offline`
+never contacts the network and requires a usable cached tree. Stage the
+validated registry seed under the explicitly selected user or system root,
+then delegate to the ordinary package installation operation.
 
-- `--config PATH`
-- `--manager`
-- `--root PATH`
-- `--package SELECTOR`
-- `--max-depth N`
-- `--format human|toml` (with `--toml` retained as a compatibility alias)
-- `--version`
+Global `--scope` and `--format` are accepted consistently. Bulk update remains
+confirmed and does not install uninstalled packages. `--check-only` and
+`--download-only` never prompt and do not require `--yes`; ignore `--yes` in
+those modes. A full update requires interactive confirmation unless `--yes` is
+present. Batch work always continues after an individual target failure and
+reports every target outcome; there is no fail-fast mode.
 
-`--shim-linkage` may remain global only if it is intentionally a run-wide
-installation policy. Otherwise it belongs on mutating install/upgrade/self
-commands.
+### 5. Public scope vocabulary - approved
 
-Options such as `--allow-downgrade`, `--refresh-app`, `--import-shortcuts`,
-`--output`, `--offline`, `--yes`, and `--fail-fast` belong to the leaf commands
-that use them. `--dry-run` must not mean legacy TOML rendering for one command
-and manager upgrade planning for another without being documented separately
-at each leaf.
+Expose only `auto`, `user`, and `system`. Keep `Scope.MACHINE` internally.
+Do not accept `all`, `Auto`, `User`, or `Machine`.
 
-### Public value spellings
+`auto` is the default. Package commands retain automatic scope selection.
+Manager aggregate commands interpret `auto` as both configured roots and
+interpret `user` or `system` as a root filter. Manager operations on one target
+use the scope owned by that target. `manager install` requires an explicit
+`--scope user` or `--scope system` because a new selector has no owned scope.
 
-Standardize CLI values to lowercase product terms:
+### 6. Invocation resolution - approved
 
-- `auto`
-- `user`
-- `system`
-- `all` where an aggregate command permits it
+Resolve the invocation once:
 
-Accept the current `Auto`, `User`, and `Machine` spellings as hidden
-compatibility aliases for one deprecation cycle if released users depend on
-them. Internal use of `Scope.MACHINE` can remain unchanged.
+1. Help and version are context-free.
+2. `manager` selects manager mode; its required subcommand selects the workflow.
+3. `install`, `update`, `config-check`, `config-fix`, and `tui` select package
+   mode.
+4. Resolve the command's explicit `PATH`, or resolve the current directory
+   when omitted.
+5. A missing, ambiguous, or invalid package path is a user error.
 
-### Context precedence
+Manager selection, registry selectors, and collection traversal occur only
+beneath `manager`. They cannot affect package commands.
 
-Resolve context with one documented function and one ordered decision table:
+### 7. Output and exit-status contract - approved
 
-1. `--version` and help are context-free.
-2. Explicit `--config` or `--manager` requests manager context and validates
-   the selected configuration.
-3. An explicit local path operand requests package context, even when invoked
-   from a manager directory.
-4. An exact `<cwd>/gupkg-config.toml` requests manager context. A malformed
-   marker is a user error and never falls through.
-5. A resolvable current-directory package requests package context.
-6. `--package` selects from the active manager or explicit collection
-   inventory.
-7. Read-only aggregate commands may use collection context rooted at `--root`
-   or the current directory.
-8. A bare install target in manager context may resolve as a registry selector;
-   a path-looking target that does not exist remains a path error and never
-   falls through to registry search.
-9. Any remaining ambiguous or mutation-without-selection case is a user error
-   that names the required selector mechanism.
+`--format` defaults to `human`. In human mode, normal results go to stdout and
+diagnostics go to stderr.
 
-Do not infer context from positional argument counts in more than one place.
-Path classification should be a single, documented operation used by the
-dispatcher and registry-install safety check.
+`--format toml` emits exactly one parseable TOML document to stdout after a
+command has parsed, including expected command failures. Do not emit banners,
+progress logs, prompts, or nested operation output to stdout. Put expected
+warnings and errors in the document. Reserve stderr for argparse errors and
+failures that occur before a result document can be constructed. TUI commands
+ignore `--format` and retain normal interactive behavior.
 
-### Help and errors
+Every TOML result starts with this envelope:
 
-- `gupkg --help` lists the full command surface.
-- Every command and subcommand supports `--help` without requiring a package,
-  manager file, registry cache, network, or writable filesystem.
-- Invalid syntax is written to stderr by argparse and exits with status 2.
-- Domain failures retain the existing public exit codes 2, 3, and 4.
-- Machine format prints exactly one parseable document to stdout. Diagnostics
-  go into that document or to stderr according to one documented rule.
-- `--help-extended` may link to or append operational examples, but examples
-  must be generated around the canonical command names and options.
-
-## Target architecture
-
-The exact filenames may be adjusted during implementation, but ownership must
-end in this shape.
-
-### `gupkg.py`: package workflow facade
-
-Keep the established public package operations:
-
-- `install_package()`
-- `check_package_update()`
-- `download_package_update()`
-- `install_downloaded_update()`
-- `full_package_upgrade()`
-- `update_package_config()`
-- `convert_legacy_config()`
-- `health_check_package()`
-
-Move parser construction, manager rendering, registry command parsing, and
-collection routing out of this module. `main` may remain a compatibility import
-that delegates directly to the CLI module, or the console entry point may be
-updated to the CLI module while preserving `gupkg.gupkg:main` for callers.
-
-Stop importing underscore-prefixed update helpers. Add a narrow public update
-coordinator API for the state/candidate information actually needed by package
-and manager workflows.
-
-### `cli.py`: grammar, context resolution, and thin dispatch
-
-This module should:
-
-1. build the complete argparse subparser tree;
-2. parse once;
-3. resolve the invocation context once;
-4. call one public package, manager, collection, registry, or distribution
-   operation; and
-5. render the returned result and choose the exit status.
-
-Handlers should be small named functions. A dictionary or `set_defaults`
-binding from a leaf parser to a handler is acceptable because it directly
-represents the public grammar. Do not build a generic command object hierarchy.
-
-### Manager orchestration boundary
-
-Create one public boundary, either in `manager.py` or a focused
-`manager_operations.py`, for operations shared by CLI and TUI:
-
-- list/filter inventory;
-- run health diagnostics;
-- refresh update status;
-- build and execute an upgrade plan;
-- revalidate a target;
-- install a registry selection; and
-- return structured summaries.
-
-`manager_tui.py` and `cli.py` must call this boundary. The TUI must no longer
-import `_manager_update` or `_manager_revalidate` from the CLI facade.
-
-Keep configuration/discovery models in `manager.py` if doing so remains
-cohesive. Do not move Textual widgets or output rendering into the manager
-domain.
-
-### Renderers
-
-Keep human and TOML rendering together in the CLI layer or in one focused
-rendering module if the CLI module would otherwise become large. The renderers
-should consume immutable report/result data and must not perform package
-checks, filesystem discovery, update execution, or target mutation.
-
-Define the manager machine-output schema once. List, doctor, check, dry-run,
-and completed upgrade may populate different optional fields, but should not
-duplicate table construction in unrelated helpers.
-
-### Configuration normalization
-
-Keep `read_runtime_config()` as the public coordinator and retain the canonical
-dict/list representation chosen by issue 008. Do not reintroduce a tree of
-passive row dataclasses or a generic schema-validation framework.
-
-Split the current long functions along existing TOML concepts:
-
-- origin source/history normalization;
-- update check normalization;
-- update payload normalization;
-- update step normalization; and
-- component row normalization for environment, shortcut, path, and bin.
-
-Helpers are justified here because each names a documented schema concept,
-has its own invariants, and can be read as one calculation. Keep cross-field
-rules such as origin/update Git ref agreement in the coordinating function
-where both values are visible.
-
-Remove duplicated checksum and safe-relative-path validation only when a helper
-can preserve the field-specific error text. Avoid a generic field descriptor
-language.
-
-### Source and release layout
-
-Restore the conventional source tree declared by build metadata:
-
-```text
-src/
-  gupkg/
-    __init__.py
-    __main__.py
-    cli.py
-    gupkg.py
-    ...
+```toml
+output_schema = 1
+command = "update"
+ok = true
+changed = false
+status = "current"
+exit_code = 0
+warnings = []
+errors = []
 ```
 
-Versioned package directories belong to built standalone artifacts, fixtures,
-or release staging, not between `src/` and the Python package. Update
-`tools/build_standalone.py` to consume the conventional source directory and
-produce the versioned runtime layout described by issue 012.
+Requirements:
 
-Delete `tests/runtime_paths.py` after tests import the installed/editable
-package normally. Do not add a second path-discovery workaround.
+- `command` uses the canonical dotted name, such as `config-fix`,
+  `manager.update`, or `manager.registry.sync`.
+- `exit_code` exactly matches the process exit status.
+- `status` is a concise command-specific state; callers determine success from
+  `ok` and `exit_code`, not by parsing `status` text.
+- Omit inapplicable optional fields instead of emitting sentinel empty strings.
+- Render paths as normalized absolute strings and order collections
+  deterministically.
+- Do not include credentials, authorization headers, or other secrets.
 
-Establish one release version source. A suitable implementation is a small
-`gupkg/_version.py` attribute consumed dynamically by setuptools and imported
-by `core.py`; standalone `pkg.toml` should be generated or explicitly checked
-against that value during release assembly. The implementation may choose a
-different simple mechanism, but manually independent versions are not
-acceptable.
+Add command-specific data after the envelope:
 
-Correct package-data patterns and verify the actual wheel contents, including
-native shims, DLLs, licenses, and the real shim README filename.
+- Package install/update: `[package]` with path, identity, scope, installed
+  version, and candidate version when known.
+- Configuration commands: `[config]` with path, operation, and backup path when
+  one was created.
+- Manager inventory/update/install: `[manager]`, zero or more `[[target]]`
+  records, and `[summary]` counts. Each target includes its own status,
+  `changed`, exit code, warnings, and errors.
+- Registry search/status: `[registry]` and zero or more
+  `[[registry.package]]` records.
+- Self status/repair/update: `[self]` with runtime and shim results.
 
-## Implementation plan
+Use these process exit codes:
 
-### Phase 0: restore a trustworthy baseline
+- `0`: the command completed successfully, including current/no-change cases.
+- `2`: invalid syntax, selection, scope, configuration, metadata, confirmation,
+  or other user-correctable input.
+- `3`: an expected operational failure such as network, download, filesystem
+  mutation, lock, elevation, hook, dependency installation, or subprocess
+  failure.
+- `4`: an unexpected internal failure.
 
-Behavior protected: released commands either work as documented or fail with
-the documented exit code and output format.
+Argparse syntax errors use stderr and exit 2 without a TOML document. For batch
+results, choose the most severe completed result in the order 4, 3, 2, 0 while
+still reporting every target.
 
-1. Decide and record the manager-marker contract. This issue recommends the
-   issue 011 behavior described above.
-2. Fix the four current focused manager CLI regressions without performing the
-   structural refactor in the same commit.
-3. Run the complete suite and classify every remaining failure as:
-   - current regression;
-   - unfinished issue 012 behavior;
-   - platform/manual-only expectation; or
-   - stale test/documentation.
-4. Do not begin structural moves with a red baseline unless each known failure
-   is listed in the implementation PR and demonstrably unrelated.
-5. Add a short CLI contract table to `docs/operations.md`; make README link to
-   it rather than independently redefining mode precedence.
+### 8. Source and version ownership
 
-Exit criteria:
+**Proposed decision:** move the runtime package to `src/gupkg`, retain
+versioned directories only in standalone artifacts/fixtures, and establish one
+release version source at `src/gupkg/_version.py`. Runtime code imports that
+module; setuptools reads it dynamically; standalone assembly imports or reads
+the same value.
 
-- the focused 17-test runtime/manager/collection/TUI selection suite passes;
-- current-directory marker behavior matches docs and tests;
-- human and TOML errors are parseable according to the documented stream
-  contract; and
-- the remaining full-suite baseline is known.
+**Decision:** Accepted.
 
-### Phase 1: fix packaging and version ownership
+### 9. Module boundaries
 
-Behavior protected: `pip install .`, editable install, console script, and
-`python -m gupkg` all execute the same checked-in code and report the same
-version.
+**Proposed decision:**
 
-1. Move the package from `src/v0.1/gupkg` to `src/gupkg`.
-2. Update launcher/build inputs and documentation paths.
-3. Replace `tests/runtime_paths.py` imports with normal package imports.
-4. Establish one release version source and align runtime/standalone metadata.
-5. Fix package-data filenames.
-6. Build both sdist and wheel in a clean environment.
-7. Inspect archive contents and run the installed console/module smoke tests
-   from a directory outside the checkout.
+- `cli.py`: grammar, context resolution, dispatch, rendering, exit translation.
+- `gupkg.py`: public single-package workflows with no CLI compatibility
+  entrypoint.
+- `manager.py`: public operations shared by CLI/TUI.
+- `configuration.py`: top-level normalization coordinated from helpers named
+  for documented TOML concepts.
 
-Exit criteria:
+Do not add a command framework, service container, schema framework, or
+passive configuration object tree.
 
-- build metadata discovers exactly one `gupkg` package;
-- an installed artifact does not depend on repository path injection;
-- `gupkg --version`, `python -m gupkg --version`, project metadata, and the
-  generated standalone manifest agree; and
-- required native/package data exists in the wheel.
+**Decision:** Accepted. Remove compatibility code except the explicit
+old-to-new package-metadata conversion operation.
 
-### Phase 2: define one parser tree without changing domain behavior
+## Target behavior
 
-Behavior protected: command spellings, defaults, leaf options, help, and
-syntax errors.
+- `gupkg --help` lists the full supported command surface.
+- Package-command and manager-subcommand help succeeds without filesystem,
+  configuration,
+  registry, or network access.
+- Syntax is parsed once; context is resolved once.
+- `gupkg install PATH` behaves identically from every working directory.
+- Manager and package selection use the same scope terms.
+- CLI and TUI call the same public manager operations.
+- Domain operations return result data; renderers own human/TOML output.
+- Tests, editable installs, wheels, console scripts, module execution, and the
+  standalone builder consume the same source and version.
 
-1. Add the complete subparser grammar in `cli.py`.
-2. Give every option one owning parser.
-3. Add lowercase scope terms and documented compatibility aliases.
-4. Replace the early help shortcut with ordinary argparse behavior.
-5. Parse exactly once; remove all nested `parse_args()` and manual token-list
-   command comparisons from execution code.
-6. Initially delegate leaves to the existing package/manager helpers so parser
-   migration is reviewable separately from domain movement.
-7. Remove argument reconstruction such as `package_args` and selected-scope
-   rewriting into a second parser call.
+## Delivery plan
 
-Exit criteria:
+Keep each phase independently reviewable. Do not combine this work with new
+issue 012 product features.
 
-- top-level and every leaf help work without resolving context;
-- every documented command appears in help;
-- invalid option/command combinations fail at the relevant leaf parser;
-- no runtime command reparses an argument tail; and
-- each current supported command has a black-box parity test during the
-  transition.
+### Phase 0: establish the baseline
 
-### Phase 3: isolate context resolution and dispatch
+Protected behavior: observable package, manager, update, and configuration
+behavior that remains part of the approved CLI.
 
-Behavior protected: precedence among explicit config, explicit path,
-current-directory marker, package context, selected inventory, and registry
-selector.
+- [ ] Run the current focused and full suites without changing the parser.
+- [ ] Classify every failure as regression, unfinished issue
+  012 behavior, manual/platform-only, or stale expectation.
+- [ ] Identify tests tied to implicit manager activation or the superseded CLI;
+  replace them only during Phase 2.
+- [ ] Document the CLI/context contract in `docs/operations.md`.
 
-1. Implement the ordered context decision table in one function.
-2. Represent the resolved context with only durable facts needed downstream:
-   mode, selected manager/config/inventory, selected package if any, and
-   collection root if any.
-3. Remove `_has_explicit_package_path()` and the second positional-arity path
-   check after their behavior is covered by the one classifier.
-4. Make handlers reject commands unsupported by the resolved context with one
-   consistent diagnostic.
-5. Preserve explicit package-path precedence from a manager directory.
-6. Keep registry selector resolution after manager context and before any
-   target-directory mutation.
+Exit:
 
-Exit criteria:
+- The pre-migration baseline and every known failure are documented.
+- Retained observable behavior is separated from superseded parser behavior.
 
-- context is resolved once per invocation;
-- `main()` is a short parse → resolve → dispatch → render sequence;
-- no handler recursively invokes another CLI parser; and
-- the precedence matrix is protected through subprocess-level tests.
+### Phase 1: repair packaging and version ownership
 
-### Phase 4: create shared public manager operations
+Protected behavior: installed and checkout entry points run identical code and
+report one version.
 
-Behavior protected: CLI and TUI produce the same inventory, planning,
-revalidation, upgrade, and registry-install outcomes.
+- [ ] Move `src/v0.1/gupkg` to `src/gupkg`.
+- [ ] Update build inputs, launchers, imports, and documentation paths.
+- [ ] Remove `tests/runtime_paths.py` and use normal imports.
+- [ ] Establish the approved version source and align standalone metadata.
+- [ ] Point the console script and `python -m gupkg` directly at `cli.main`;
+  remove legacy entrypoints rather than forwarding them.
+- [ ] Correct package-data paths, including the shim README.
+- [ ] Place the standalone default `gupkg-config.toml` beside the built
+  `gupkg/cli.py` module.
+- [ ] Build and inspect sdist/wheel; install the wheel in a clean environment.
 
-1. Move manager operations out of `gupkg.py` behind the public shared boundary.
-2. Return report/result values instead of printing or redirecting stdout.
-3. Have CLI render those reports.
-4. Have TUI call the same operations from worker threads as appropriate.
-5. Keep Textual event-loop and cancellation behavior documented in the
-   development guide.
-6. Remove TUI imports of underscore-prefixed CLI helpers.
-7. Consolidate the manager TOML schema in one renderer.
+Exit:
 
-Exit criteria:
+- Setuptools discovers one `gupkg` package.
+- Console and `python -m gupkg` work outside the checkout.
+- Runtime, package metadata, and standalone manifest versions agree.
+- Required Python, shim, DLL, license, and README files are packaged.
 
-- manager TUI does not import from the CLI facade;
-- manager domain operations do not print user output;
-- CLI and TUI use the same plan/executor/revalidation behavior; and
-- TOML output remains one parseable document even on partial failure.
+### Phase 2: replace the parser
 
-### Phase 5: reduce configuration branching by schema concept
+Protected behavior: documented commands, defaults, options, help, and syntax
+errors.
 
-Behavior protected: accepted canonical `pkg.toml`, default values, strict
-unknown-key handling, legacy hints, safety validation, and exact meaningful
-diagnostics.
+- [ ] Build the package parser and its `manager` subparser in `cli.py`.
+- [ ] Assign every option to one parser.
+- [ ] Define `--scope`, `--format`, `--pause`, and
+  `--allow-hook-dependency-install` once on the root parser.
+- [ ] Accept only the approved lowercase scope spellings.
+- [ ] Remove early help routing, nested parsing, manual token dispatch, and
+  reconstructed argument lists.
+- [ ] Temporarily delegate package commands and approved manager subcommands to
+  existing domain helpers.
+- [ ] Implement and test `install`, `update`, `config-check`, `config-fix`,
+  `tui`, and the approved manager subcommands.
+- [ ] Remove the old CLI grammar without aliases or fallback parsing.
 
-1. Extract update check, payload, and step normalizers.
-2. Extract one component-list normalizer per genuinely distinct row type, or a
-   small shared loop only where field semantics are truly identical.
-3. Extract checksum and safe-path checks where doing so eliminates existing
-   duplication without erasing context from errors.
-4. Keep `normalize_runtime_config()` as a readable top-down coordinator.
-5. Keep origin/update cross-field validation near the coordinator.
-6. Add narrated comments before validation, normalization, cross-field checks,
-   and final construction as required by `docs/python_rules.md`.
-7. Update docstrings according to `docs/docstring_schema.md`; document public
-   contracts, not the new helper call graph.
+Exit:
 
-Exit criteria:
+- Package-command and manager-subcommand help is context-free and complete.
+- Invalid combinations fail at the owning parser.
+- Each invocation calls `parse_args()` once.
+- The old CLI grammar is rejected as invalid syntax.
 
-- no configuration function combines several independent TOML sub-schemas in
-  one long condition chain;
-- canonical normalized output is unchanged for valid fixtures;
-- invalid fixtures preserve useful field-specific errors; and
-- no replacement schema framework or passive dataclass layer is introduced.
+### Phase 3: centralize context and dispatch
 
-### Phase 6: review remaining hotspots rather than mechanically splitting them
+Protected behavior: explicit command selection and package path resolution.
 
-Behavior protected: update staging atomicity, install safety, wrapper behavior,
+- [ ] Implement the approved invocation resolution in one resolver.
+- [ ] Return a small resolved-context value containing downstream facts only.
+- [ ] Replace duplicate path/positional heuristics with one classifier.
+- [ ] Add consistent unsupported-context diagnostics.
+- [ ] Keep registry and collection resolution inside manager handlers.
+- [ ] Reduce `main()` to parse, resolve, dispatch, render, and exit translation.
+
+Exit:
+
+- Context is resolved once.
+- No handler reparses or recursively invokes the CLI.
+- Subprocess tests cover `install PATH`, cwd-backed `install`, missing commands,
+  and representative `manager` subcommands.
+
+### Phase 4: establish shared manager operations
+
+Protected behavior: CLI/TUI inventory, diagnostics, planning, revalidation,
+update, and registry-install results.
+
+- [ ] Move shared manager orchestration behind a public domain API.
+- [ ] Return structured reports instead of printing or redirecting stdout.
+- [ ] Route CLI rendering and TUI workers through the public API.
+- [ ] Remove TUI imports of CLI-private helpers.
+- [ ] Define the manager TOML schema in one renderer.
+- [ ] Replace private update-helper imports with a narrow public update API.
+
+Exit:
+
+- CLI and TUI share plan, execution, and revalidation behavior.
+- Manager operations do not print user output.
+- Partial failures still produce one parseable TOML document.
+
+### Phase 5: split configuration normalization by schema concept
+
+Protected behavior: accepted `pkg.toml`, defaults, unknown-key rejection,
+legacy guidance, path/checksum safety, and useful diagnostics.
+
+- [ ] Extract origin/history normalization.
+- [ ] Extract update check, payload, and step normalization.
+- [ ] Extract component normalization for environment, shortcut, path, and bin
+  rows where their semantics differ.
+- [ ] Deduplicate checksum/safe-path validation only when field-specific errors
+  remain intact.
+- [ ] Keep cross-field rules in the coordinator.
+- [ ] Apply `docs/python_rules.md` and `docs/docstring_schema.md` to changed code.
+
+Exit:
+
+- Each helper owns one documented schema concept.
+- Valid normalized output is unchanged.
+- Invalid inputs retain field-specific errors.
+- No generic schema framework is introduced.
+
+### Phase 6: review remaining hotspots
+
+Protected behavior: staging atomicity, installation safety, wrapper behavior,
 and provider selection.
 
-Review, in this order:
+Review in order:
 
-1. `github_releases.check_update()`;
-2. `updates._prepare_update()`;
-3. `manager.load_manager_config()`;
-4. `components.install_wrappers()`; and
-5. `install_package()`.
+1. `github_releases.check_update()`
+2. `updates._prepare_update()`
+3. `manager.load_manager_config()`
+4. `components.install_wrappers()`
+5. `install_package()`
 
-For each function, first decide whether its branches describe one sequential
-workflow or several independently named concepts. Keep one workflow together.
-Extract only repeated validation, independently testable parsing, isolated
-side effects, or durable domain concepts. A lower branch count is not itself
-an acceptance criterion.
+For each function:
 
-Exit criteria:
+- [ ] Identify whether it is one sequential workflow or multiple concepts.
+- [ ] Add narrated blocks for validation, side effects, safety, and cleanup.
+- [ ] Extract only repeated validation, isolated side effects, durable concepts,
+  or independently testable parsing.
+- [ ] Preserve visible failure and cleanup ordering.
 
-- each reviewed function reads as narrated blocks of one calculation;
-- private one-use helpers are not created merely to shorten a function; and
-- atomic cleanup and failure ordering remain visible at the coordinating level.
+Lower branch count is not an exit criterion.
 
-### Phase 7: documentation and compatibility cleanup
+### Phase 7: align documentation and remove migration scaffolding
 
-1. Make `docs/operations.md` the canonical CLI/mode contract.
-2. Shorten README CLI prose to an overview plus links and common examples.
-3. Update `docs/development_guide.md` with the actual source paths and the
-   parser/context/domain boundaries.
-4. Mark superseded portions of issues 010-012 with concise architecture notes
-   only where this implementation changes their file/CLI guidance.
-5. Remove deprecated scope aliases after the announced compatibility period.
-6. Remove temporary parity tests from `tests/_devel`.
+- [ ] Make `docs/operations.md` the canonical CLI/mode contract.
+- [ ] Reduce README CLI content to an overview and common examples.
+- [ ] Update `docs/development_guide.md` for actual paths and boundaries.
+- [ ] Add concise supersession notes to affected issues 010-012.
 
-Exit criteria:
+Exit:
 
-- help, README, operations guide, and behavior tests describe one CLI;
-- source links resolve;
-- no active documentation directs contributors to `src/v0.1/gupkg`; and
-- historical issue documents remain historical rather than acting as competing
-  current specifications.
+- Help, README, operations guide, development guide, and tests describe one
+  command and context model.
+- No active documentation references `src/v0.1/gupkg`.
 
-## Test strategy
+## Test plan
 
-Follow `docs/tests.md`: protect observable behavior and real boundaries, not
-the new module layout or private handler calls.
+Follow `docs/tests.md`. Test observable behavior; do not test helper names,
+module placement, decision counts, or private call graphs.
 
-### Permanent CLI contract tests
+### Permanent coverage
 
-Use subprocess tests against the installed/editable package for:
+- Package-command/manager-subcommand help, unknown commands, invalid options,
+  and version agreement.
+- `gupkg manager` prints help and exits 2; `--max-depth` defaults to 8 and
+  rejects non-positive values.
+- Manager list filters have the approved choices/default, and an empty manager
+  search lists all cached entries.
+- `gupkg install PATH` and `gupkg install` from a package directory.
+- Full `gupkg update`, `update --check-only`, and
+  `update --download-only` behavior.
+- Update modes accept `--no-checksum` and `--shim-linkage`, ignoring either
+  option when the selected mode does not perform the relevant work.
+- `config-check` is non-mutating; `config-fix` reports and applies its repairs.
+- `config-fix` creates a timestamped backup before mutation by default;
+  `--no-backup` and `--backup=false` suppress it.
+- Explicit `config-fix` converts supported old package metadata to the current
+  version; other commands do not perform compatibility conversion.
+- Legacy conversion reuses the existing migration implementation and recovers
+  every unambiguous recognized field without adding another parser.
+- `config-fix` resolves package layout independently of metadata validity,
+  preserves unrelated canonical text, rejects unsafe repairs without writing,
+  and leaves the original intact after backup or replacement failure.
+- Package `tui [PATH]` selects the requested package.
+- Bare `gupkg` and cwd-backed install outside a package fail clearly.
+- `--check-only` and `--download-only` are mutually exclusive.
+- Explicit `manager` activation with default and explicit configuration paths.
+- Default manager configuration precedence: Python-file directory,
+  `GUPKG_HOME`, then `%APPDATA%\gupkg`.
+- The first manager configuration candidate is beside the resolved
+  `gupkg.cli` module in installed and standalone layouts.
+- Invalid higher-priority manager configuration fails without fallback.
+- Manager schema versions older than 2 are rejected without conversion.
+- Manager configuration is not discovered from the current directory or its
+  parents.
+- Proof that manager configuration does not affect package commands.
+- Missing/invalid manager config, ambiguous manager selector, and missing
+  manager selector failures.
+- `manager install` resolves exact registry selectors, honors offline cache
+  isolation, rejects path-like selectors, and installs into the explicit
+  scope.
+- Manager check/download modes never confirm; full manager update confirms or
+  requires `--yes`, continues after individual failures, and reports all
+  outcomes.
+- Canonical scope values, rejection of `all` and removed spellings, aggregate
+  `auto` behavior, and explicit scope enforcement for `manager install`.
+- Global `--scope` and `--format` placement across package and manager commands.
+- Global `--allow-hook-dependency-install` authorizes hook dependency
+  installation for one invocation and remains off by default.
+- Global `--pause` waits after non-TUI commands, writes its prompt to stderr,
+  and does not contaminate TOML stdout.
+- Non-applicable global options are accepted and ignored.
+- Removed CLI grammar and entry points are rejected rather than redirected.
+- Human/TOML stream separation and exit codes 0, 2, 3, and 4.
+- Every TOML result contains the versioned common envelope and an exit code
+  equal to the process status.
+- Manager TOML target ordering and aggregate severity are deterministic.
+- Configuration schema modes, unsafe values, legacy hints, and cross-field
+  constraints.
+- Wheel/sdist contents and installed entry points outside the checkout.
+- Standalone assembly from the same source/version.
 
-- root help and every command family's help;
-- version agreement;
-- unknown commands and leaf-invalid options;
-- lowercase scope choices and compatibility aliases while supported;
-- explicit package path from package, manager, and unrelated directories;
-- valid and malformed current-directory manager markers;
-- explicit `--config` precedence;
-- no parent-directory marker search;
-- selected manager and collection packages;
-- missing/ambiguous selector errors;
-- path-looking install targets never becoming registry selectors;
-- human output exit status; and
-- TOML output parseability on success and failure.
+Use real temporary package/configuration layouts. Mock only external boundaries
+such as network, subprocess/elevation, registry, and Windows integration.
 
-Use real temporary directories/configuration for context resolution. Mock only
-network, process/elevation, Windows integration, and other true external
-boundaries.
-
-### Parser migration matrix
-
-During phases 2 and 3, keep a temporary `tests/_devel/cli_parity/` suite with a
-local README. It may report old/new outcomes for the supported command matrix
-and use light assertions so discrepancies can be reviewed. Remove it after the
-canonical behavior tests are complete. Do not preserve accidental parser
-quirks merely because the old dispatcher accepted them.
-
-### Configuration tests
-
-Keep tests behavior-oriented:
-
-- valid TOML produces the expected public runtime behavior;
-- each documented update check/payload mode is accepted;
-- unsafe mappings and paths are rejected before mutation;
-- unknown and legacy keys produce actionable diagnostics;
-- origin/update cross-field constraints remain enforced; and
-- metadata consistency behavior remains unchanged.
-
-Do not test helper names, helper counts, normalization module placement, or
-internal dictionaries beyond what a public caller or package operation relies
-on.
-
-### Packaging tests
-
-Add release-boundary tests that:
-
-- build sdist and wheel;
-- inspect their required file set;
-- install the wheel into a clean temporary environment;
-- run `gupkg --version`, `gupkg --help`, and `python -m gupkg --help` outside
-  the checkout; and
-- verify the standalone builder consumes the same source package and emits the
-  versioned artifact layout.
-
-Exact archive ordering and generated metadata internals are out of scope.
-
-### Verification commands
-
-At minimum, the completed change should run:
+### Verification
 
 ```text
 .venv\Scripts\python.exe -m pytest -q
@@ -794,87 +600,44 @@ python tools\validate_registry.py pkgs
 python -m build
 ```
 
-Then install the built wheel in a clean environment and run the CLI smoke tests
-from an unrelated directory. Manual Windows coverage remains required for UAC,
-native shim execution, PATH propagation, and real shortcut/registry effects.
+Install the wheel into a clean environment and run `gupkg --version`,
+`gupkg --help`, and `python -m gupkg --help` from outside the checkout. Verify
+UAC, native shims, PATH propagation, shortcuts, and registry effects manually
+on Windows.
 
-## Delivery and review rules
+## Completion checklist
 
-- Keep baseline repair, package relocation, parser replacement, manager-domain
-  extraction, and configuration splitting in separate reviewable changes.
-- Do not combine this issue with new registry, update-provider, or standalone
-  features from issue 012.
-- Each phase must state the observable behavior it protects before changing
-  tests, as required by `docs/tests.md`.
-- Do not add permanent architecture tests for file size, decision count,
-  imports, class counts, or module names. Record those constraints in this
-  issue and the development guide.
-- Preserve unrelated working-tree changes.
-- Avoid compatibility wrappers that become a second indefinite CLI. Temporary
-  delegation should have a removal phase and test.
-
-## Acceptance criteria
-
-This issue is complete only when all of the following are true:
-
-1. Top-level help lists the complete supported command surface.
-2. Every command and subcommand has context-free, successful `--help`.
-3. Arguments are parsed exactly once by one argparse tree.
-4. Each option is owned by the root or the leaf command where it has an effect.
-5. Public scope values are consistent across package, manager, registry, self,
-   CLI, and TUI surfaces.
-6. Context precedence is documented once and implemented once.
-7. A current-directory manager marker either activates manager mode or fails
-   visibly when invalid; it never becomes ignored discovered state.
-8. Explicit local package paths retain package semantics from manager context.
-9. Path-looking install operands never fall through to registry selection.
-10. Collection mutations still require an explicit package selection.
-11. Machine-readable output is one parseable document on success and failure.
-12. `main()` contains only parse, context resolution, dispatch, rendering, and
-    exit translation at a readable scale.
-13. CLI and manager TUI use public shared manager operations.
-14. No TUI module imports underscore-prefixed helpers from the CLI facade.
-15. The public package facade no longer imports private update storage helpers.
-16. Configuration normalization is divided by documented schema concepts while
-    retaining one canonical dict/list runtime representation.
-17. No generic command framework, service locator, schema descriptor system,
-    or passive config dataclass tree is added.
-18. The Python package lives at the source path declared by build metadata.
-19. Tests import the package normally and no longer search for a versioned
-    source directory.
-20. Project, runtime, console, and generated standalone versions have one
-    source of truth and agree.
-21. Wheel and sdist contain the required Python, shim, DLL, license, and README
-    files.
-22. Installed console-script and module entry points work outside the checkout.
-23. The focused manager/runtime/collection/TUI regression suite passes.
-24. The full automated suite and registry validation pass, with manual Windows
-    exceptions documented explicitly.
-25. README, operations guide, development guide, and CLI help describe the same
-    command and mode model.
+- [ ] All design decisions are recorded and reflected across surfaces.
+- [ ] One parser tree parses each invocation once.
+- [ ] One resolver dispatches package commands and explicit `manager`
+  subcommands without implicit mode selection.
+- [ ] Help exposes package commands and approved manager subcommands without
+  side effects.
+- [ ] Options and scope values are consistent and owned by the correct parser.
+- [ ] No CLI compatibility aliases or legacy entrypoints remain; the canonical
+  console script and `python -m gupkg` call `cli.main` directly.
+- [ ] `config-fix` creates a timestamped backup by default and honors both
+  backup opt-outs.
+- [ ] Registry selectors are accepted only by their owning manager subcommands.
+- [ ] Machine output is one parseable, versioned document whose recorded exit
+  code matches the process and whose command-specific records are deterministic.
+- [ ] CLI/TUI use public shared manager operations.
+- [ ] Package workflows do not depend on private update helpers.
+- [ ] Configuration normalization is split by documented schema concept.
+- [ ] Package layout matches build metadata and tests use normal imports.
+- [ ] One version source feeds runtime, packaging, and standalone assembly.
+- [ ] Built artifacts contain all required runtime/package data.
+- [ ] Focused regressions, full suite, registry validation, build, installed
+  smoke tests, and documented manual Windows checks pass.
+- [ ] User and contributor documentation describes the implemented contract.
 
 ## Non-goals
 
-- Replacing argparse with another CLI framework.
+- Replacing argparse.
 - Rewriting package installation, update staging, or Windows integration.
-- Introducing a dependency injection system or service container.
-- Converting canonical runtime configuration back into object graphs.
-- Making all functions short by extracting one-use private helpers.
-- Redesigning the `pkg.toml` format.
-- Adding a package database or changing filesystem authority.
-- Completing unfinished issue 012 product features as part of this cleanup.
+- Redesigning `pkg.toml` or canonical runtime configuration.
+- Adding a package database, service container, command framework, or schema
+  framework.
+- Splitting cohesive workflows solely to reduce complexity metrics.
+- Completing unrelated issue 012 features.
 - Enforcing complexity metrics in CI.
-
-## Expected result
-
-A user should be able to discover the whole tool from `gupkg --help`, request
-help at any leaf, and use the same scope and option vocabulary everywhere. A
-maintainer should be able to trace one invocation through a short parser,
-one context decision, one domain operation, and one renderer. Package and TUI
-workflows should share public orchestration without importing CLI internals.
-Configuration validation should remain strict and explicit while being grouped
-by the schema concepts users actually configure.
-
-Finally, the package that tests import, the package that setuptools builds, the
-package that the console script runs, and the package used to assemble a
-standalone release should all be the same source tree with the same version.
