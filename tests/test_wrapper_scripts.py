@@ -104,6 +104,35 @@ raise SystemExit({exit_code})
             )
 
     @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
+    def test_gupkg_launcher_uses_package_bootstrap_without_native_command(self) -> None:
+        """The outer launcher uses its adjacent bootstrap when no native command exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            package = root / "gupkg"
+            package.mkdir()
+            log_file = root / "bootstrap.log"
+            (package / "gupkg.cmd").write_text(
+                "@echo off\n"
+                f'> "{log_file}" echo args=%*\n'
+                "exit /b 17\n",
+                encoding="ascii",
+            )
+            wrapper = root / "gupkg.cmd"
+            shutil.copy2(SRC_ROOT / "gupkg.cmd", wrapper)
+
+            env = os.environ.copy()
+            env["PATH"] = ""
+            result = self.run_wrapper(
+                wrapper, "install", "--scope", "system", cwd=root, env=env
+            )
+
+            self.assertEqual(result.returncode, 17, msg=result.stderr or result.stdout)
+            self.assertEqual(
+                log_file.read_text(encoding="utf-8").strip(),
+                "args=install --scope system",
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch wrapper behavior")
     def test_tui_launcher_uses_local_tui_or_system_gupkg(self) -> None:
         """The TUI launcher selects local TUI and otherwise prepends ``tui``."""
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,0 +1,23 @@
+name = "gupkg"
+version = "0.12.0"
+localVersion = 0
+description = "The standalone gupkg package manager runtime"
+homepage = "https://github.com/guraltsev/pkg"
+
+[[environment]]
+Name = "GUPKG_HOME"
+Value = "$VersionRoot\\gupkg"
+
+[[bin]]
+name = "gupkg"
+target = "%COMSPEC%"
+arguments = ["/d", "/s", "/c", "$VersionRoot\\gupkg\\gupkg.cmd"]
+type = "console"
+forward_args = true
+
+[[bin]]
+name = "gupkg-tui"
+target = "%COMSPEC%"
+arguments = ["/d", "/s", "/c", "$VersionRoot\\gupkg\\gupkg-tui.cmd"]
+type = "console"
+forward_args = true

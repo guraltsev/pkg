@@ -3,9 +3,17 @@ setlocal EnableExtensions DisableDelayedExpansion
 
 rem Select the package-local native command before looking for an installed one.
 set "GUPKG_LOCAL=%~dp0gupkg\gupkg.exe"
-if not exist "%GUPKG_LOCAL%" goto :find_system
-if exist "%GUPKG_LOCAL%\NUL" goto :find_system
+if not exist "%GUPKG_LOCAL%" goto :source_bootstrap
+if exist "%GUPKG_LOCAL%\NUL" goto :source_bootstrap
 set "GUPKG_LOCAL=" & "%GUPKG_LOCAL%" %*
+exit /b %ERRORLEVEL%
+
+:source_bootstrap
+rem A source checkout keeps the Python bootstrap beside this selector.
+set "GUPKG_SOURCE=%~dp0gupkg\gupkg.cmd"
+if not exist "%GUPKG_SOURCE%" goto :find_system
+if exist "%GUPKG_SOURCE%\NUL" goto :find_system
+call "%GUPKG_SOURCE%" %*
 exit /b %ERRORLEVEL%
 
 :find_system

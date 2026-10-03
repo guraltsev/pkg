@@ -42,7 +42,7 @@ For an operation screen, put the default action first, then its settings:
 Run
 --- Settings ---
 Package path: current directory
-Installation Scope: Local
+Installation Scope: User
 Skip checksum verification: off
 ```
 
@@ -71,7 +71,7 @@ the user's decision: object identity, installed version, one-line description,
 metadata warning, action, setting, or command result. Avoid standalone
 instructions when the list behavior is conventional.
 
-Prefer words to status glyphs: use `on` and `off`, `Local` and `Machine`, or
+Prefer words to status glyphs: use `on` and `off`, `User` and `System`, or
 `unavailable`, rather than checkbox art. Color may reinforce meaning, but it
 must never be the only signal: write `Warning:` even when the line is colored.
 
@@ -153,7 +153,7 @@ Selecting a boolean toggles `on` and `off`. Selecting a finite choice cycles
 through its permitted values. If a value is not permitted, show it directly:
 
 ```text
-Installation Scope: Local (Machine unavailable)
+Installation Scope: User (System unavailable)
 ```
 
 Text settings may open a minimal editor containing only the entry. Enter saves

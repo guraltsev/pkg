@@ -1361,7 +1361,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
             self.assertTrue(source.exists())
 
     def test_auto_scope_uses_admin_status_and_portability_policy(self) -> None:
-        """Automatic scope selects Machine only for permitted administrator installs."""
+        """Automatic scope selects System only for permitted administrator installs."""
         cases = (
             ("admin-machine", True, False, "system"),
             ("admin-portable-user", True, True, "user"),

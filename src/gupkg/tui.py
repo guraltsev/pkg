@@ -150,8 +150,12 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
         except (OSError, TypeError, ValueError):
             return "No package selected", "Enter a package path to see its summary.", ""
 
+    def scope_label(scope: str) -> str:
+        """Return the user-facing label for a CLI scope value."""
+        return {"user": "User", "system": "System"}.get(scope, scope)
+
     def detected_scope(path_text: str) -> tuple[str, bool] | None:
-        """Return the automatic scope and Machine availability for one package."""
+        """Return the automatic scope and System availability for one package."""
         if forced_scope is not None:
             return (forced_scope.value, False)
         from gupkg.layout import resolve_input_path
@@ -161,8 +165,8 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             identity, _ = resolve_input_path(Path(path_text or ".").expanduser())
         except (OSError, ValueError):
             return None
-        machine_available = is_current_user_admin() and not identity.only_portable_by_name
-        return ("Machine" if machine_available else "User"), machine_available
+        system_available = is_current_user_admin() and not identity.only_portable_by_name
+        return ("system" if system_available else "user"), system_available
 
     def command_arguments(
         action: str, path: str, scope: str, selected_flags: set[str], output: str
@@ -277,7 +281,7 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
                 {"import-shortcuts"} if action == "config-update" else set()
             )
             scope = detected_scope(home_screen.path)
-            self.scope, self.machine_available = scope or ("User", False)
+            self.scope, self.system_available = scope or ("user", False)
             self.scope_locked = forced_scope is not None
             self.title = home_screen.title
             self.description = home_screen.description
@@ -304,16 +308,14 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
                 "upgrade-install",
                 "upgrade-full",
             }:
-                scope = self.scope if self.scope_locked else (
-                    "Machine" if self.scope == "Machine" else "Local"
-                )
+                scope = scope_label(self.scope)
                 options.append(
                     Option(
                         f"Installation Scope: {scope}{' (locked)' if self.scope_locked else ''}"
-                        if self.machine_available
-                        else f"Installation Scope: {scope} (locked)" if self.scope_locked else "Installation Scope: Local (Machine unavailable)",
+                        if self.system_available
+                        else f"Installation Scope: {scope} (locked)" if self.scope_locked else "Installation Scope: User (System unavailable)",
                         id="scope",
-                        disabled=self.scope_locked or not self.machine_available,
+                        disabled=self.scope_locked or not self.system_available,
                     )
                 )
             if self.action == "config-from-legacy":
@@ -353,8 +355,8 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             elif selection == "output":
                 self.app.push_screen(PathScreen(self, selection))
             elif selection == "scope":
-                if self.machine_available:
-                    self.scope = "User" if self.scope == "Machine" else "Machine"
+                if self.system_available:
+                    self.scope = "user" if self.scope == "system" else "system"
                 self._refresh_options(selection)
             else:
                 self.flags.symmetric_difference_update({selection})

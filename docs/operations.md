@@ -61,9 +61,11 @@ versioned ZIP. It does not silently download or trust an arbitrary Python
 runtime. The outer release bootstrap executable is a release packaging concern;
 the ZIP is the repository build output.
 
-For a source checkout, the existing `src\gupkg\gupkg.cmd` launcher remains
-available for development. It may use `GUPKG_PYTHON`, `gupkg.python`, a local
-`python\python.exe`, Python on `PATH`, or the Windows `py -3` launcher.
+For a source checkout, the existing `src\gupkg.cmd` launcher remains available
+for development. It selects a packaged `gupkg\gupkg.exe` when present and
+otherwise delegates to the adjacent `gupkg\gupkg.cmd` bootstrap. The bootstrap
+may use `GUPKG_PYTHON`, `gupkg.python`, a local `python\python.exe`, Python on
+`PATH`, or the Windows `py -3` launcher.
 
 ## Manager configuration
 

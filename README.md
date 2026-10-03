@@ -18,8 +18,9 @@ the `src` directory to a folder such as `C:\opt\gupkg\` and run
 `src\gupkg.cmd install [PATH]`. It uses an available system Python 3.11+ when present.
 Otherwise it downloads verified x64 CPython and pip into the copied
 directory's ignored `python\` folder on first use. The outer `src\gupkg.cmd`
-is only a thin selector for a package-local native command or a `gupkg.exe`
-found on `PATH`; packaged releases provide that native command. See
+selects a package-local native command when present and otherwise delegates to
+the adjacent `src\gupkg\gupkg.cmd` bootstrap before falling back to a
+`gupkg.exe` on `PATH`. Packaged releases provide the native command. See
 [the operations guide](docs/operations.md) for the release build inputs and
 recovery commands.
 
