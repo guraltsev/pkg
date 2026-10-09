@@ -45,7 +45,10 @@ scrollable screens. Worker tasks must leave Textual's event loop free while
 provider and package operations run. Cancellation is a boundary request: it
 prevents another target from being scheduled and never interrupts an operation
 already in progress. Mixed-scope elevation is resolved before invoking the
-executor. Manual Windows coverage for UAC, missing roots, duplicate selectors,
+executor. Per-target activation passes the manager installation context, so
+wrappers land in the configured `[bin]` directories rather than the scope
+defaults. Update checks capture process-wide stdout and therefore run one at a
+time. Manual Windows coverage for UAC, missing roots, duplicate selectors,
 partial failures, and terminal dimensions lives in `tests/manual_smoke.md`.
 
 Manager schema v2 adds separate package roots, wrapper/bin roots, and a
@@ -59,8 +62,11 @@ cache has passed manifest and path validation.
 The public update coordinator in `src/gupkg/gupkg.py` resolves the active package,
 validates its `[update]` table, acquires the package-root lock, checks for a
 candidate, asks the `updates` module to stage a complete version under
-`.gupkg/work`, and atomically commits it. `gupkg update --download-only` leaves
-the staged version inactive; a full `gupkg update` activates it. Check and
+`.gupkg/work`, and atomically commits it. Check, download, and full update share
+that one locked session. `gupkg update --download-only` leaves the staged
+version inactive with a pending receipt; a full `gupkg update` reuses a version
+whose receipt is still pending and activates it. Workflows return errors in
+their `ActionResult` rather than printing them; the CLI and TUIs render them. Check and
 unpack hooks are imported from `pkg.local/` as trusted
 in-process Python extensions; they are never executed as shell commands.
 

@@ -1,21 +1,29 @@
-﻿"""Populate application payloads from declared package origins.
+"""Populate application payloads from declared package origins.
 
-Git, zip, script, and module origins prepare a complete temporary application tree
-before replacing ``App/``. Source refs, checksums, archive paths, and
-package-local script references are validated before the existing payload is
-mutated.
+Git, zip, script, and module origins populate ``App/``. Git and zip origins
+prepare a complete temporary application tree before replacing ``App/``;
+script and module origins write ``App/`` themselves and are verified afterwards.
+Source refs, checksums, archive paths, and package-local references are
+validated before the existing payload is mutated.
+
+Usage and API
+-------------
+Call ``populate_app_from_origin(...)`` during installation and
+``validate_origin_health(...)`` or ``validate_update_health(...)`` for
+read-only configuration checks. ``safe_extract_zip(...)``,
+``copy_zip_extract_mappings(...)``, and ``copy_directory_contents(...)`` are
+shared with update staging.
 
 Implementation Approach
 -----------------------
-Origin selection is performed by normalized configuration. Clones, downloads,
-and scripts write into temporary staging directories; validated contents are
-then moved into place with recovery of the previous application directory on
-error.
+Origin selection is performed by normalized configuration. Clones and
+downloads write into temporary staging directories inside the version; the
+validated contents are then moved into place with recovery of the previous
+application directory on error.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -23,20 +31,14 @@ import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from .core import PackageIdentity, StepResult, log_error, log_info, log_warning
-
-
-def _app_contains_entries(app_path: Path) -> bool:
-    """Return whether one path is a non-empty application directory."""
-    return app_path.is_dir() and any(app_path.iterdir())
+from .core import PackageIdentity, StepResult, log_info, log_warning
+from .downloads import download_response, file_sha256
 
 
-def app_has_payload(
-    identity: PackageIdentity, runtime_config: Optional[Dict[str, Any]] = None
-) -> bool:
-    """Return whether a package version has a non-empty lifecycle payload.
+def app_has_payload(identity: PackageIdentity) -> bool:
+    """Return whether a package version has a non-empty ``App`` directory.
 
     Parameters
     ----------
@@ -48,16 +50,8 @@ def app_has_payload(
     bool
         ``True`` only when ``App`` is a directory containing at least one entry.
     """
-    return _app_contains_entries(identity.version_path / "App")
-
-
-def app_needs_origin_population(
-    identity: PackageIdentity,
-    refresh_app: bool,
-    runtime_config: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """Return whether the selected package version needs payload population."""
-    return refresh_app or not app_has_payload(identity, runtime_config)
+    app = identity.version_path / "App"
+    return app.is_dir() and any(app.iterdir())
 
 
 def populate_app_from_origin(
@@ -67,299 +61,132 @@ def populate_app_from_origin(
     no_checksum: bool = False,
     refresh_app: bool = False,
 ) -> StepResult:
-    """Populate the configured lifecycle payload from the package origin."""
+    """Populate ``App`` from the package origin when it is missing, empty, or refreshed.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version to populate.
+    runtime_config : Dict[str, Any]
+        Normalized configuration containing ``origin``.
+    no_checksum : bool, default=False
+        Skip a configured ZIP checksum with a warning.
+    refresh_app : bool, default=False
+        Replace an already populated ``App``.
+
+    Returns
+    -------
+    StepResult
+        ``changed`` is true when ``App`` was (re)populated; ``errors`` holds the
+        failure reason otherwise.
+    """
     origin = runtime_config.get("origin")
-    payload_label = "App"
-    app_path = identity.version_path / "App"
     if origin is None:
-        return StepResult(ok=True, changed=False)
+        return StepResult(ok=True)
 
-    if not app_needs_origin_population(identity, refresh_app, runtime_config):
-        log_info(f"{payload_label} is already populated; skipping origin population")
-        return StepResult(ok=True, changed=False)
-
-    if refresh_app and app_has_payload(identity, runtime_config):
-        log_info("--refresh-app enabled; clearing lifecycle payload before origin population")
-    elif app_path.exists():
+    # A populated App is left alone unless the caller explicitly refreshes it.
+    populated = app_has_payload(identity)
+    if populated and not refresh_app:
+        log_info("App is already populated; skipping origin population")
+        return StepResult(ok=True)
+    if populated:
+        log_info("--refresh-app enabled; replacing App from origin")
+    elif (identity.version_path / "App").exists():
         log_info("App is empty; populating from origin...")
     else:
         log_info("App is missing; populating from origin...")
 
+    # A historical-version entry may record only a version and no provider.
+    mode = origin.get("mode")
     try:
-        if "mode" not in origin:
-            origin_version = origin.get("version", "unknown")
-            raise RuntimeError(
-                f"Origin version '{origin_version}' does not declare url or script, so it cannot populate App"
-            )
-        if origin["mode"] == "zip":
-            populate_app_from_zip_origin(
-                identity,
-                origin,
-                no_checksum=no_checksum,
-                )
-        elif origin["mode"] == "git":
-            populate_app_from_git_origin(
-                identity,
-                origin,
-                )
-        elif origin["mode"] == "script":
-            populate_app_from_script_origin(
-                identity, origin, runtime_config, refresh_app=refresh_app
-            )
-        elif origin["mode"] == "module":
-            populate_app_from_module_origin(
-                identity, origin, runtime_config, refresh_app=refresh_app
-            )
+        if mode == "zip":
+            populate_app_from_zip_origin(identity, origin, no_checksum=no_checksum)
+        elif mode == "git":
+            populate_app_from_git_origin(identity, origin)
+        elif mode == "script":
+            populate_app_from_script_origin(identity, origin, runtime_config, refresh_app=refresh_app)
+        elif mode == "module":
+            populate_app_from_module_origin(identity, origin, runtime_config, refresh_app=refresh_app)
         else:
-            return StepResult(
-                ok=False, errors=[f"Unsupported origin mode: {origin['mode']}"]
+            raise RuntimeError(
+                f"Origin version '{origin.get('version', 'unknown')}' does not declare "
+                "url, script, or module, so it cannot populate App"
             )
     except Exception as exc:
-        message = str(exc)
-        log_error(message)
-        return StepResult(ok=False, changed=False, errors=[message])
-    if not app_has_payload(identity, runtime_config):
+        return StepResult(ok=False, errors=[str(exc)])
+    if not app_has_payload(identity):
         return StepResult(
             ok=False,
             changed=True,
-            errors=["Origin population completed but lifecycle payload is missing or empty"],
+            errors=["Origin population completed but App is missing or empty"],
         )
     return StepResult(ok=True, changed=True)
 
 
-def populate_app_from_git_origin(
-    identity: PackageIdentity,
-    origin: Dict[str, str],
-    *,
-    payload_directory: str = "App",
-) -> None:
+def populate_app_from_git_origin(identity: PackageIdentity, origin: Dict[str, str]) -> None:
     """Populate ``App/`` with the exact commit at a configured Git ref."""
-    app_path = identity.version_path / payload_directory
-    with tempfile.TemporaryDirectory(
-        prefix=".gupkg-origin-", dir=str(identity.version_path)
-    ) as temp_root_name:
-        prepared_app = Path(temp_root_name) / f"{payload_directory}.new"
+    with tempfile.TemporaryDirectory(prefix=".gupkg-origin-", dir=str(identity.version_path)) as temp:
+        prepared_app = Path(temp) / "App.new"
+
+        def git(*arguments: str) -> str:
+            """Run one Git command quietly and return its stripped output."""
+            return subprocess.run(
+                ["git", *arguments], capture_output=True, text=True, check=True
+            ).stdout.strip()
 
         # Resolve the configured ref before cloning so the installed checkout
         # records one exact source state even if the branch advances.
         log_info(f"Cloning Git origin: {origin['url']} ({origin['ref']})")
-        remote = subprocess.run(
-            ["git", "ls-remote", "--exit-code", origin["url"], origin["ref"]],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.split()[0]
-        subprocess.run(
-            ["git", "clone", "--no-checkout", origin["url"], str(prepared_app)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(prepared_app),
-                "fetch",
-                "--no-tags",
-                "origin",
-                origin["ref"],
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        fetched = subprocess.run(
-            ["git", "-C", str(prepared_app), "rev-parse", "FETCH_HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+        remote = git("ls-remote", "--exit-code", origin["url"], origin["ref"]).split()[0]
+        git("clone", "--no-checkout", origin["url"], str(prepared_app))
+        git("-C", str(prepared_app), "fetch", "--no-tags", "origin", origin["ref"])
+        fetched = git("-C", str(prepared_app), "rev-parse", "FETCH_HEAD")
         if fetched != remote:
-            raise RuntimeError(
-                "Configured Git ref changed during origin population; retry installation"
-            )
-        subprocess.run(
-            ["git", "-C", str(prepared_app), "checkout", "--detach", fetched],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        _replace_payload_directory(identity.version_path, app_path, prepared_app)
+            raise RuntimeError("Configured Git ref changed during origin population; retry installation")
+        git("-C", str(prepared_app), "checkout", "--detach", fetched)
+        _replace_app(identity.version_path, prepared_app)
 
 
 def populate_app_from_zip_origin(
-    identity: PackageIdentity,
-    origin: Dict[str, str],
-    *,
-    no_checksum: bool,
-    payload_directory: str = "App",
+    identity: PackageIdentity, origin: Dict[str, str], *, no_checksum: bool
 ) -> None:
-    """Populate ``App/`` from a downloaded zip archive."""
-    app_path = identity.version_path / payload_directory
-    with tempfile.TemporaryDirectory(
-        prefix=".gupkg-origin-", dir=str(identity.version_path)
-    ) as temp_root_name:
-        temp_root = Path(temp_root_name)
+    """Populate ``App/`` from a downloaded and optionally verified zip archive."""
+    with tempfile.TemporaryDirectory(prefix=".gupkg-origin-", dir=str(identity.version_path)) as temp:
+        temp_root = Path(temp)
         archive_path = temp_root / "origin.zip"
         staging_dir = temp_root / "extract"
-        prepared_app = temp_root / f"{payload_directory}.new"
+        prepared_app = temp_root / "App.new"
         staging_dir.mkdir()
 
         log_info(f"Downloading origin: {origin['url']}")
-        with urllib.request.urlopen(origin["url"]) as response:
-            with open(archive_path, "wb") as file_handle:
-                shutil.copyfileobj(response, file_handle)
+        with urllib.request.urlopen(origin["url"], timeout=60) as response:
+            download_response(response, archive_path, label="Downloading origin")
 
+        # Verify before extraction so an unexpected archive is never unpacked.
         checksum = origin.get("checksum")
         if checksum and no_checksum:
-            log_warning(
-                "Checksum verification skipped because --no-checksum was provided"
-            )
+            log_warning("Checksum verification skipped because --no-checksum was provided")
         elif checksum:
             log_info("Verifying sha256 checksum...")
-            expected = checksum.split(":", 1)[1].lower()
-            digest = hashlib.sha256()
-            with open(archive_path, "rb") as file_handle:
-                for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            if digest.hexdigest().lower() != expected:
+            if file_sha256(archive_path) != checksum.split(":", 1)[1].lower():
                 raise RuntimeError("[origin].checksum did not match downloaded file")
 
+        # Extract safely and select the configured subdirectory, which must
+        # stay inside the archive.
         log_info("Extracting zip archive...")
         safe_extract_zip(archive_path, staging_dir)
-
         selected_source = staging_dir
-        extract_subdir = origin.get("extractSubdir")
-        if extract_subdir:
-            log_info(f"Using archive subdirectory: {extract_subdir}")
-            selected_source = staging_dir / extract_subdir
-        resolved_source = selected_source.resolve()
-        resolved_staging = staging_dir.resolve()
-        if not resolved_source.is_relative_to(resolved_staging):
+        if origin.get("extractSubdir"):
+            log_info(f"Using archive subdirectory: {origin['extractSubdir']}")
+            selected_source = staging_dir / origin["extractSubdir"]
+        if not selected_source.resolve().is_relative_to(staging_dir.resolve()):
             raise RuntimeError("[origin].extractSubdir cannot escape the archive")
-        if not selected_source.exists() or not selected_source.is_dir():
+        if not selected_source.is_dir():
             raise RuntimeError("[origin].extractSubdir was not found in the archive")
 
         prepared_app.mkdir()
-        _copy_directory_contents(selected_source, prepared_app)
-        _replace_payload_directory(identity.version_path, app_path, prepared_app)
-
-
-def safe_extract_zip(zip_path: Path, destination: Path) -> None:
-    """Extract a zip archive after rejecting unsafe members."""
-    resolved_destination = destination.resolve()
-    with zipfile.ZipFile(zip_path) as archive:
-        for member in archive.infolist():
-            member_path = Path(member.filename)
-            windows_member_path = PureWindowsPath(member.filename)
-            if (
-                member_path.is_absolute()
-                or windows_member_path.is_absolute()
-                or windows_member_path.drive
-                or ".." in member_path.parts
-                or ".." in windows_member_path.parts
-            ):
-                raise RuntimeError("Zip archive contains an unsafe path")
-            resolved_member_path = (destination / member_path).resolve()
-            if not resolved_member_path.is_relative_to(resolved_destination):
-                raise RuntimeError("Zip archive contains an unsafe path")
-            file_type = (member.external_attr >> 16) & 0o170000
-            if file_type == 0o120000:
-                raise RuntimeError("Zip archive contains an unsupported symlink")
-        archive.extractall(destination)
-
-
-def copy_zip_extract_mappings(
-    archive_root: Path, app_path: Path, mappings: List[Dict[str, str]]
-) -> None:
-    """Copy selected archive paths into ``App/`` according to ZIP mappings."""
-    resolved_root = archive_root.resolve()
-    resolved_app = app_path.resolve(strict=False)
-    app_path.mkdir()
-
-    # Apply each mapping independently so package authors can compose a runtime
-    # tree from several archive directories without extracting unrelated files.
-    for mapping in mappings:
-        src = mapping["src"]
-        copy_contents = src.endswith("/")
-        pattern = src[:-1] if copy_contents else src
-        matches = list(archive_root.glob(pattern))
-        if not matches:
-            raise RuntimeError(f"Update ZIP source matched no archive paths: {src!r}")
-
-        # Keep each selected source and destination inside their respective
-        # staging roots even when wildcard expansion reaches unusual names.
-        destination = app_path / mapping["dest"]
-        resolved_destination = destination.resolve(strict=False)
-        if not resolved_destination.is_relative_to(resolved_app):
-            raise RuntimeError("Update ZIP destination escapes App")
-        destination.mkdir(parents=True, exist_ok=True)
-        for source in matches:
-            resolved_source = source.resolve()
-            if not resolved_source.is_relative_to(resolved_root):
-                raise RuntimeError("Update ZIP source escapes the archive")
-            if copy_contents:
-                if not source.is_dir():
-                    raise RuntimeError(
-                        f"Update ZIP source ending in '/' is not a directory: {src!r}"
-                    )
-                _copy_directory_contents(source, destination)
-            elif source.is_dir():
-                shutil.copytree(source, destination / source.name, dirs_exist_ok=True)
-            else:
-                shutil.copy2(source, destination / source.name)
-
-
-def _copy_directory_contents(source: Path, destination: Path) -> None:
-    """Copy the entries under one directory into another directory."""
-    for entry in source.iterdir():
-        target = destination / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, target)
-        else:
-            shutil.copy2(entry, target)
-
-
-def _replace_payload_directory(
-    version_path: Path, app_path: Path, prepared_app: Path
-) -> None:
-    """Replace one lifecycle payload with already prepared contents."""
-    resolved_version = version_path.resolve()
-    resolved_app = app_path.resolve(strict=False)
-    if resolved_app.parent != resolved_version or resolved_app.name.casefold() in {
-        "current",
-        ".gupkg",
-        "pkg.local",
-    }:
-        raise RuntimeError(
-            "Refusing to replace a reserved payload outside the package version directory"
-        )
-
-    backup_path = Path(
-        tempfile.mkdtemp(prefix=f".gupkg-old-{app_path.name}-", dir=str(version_path))
-    )
-    backup_path.rmdir()
-    if app_path.exists():
-        if _app_contains_entries(app_path):
-            shutil.move(str(app_path), str(backup_path))
-        else:
-            shutil.rmtree(app_path)
-    try:
-        shutil.move(str(prepared_app), str(app_path))
-    except Exception:
-        if backup_path.exists() and not app_path.exists():
-            shutil.move(str(backup_path), str(app_path))
-        raise
-    if backup_path.exists():
-        shutil.rmtree(backup_path)
-
-
-def _replace_app_directory(
-    version_path: Path, app_path: Path, prepared_app: Path
-) -> None:
-    """Preserve the historical private helper for literal ``App`` payloads."""
-    _replace_payload_directory(version_path, app_path, prepared_app)
+        copy_directory_contents(selected_source, prepared_app)
+        _replace_app(identity.version_path, prepared_app)
 
 
 def populate_app_from_script_origin(
@@ -369,43 +196,24 @@ def populate_app_from_script_origin(
     *,
     refresh_app: bool,
 ) -> None:
-    """Run a package-local origin script and verify that it populated ``App/``."""
-    script_path = _resolve_origin_script_path(identity, origin["script"])
-    payload_directory = "App"
-    app_path = identity.version_path / payload_directory
-    if refresh_app and app_path.exists():
-        resolved_app = app_path.resolve(strict=False)
-        if (
-            resolved_app.parent != identity.version_path.resolve()
-            or resolved_app.name != payload_directory
-        ):
-            raise RuntimeError(
-                "Refusing to clear lifecycle payload outside the package version directory"
-            )
-        shutil.rmtree(app_path)
+    """Run a package-local origin script that populates ``App/`` from JSON on stdin."""
+    script_path = _origin_script_path(identity, origin["script"], context="origin")
+    if refresh_app:
+        _clear_app(identity)
 
+    # Each script type gets its native interpreter; the script runs from its
+    # own directory and receives the package context as JSON.
     log_info(f"Running origin script: {origin['script']}")
-    payload = json.dumps(
-        build_origin_script_payload(identity, runtime_config), ensure_ascii=False
-    )
     extension = script_path.suffix.lower()
     if extension == ".ps1":
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-        ]
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
     elif extension in {".cmd", ".bat"}:
         command = ["cmd.exe", "/c", str(script_path)]
     else:
         command = [str(script_path)]
-
     completed = subprocess.run(
         command,
-        input=payload,
+        input=json.dumps(build_origin_script_payload(identity, runtime_config), ensure_ascii=False),
         text=True,
         capture_output=True,
         cwd=str(script_path.parent),
@@ -417,11 +225,9 @@ def populate_app_from_script_origin(
     for line in completed.stderr.splitlines():
         log_warning(line)
     if completed.returncode != 0:
-        raise RuntimeError(
-            f"Origin script failed with exit code {completed.returncode}"
-        )
-    if not _app_contains_entries(app_path):
-        raise RuntimeError("Origin script completed but lifecycle payload is missing or empty")
+        raise RuntimeError(f"Origin script failed with exit code {completed.returncode}")
+    if not app_has_payload(identity):
+        raise RuntimeError("Origin script completed but App is missing or empty")
 
 
 def populate_app_from_module_origin(
@@ -431,71 +237,30 @@ def populate_app_from_module_origin(
     *,
     refresh_app: bool,
 ) -> None:
-    """Run a package-local Python origin module and verify its application tree."""
-    from .updates import _load_package_module
+    """Run a package-local Python origin module's ``populate_app(context)`` hook."""
+    from .updates import load_package_module
 
-    payload_directory = "App"
-    app_path = identity.version_path / payload_directory
-    if refresh_app and app_path.exists():
-        resolved_app = app_path.resolve(strict=False)
-        if (
-            resolved_app.parent != identity.version_path.resolve()
-            or resolved_app.name != payload_directory
-        ):
-            raise RuntimeError(
-                "Refusing to clear lifecycle payload outside the package version directory"
-            )
-        shutil.rmtree(app_path)
+    if refresh_app:
+        _clear_app(identity)
 
-    # Package modules share the update-hook loader, including its isolated
-    # namespace and API-version validation, before they can populate App.
+    # Origin modules share the update-hook loader, including its isolated
+    # namespace and API-version validation.
     log_info(f"Running origin module: {origin['module']}")
-    module = _load_package_module(identity, origin["module"], identity.version_path)
+    module = load_package_module(identity, origin["module"])
     callback = getattr(module, "populate_app", None)
     if not callable(callback):
         raise RuntimeError("Origin module must define populate_app(context)")
-    callback(
-        {
-            "apiVersion": 1,
-            **build_origin_script_payload(identity, runtime_config),
-        }
-    )
-    if not _app_contains_entries(app_path):
-        raise RuntimeError("Origin module completed but lifecycle payload is missing or empty")
-
-
-def _resolve_origin_script_path(identity: PackageIdentity, script: str) -> Path:
-    """Resolve and validate a package-local origin script path."""
-    return _validate_origin_script_reference(identity, script, context="origin")
-
-
-def _validate_origin_script_reference(
-    identity: PackageIdentity, script: str, *, context: str
-) -> Path:
-    """Validate and resolve an origin script reference."""
-    raw_script = Path(script)
-    if raw_script.is_absolute():
-        raise RuntimeError(
-            f"[{context}].script must be relative to the package version directory"
-        )
-    script_path = (identity.version_path / raw_script).resolve()
-    if not script_path.is_relative_to(identity.version_path.resolve()):
-        raise RuntimeError(
-            f"[{context}].script cannot escape the package version directory"
-        )
-    if not script_path.exists() or not script_path.is_file():
-        raise RuntimeError(f"[{context}].script was not found")
-    if script_path.suffix.lower() not in {".ps1", ".cmd", ".bat", ".exe"}:
-        raise RuntimeError(f"[{context}].script has an unsupported extension")
-    return script_path
+    callback({"apiVersion": 1, **build_origin_script_payload(identity, runtime_config)})
+    if not app_has_payload(identity):
+        raise RuntimeError("Origin module completed but App is missing or empty")
 
 
 def build_origin_script_payload(
     identity: PackageIdentity, runtime_config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Build the JSON object passed to origin scripts on stdin."""
-    payload_directory = "App"
-    payload_path = (identity.version_path / payload_directory).resolve()
+    """Build the JSON object passed to origin scripts on stdin and to origin modules."""
+    version_root = identity.version_path.resolve()
+    app = str((identity.version_path / "App").resolve())
     return {
         "config": {
             "name": identity.name,
@@ -515,59 +280,206 @@ def build_origin_script_payload(
             "versionString": identity.version_string,
         },
         "PkgVars": {
-            "PkgRoot": str(identity.version_path.resolve()),
-            "App": str((identity.version_path / "App").resolve()),
-            "VersionRoot": str(identity.version_path.resolve()),
-            "Icons": str((identity.version_path / "Icons").resolve()),
-            "Shortcuts": str((identity.version_path / "Shortcuts").resolve()),
+            "PkgRoot": str(version_root),
+            "App": app,
+            "VersionRoot": str(version_root),
+            "Icons": str(version_root / "Icons"),
+            "Shortcuts": str(version_root / "Shortcuts"),
         },
-        "paths": {
-            "stageApp": str((identity.version_path / "App").resolve()),
-        },
+        "paths": {"stageApp": app},
     }
+
+
+# ---------------------------------------------------------------------------
+# Read-only health checks
+# ---------------------------------------------------------------------------
 
 
 def validate_origin_health(
     identity: PackageIdentity, origin: Optional[Dict[str, Any]]
 ) -> List[str]:
-    """Return origin configuration health-check errors."""
+    """Return errors for origin scripts or modules that are missing or unsafe.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version that owns the references.
+    origin : dict, optional
+        Normalized origin, including its historical versions.
+
+    Returns
+    -------
+    List[str]
+        One message per invalid reference.
+    """
     if origin is None:
         return []
-
     errors: List[str] = []
-    origin_sources: List[Tuple[str, Dict[str, Any]]] = [("origin", origin)]
-    for index, item in enumerate(origin.get("versions", [])):
-        origin_sources.append((f"origin.versions[{index}]", item))
-
-    for context, item in origin_sources:
+    sources = [("origin", origin)] + [
+        (f"origin.versions[{index}]", item) for index, item in enumerate(origin.get("versions", []))
+    ]
+    for context, item in sources:
         if item.get("mode") == "script":
             try:
-                _validate_origin_script_reference(
-                    identity, item.get("script", ""), context=context
-                )
+                _origin_script_path(identity, item["script"], context=context)
             except RuntimeError as exc:
                 errors.append(str(exc))
-        elif item.get("mode") == "module":
-            path = identity.version_path / item.get("module", "")
-            if not path.exists() or not path.is_file():
-                errors.append(f"Origin module does not exist: {item.get('module', '')}")
+        elif item.get("mode") == "module" and not (identity.version_path / item["module"]).is_file():
+            errors.append(f"Origin module does not exist: {item['module']}")
     return errors
 
 
 def validate_update_health(
     identity: PackageIdentity, update: Optional[Dict[str, Any]]
 ) -> List[str]:
-    """Return update-hook reference errors without contacting an update source."""
+    """Return errors for configured update modules that do not exist.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version that owns the ``pkg.local`` hooks.
+    update : dict, optional
+        Normalized update configuration.
+
+    Returns
+    -------
+    List[str]
+        One message per missing check, payload, or install-step module.
+    """
     if update is None:
         return []
-    references = [update["check"]] if update["check"]["mode"] == "module" else []
-    if update["payload"]["mode"] == "module":
-        references.append(update["payload"])
-    errors: List[str] = []
-    for item in references:
-        path = identity.version_path / item["module"]
-        if not path.exists() or not path.is_file():
-            errors.append(f"Update module does not exist: {item['module']}")
-    return errors
+    references = [
+        item["module"]
+        for item in (update["check"], update["payload"], *update["steps"])
+        if item.get("mode") == "module"
+    ]
+    return [
+        f"Update module does not exist: {module}"
+        for module in references
+        if not (identity.version_path / module).is_file()
+    ]
 
 
+# ---------------------------------------------------------------------------
+# Filesystem helpers shared with update staging
+# ---------------------------------------------------------------------------
+
+
+def safe_extract_zip(zip_path: Path, destination: Path) -> None:
+    """Extract a zip archive after rejecting absolute, escaping, and symlink members."""
+    resolved_destination = destination.resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            member_path = Path(member.filename)
+            windows_member_path = PureWindowsPath(member.filename)
+            if (
+                member_path.is_absolute()
+                or windows_member_path.is_absolute()
+                or windows_member_path.drive
+                or ".." in member_path.parts
+                or ".." in windows_member_path.parts
+                or not (destination / member_path).resolve().is_relative_to(resolved_destination)
+            ):
+                raise RuntimeError("Zip archive contains an unsafe path")
+            if (member.external_attr >> 16) & 0o170000 == 0o120000:
+                raise RuntimeError("Zip archive contains an unsupported symlink")
+        archive.extractall(destination)
+
+
+def copy_zip_extract_mappings(
+    archive_root: Path, app_path: Path, mappings: List[Dict[str, str]]
+) -> None:
+    """Copy selected archive paths into a new ``App/`` according to ZIP mappings.
+
+    A mapping ``src`` is a ZIP-root wildcard; a trailing ``/`` copies a matched
+    directory's contents rather than the directory itself. ``dest`` is
+    relative to ``App``.
+    """
+    resolved_root = archive_root.resolve()
+    resolved_app = app_path.resolve(strict=False)
+    app_path.mkdir()
+
+    # Apply each mapping independently so package authors can compose a runtime
+    # tree from several archive directories without extracting unrelated files.
+    for mapping in mappings:
+        src = mapping["src"]
+        copy_contents = src.endswith("/")
+        matches = list(archive_root.glob(src[:-1] if copy_contents else src))
+        if not matches:
+            raise RuntimeError(f"Update ZIP source matched no archive paths: {src!r}")
+
+        # Keep each selected source and destination inside their staging roots
+        # even when wildcard expansion reaches unusual names.
+        destination = app_path / mapping["dest"]
+        if not destination.resolve(strict=False).is_relative_to(resolved_app):
+            raise RuntimeError("Update ZIP destination escapes App")
+        destination.mkdir(parents=True, exist_ok=True)
+        for source in matches:
+            if not source.resolve().is_relative_to(resolved_root):
+                raise RuntimeError("Update ZIP source escapes the archive")
+            if copy_contents:
+                if not source.is_dir():
+                    raise RuntimeError(f"Update ZIP source ending in '/' is not a directory: {src!r}")
+                copy_directory_contents(source, destination)
+            elif source.is_dir():
+                shutil.copytree(source, destination / source.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(source, destination / source.name)
+
+
+def copy_directory_contents(source: Path, destination: Path) -> None:
+    """Copy the entries under one directory into an existing directory."""
+    for entry in source.iterdir():
+        if entry.is_dir():
+            shutil.copytree(entry, destination / entry.name)
+        else:
+            shutil.copy2(entry, destination / entry.name)
+
+
+def _replace_app(version_path: Path, prepared_app: Path) -> None:
+    """Replace ``<version>/App`` with a prepared tree, restoring the old one on failure."""
+    app_path = version_path / "App"
+
+    # Move a populated App aside rather than deleting it, so a failed move of
+    # the prepared tree can restore the previous payload.
+    backup_path = Path(tempfile.mkdtemp(prefix=".gupkg-old-App-", dir=str(version_path)))
+    backup_path.rmdir()
+    if app_path.exists():
+        if any(app_path.iterdir()):
+            shutil.move(str(app_path), str(backup_path))
+        else:
+            app_path.rmdir()
+    try:
+        shutil.move(str(prepared_app), str(app_path))
+    except Exception:
+        if backup_path.exists() and not app_path.exists():
+            shutil.move(str(backup_path), str(app_path))
+        raise
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+
+
+def _clear_app(identity: PackageIdentity) -> None:
+    """Remove ``App`` before a script or module repopulates it in place."""
+    app_path = identity.version_path / "App"
+    if not app_path.exists():
+        return
+    resolved_app = app_path.resolve(strict=False)
+    if resolved_app.parent != identity.version_path.resolve() or resolved_app.name != "App":
+        raise RuntimeError("Refusing to clear App outside the package version directory")
+    shutil.rmtree(app_path)
+
+
+def _origin_script_path(identity: PackageIdentity, script: str, *, context: str) -> Path:
+    """Resolve and validate a package-local origin script reference."""
+    raw_script = Path(script)
+    if raw_script.is_absolute():
+        raise RuntimeError(f"[{context}].script must be relative to the package version directory")
+    script_path = (identity.version_path / raw_script).resolve()
+    if not script_path.is_relative_to(identity.version_path.resolve()):
+        raise RuntimeError(f"[{context}].script cannot escape the package version directory")
+    if not script_path.is_file():
+        raise RuntimeError(f"[{context}].script was not found")
+    if script_path.suffix.lower() not in {".ps1", ".cmd", ".bat", ".exe"}:
+        raise RuntimeError(f"[{context}].script has an unsupported extension")
+    return script_path

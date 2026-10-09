@@ -4,9 +4,6 @@ localVersion = 0
 description = "The standalone gupkg package manager runtime"
 homepage = "https://github.com/guraltsev/pkg"
 
-[[environment]]
-Name = "GUPKG_HOME"
-Value = "$VersionRoot\\gupkg"
 
 [[bin]]
 name = "gupkg"

@@ -1863,7 +1863,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                             code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            urlopen_mock.assert_called_once_with("https://example.invalid/tool.zip")
+            urlopen_mock.assert_called_once_with("https://example.invalid/tool.zip", timeout=60)
             self.assertIn("Verifying sha256 checksum", output)
 
     def test_install_skips_zip_origin_when_app_is_already_populated(self) -> None:
@@ -1952,7 +1952,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                             code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_SUCCESS, msg=output)
-            urlopen_mock.assert_called_once_with("https://example.invalid/current.zip")
+            urlopen_mock.assert_called_once_with("https://example.invalid/current.zip", timeout=60)
             self.assertTrue((version_dir / "App" / "selected.exe").exists())
 
     def test_refresh_app_replaces_existing_app_from_zip_origin(self) -> None:
@@ -2026,7 +2026,7 @@ class GupkgCliBehaviorTests(unittest.TestCase):
                     code, output = self.run_main(module, ["install", str(version_dir)])
 
             self.assertEqual(code, module.EXIT_MUTATION_ERROR)
-            self.assertIn("does not declare url or script", output)
+            self.assertIn("does not declare url, script, or module", output)
 
     def test_checksum_mismatch_aborts_without_app_mutation(self) -> None:
         """Checksum mismatch fails before replacing an existing App directory."""

@@ -22,7 +22,6 @@ revision remains usable.
 
 from __future__ import annotations
 
-import os
 import json
 import shutil
 import subprocess
@@ -30,7 +29,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from .configuration import check_metadata_consistency, read_runtime_config
 from .core import (
@@ -75,14 +74,6 @@ class RegistryState:
             return None
         candidate = self.cache_root / "official" / "trees" / self.revision / "pkgs"
         return candidate if candidate.is_dir() else None
-
-
-def default_registry_cache() -> Path:
-    """Return the per-user default registry cache without creating it."""
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        local_app_data = str(Path.home() / "AppData" / "Local")
-    return Path(local_app_data) / "gupkg" / "registry"
 
 
 def registry_status(cache_root: Path) -> RegistryState:
@@ -181,21 +172,17 @@ def validate_registry_tree(pkgs_root: Path) -> list[RegistryPackage]:
     return packages
 
 
-def search_registry(
-    cache_root: Path, query: str = "", *, installed: Iterable[str] | None = None
-) -> list[RegistryPackage]:
-    """Search the validated active tree without using the network."""
+def search_registry(cache_root: Path, query: str = "") -> list[RegistryPackage]:
+    """Return validated active-tree packages whose selector contains *query*.
+
+    The search is case-insensitive, never uses the network, and returns every
+    package for an empty query.
+    """
     state = registry_status(cache_root)
     if state.tree_path is None:
         raise FileNotFoundError("No validated registry cache is available")
-    packages = validate_registry_tree(state.tree_path)
     needle = query.casefold()
-    installed_keys = {item.casefold() for item in installed or ()}
-    if installed is not None:
-        packages = [item for item in packages if (item.selector.casefold() in installed_keys) == True]
-    if needle:
-        packages = [item for item in packages if needle in item.selector.casefold()]
-    return packages
+    return [item for item in validate_registry_tree(state.tree_path) if needle in item.selector.casefold()]
 
 
 def resolve_selector(cache_root: Path, selector: str) -> RegistryPackage:

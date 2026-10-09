@@ -17,24 +17,24 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-from ._version import __version__
 
 __copyright__ = "Copyright (C) 2025 Gennady Uraltsev. All rights reserved."
 __license__ = "MIT"
 
+# Public process exit statuses shared by every command and workflow result.
 EXIT_SUCCESS = 0
 EXIT_USER_ERROR = 2
 EXIT_MUTATION_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
+# Version directory names: ``v<upstream>`` with an optional ``.l<local>``.
 VERSION_DIR_NAME_RE = re.compile(r"^v(.+?)(?:\.l(\d+))?$")
 
 class ConfigValidationError(ValueError):
@@ -237,9 +237,9 @@ class _DynamicStdoutHandler(logging.Handler):
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Render and print one log record to stdout."""
+        """Render and flush one log record to stdout."""
         try:
-            print(self.format(record))
+            print(self.format(record), flush=True)
         except Exception:
             self.handleError(record)
 
@@ -522,18 +522,15 @@ def read_toml_file(path: Path) -> Dict[str, Any]:
     return data
 
 
-def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
-    """Write text atomically to a file.
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write UTF-8 text atomically to a file.
 
     Parameters
     ----------
     path : Path
         Destination file path.
     text : str
-        Text content to write.
-    backup : bool
-        Whether to create ``<path>.bak`` before replacing an existing
-            file.
+        Text content to write without newline translation.
 
     Raises
     ------
@@ -541,27 +538,7 @@ def write_text_atomic(path: Path, text: str, *, backup: bool = False) -> None:
         If the temporary file or final replacement cannot be written.
 
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd: Optional[int] = None
-    tmp_path: Optional[str] = None
-    try:
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-        )
-        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as file_handle:
-            tmp_fd = None
-            file_handle.write(text)
-            file_handle.flush()
-            os.fsync(file_handle.fileno())
-        if backup and path.exists():
-            shutil.copy2(path, path.with_name(path.name + ".bak"))
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if tmp_fd is not None:
-            os.close(tmp_fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    write_bytes_atomic(path, text.encode("utf-8"))
 
 
 def write_bytes_atomic(path: Path, content: bytes) -> None:
@@ -580,25 +557,25 @@ def write_bytes_atomic(path: Path, content: bytes) -> None:
         If the temporary file or final replacement cannot be written.
 
     """
+    # Stage beside the destination so the final rename stays on one volume and
+    # a failed write never leaves a truncated destination behind.
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd: Optional[int] = None
-    tmp_path: Optional[str] = None
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-        )
         with os.fdopen(tmp_fd, "wb") as file_handle:
-            tmp_fd = None
             file_handle.write(content)
             file_handle.flush()
             os.fsync(file_handle.fileno())
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if tmp_fd is not None:
-            os.close(tmp_fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+# One ``$`` token: an escaped dollar, a braced name, or a plain identifier.
+_EXPANSION_TOKEN_RE = re.compile(r"\$(?:(\$)|\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 
 
 def expand_text(
@@ -606,7 +583,7 @@ def expand_text(
     identity: PackageIdentity,
     mode: ExpansionMode,
     *,
-    install_context: Any | None = None,
+    install_context: Mapping[str, Any] | None = None,
 ) -> ExpansionResult:
     """Expand package and environment variables in text.
 
@@ -615,14 +592,14 @@ def expand_text(
     - ``$App``, ``$Icons``, ``$Shortcuts``, ``$VersionRoot``, and
       ``${version}`` expand in every mode.
     - ``$ScopeRoot`` and ``$Bin`` expand when an installation context supplies
-      those values.
+      ``collection_root`` and ``bin_dir``.
     - ``${VAR}`` expands in every mode and is tracked as unresolved when the
       environment variable does not exist.
     - Plain ``$NAME`` only expands when it names a package variable.
     - Plain non-package ``$NAME`` tokens are reported as unresolved in
       :class:`ExpansionMode.GENERAL` and stay literal in
       :class:`ExpansionMode.SCRIPT`.
-    - ``$$`` becomes a literal ``$``.
+    - ``$$`` becomes a literal ``$``; any other ``$`` stays literal.
 
     Parameters
     ----------
@@ -632,104 +609,56 @@ def expand_text(
         Package identity used to resolve package-variable paths.
     mode : ExpansionMode
         Expansion ruleset to apply.
-    install_context : object, optional
-        Mapping or context object exposing ``collection_root`` and ``bin_dir``
-        for manager-owned install values.
+    install_context : Mapping[str, Any], optional
+        Scope paths exposing ``collection_root`` and ``bin_dir`` for
+        manager-owned install values.
 
     Returns
     -------
     ExpansionResult
-        An :class:`ExpansionResult` containing the expanded text and any
-        unresolved variable tokens.
+        The expanded text and any unresolved variable tokens, in first-seen
+        order without duplicates.
 
     """
-    if text is None:
-        return ExpansionResult("")
-
-    source = str(text)
-    if source == "":
+    if not text:
         return ExpansionResult("")
 
     # Package variables intentionally resolve through ``<package>/current`` so
     # repair installs keep targeting the active package view.
-    gupkg_base = identity.package_root / "current"
-    gupkg_map = {
-        "App": str(gupkg_base / "App"),
-        "Icons": str(gupkg_base / "Icons"),
-        "Shortcuts": str(gupkg_base / "Shortcuts"),
-        "VersionRoot": str(gupkg_base),
+    base = identity.package_root / "current"
+    package_vars = {
+        "App": str(base / "App"),
+        "Icons": str(base / "Icons"),
+        "Shortcuts": str(base / "Shortcuts"),
+        "VersionRoot": str(base),
         "version": identity.version,
     }
     if install_context is not None:
-        if isinstance(install_context, dict):
-            scope_root = install_context.get("collection_root") or install_context.get(
-                "scope_root"
-            )
-            bin_dir = install_context.get("bin_dir")
-        else:
-            scope_root = getattr(install_context, "collection_root", None)
-            bin_dir = getattr(install_context, "bin_dir", None)
-        if scope_root is not None:
-            gupkg_map["ScopeRoot"] = str(scope_root)
-        if bin_dir is not None:
-            gupkg_map["Bin"] = str(bin_dir)
-    out: List[str] = []
+        if install_context.get("collection_root") is not None:
+            package_vars["ScopeRoot"] = str(install_context["collection_root"])
+        if install_context.get("bin_dir") is not None:
+            package_vars["Bin"] = str(install_context["bin_dir"])
+
     unresolved: List[str] = []
-    i = 0
-    while i < len(source):
-        char = source[i]
-        if char != "$":
-            out.append(char)
-            i += 1
-            continue
 
-        if i + 1 < len(source) and source[i + 1] == "$":
-            out.append("$")
-            i += 2
-            continue
+    def replace(match: re.Match[str]) -> str:
+        """Return the replacement for one token and record unresolved names."""
+        escaped, braced, plain = match.groups()
+        token = match.group(0)
+        if escaped:
+            return "$"
+        if braced is not None:
+            if braced in package_vars:
+                return package_vars[braced]
+            if braced in os.environ:
+                return os.environ[braced]
+            unresolved.append(token)
+            return token
+        if plain in package_vars:
+            return package_vars[plain]
+        if mode == ExpansionMode.GENERAL:
+            unresolved.append(token)
+        return token
 
-        if i + 1 < len(source) and source[i + 1] == "{":
-            closing = source.find("}", i + 2)
-            if closing == -1:
-                out.append("$")
-                i += 1
-                continue
-            var_name = source[i + 2 : closing]
-            token = source[i : closing + 1]
-            if var_name in gupkg_map:
-                out.append(gupkg_map[var_name])
-            elif var_name in os.environ:
-                out.append(os.environ[var_name])
-            else:
-                out.append(token)
-                unresolved.append(token)
-            i = closing + 1
-            continue
-
-        if i + 1 < len(source) and re.match(r"[A-Za-z_]", source[i + 1]):
-            j = i + 2
-            while j < len(source) and re.match(r"[A-Za-z0-9_]", source[j]):
-                j += 1
-            var_name = source[i + 1 : j]
-            token = source[i:j]
-            if var_name in gupkg_map:
-                out.append(gupkg_map[var_name])
-            else:
-                out.append(token)
-                if mode == ExpansionMode.GENERAL:
-                    unresolved.append(token)
-            i = j
-            continue
-
-        out.append("$")
-        i += 1
-
-    deduplicated_unresolved: List[str] = []
-    seen_unresolved = set()
-    for token in unresolved:
-        if token in seen_unresolved:
-            continue
-        seen_unresolved.add(token)
-        deduplicated_unresolved.append(token)
-
-    return ExpansionResult("".join(out), deduplicated_unresolved)
+    value = _EXPANSION_TOKEN_RE.sub(replace, str(text))
+    return ExpansionResult(value, list(dict.fromkeys(unresolved)))

@@ -13,16 +13,26 @@ domains used by the `gupkg.cli` command boundary and package workflows:
   integration
 - `layout.py`: package-path resolution and `current` activation
 - `configuration.py`: canonical `pkg.toml` normalization and validation
-- `metadata.py`: structure-preserving metadata synchronization
+- `metadata.py`: structure-preserving metadata synchronization and the
+  starter `pkg.toml`
 - `components.py`: shortcut, environment, `PATH`, and wrapper installation
-- `origin.py`: Git, zip, and script application population
-- `updates.py`: update state, hooks, candidate validation, and staging
+- `origin.py`: Git, zip, script, and module application population
+- `downloads.py`: HTTP downloads with progress and SHA-256 verification
+- `updates.py`: update state, receipts, hooks, candidate validation, and staging
 - `github_releases.py`: built-in latest-release discovery for GitHub assets
+- `dependencies.py`: isolated installation of runtime and hook dependencies
+- `collection.py`: bounded discovery of packages below a collection root
+- `manager.py`: manager configuration, scoped inventory, and batch updates
 - `registry.py`: validated sparse Git registry cache, search, and selectors
 - `distribution.py`: standalone runtime health and scoped self-repair
+- `bootstrap.py`, `extractors.py`: embedded-runtime preparation and the
+  bundled 7-Zip lookup used by package hooks
 
 `gupkg/cli.py` owns command parsing and rendering; `gupkg/gupkg.py` exposes the
-high-level install, health-check, configuration, and update workflows.
+high-level install, health-check, and update workflows; `tui.py` and
+`manager_tui.py` are the interactive front ends. Workflows return their errors
+in an `ActionResult` instead of printing them, so each front end reports every
+error exactly once.
 These runtime modules are internal implementation details and are not a
 separate public API. Legacy conversion remains implemented in
 `legacy_to_gupkg_toml.py` and is coordinated by the public

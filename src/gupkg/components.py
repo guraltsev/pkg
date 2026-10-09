@@ -1,14 +1,21 @@
-﻿"""Install package shortcuts, environment settings, PATH entries, and wrappers.
+"""Install package shortcuts, environment settings, PATH entries, and wrappers.
 
 Normalized configuration rows are expanded against the active package view and
-applied to the requested user or machine scope. Each component reports changes,
-warnings, and failures without hiding partial mutations from the caller.
+applied to the requested user or machine scope. Each component reports changes
+and failures without hiding partial mutations from the caller; one failing row
+never prevents the remaining rows from being applied.
+
+Usage and API
+-------------
+``install_components(...)`` runs the fixed install sequence for one package
+version and is called by ``gupkg.gupkg.install_package(...)``.
 
 Implementation Approach
 -----------------------
-Every component validates expansion results before crossing its filesystem or
-registry boundary. The coordinator applies the fixed component sequence and
-combines individual outcomes into one install-step result.
+Every row is expanded and validated before crossing its filesystem or registry
+boundary. File outputs are written atomically and skipped when already
+identical, so reinstalling is an idempotent repair. The coordinator combines
+the individual outcomes into one install-step result.
 """
 
 from __future__ import annotations
@@ -24,12 +31,11 @@ from .core import (
     Scope,
     StepResult,
     expand_text,
-    log_error,
     log_info,
     log_warning,
     write_bytes_atomic,
 )
-from .layout import _warn_if_output_path_is_unusual
+from .layout import warn_if_output_path_is_unusual
 from .windows import (
     broadcast_environment_change,
     create_shortcut,
@@ -40,12 +46,104 @@ from .windows import (
 )
 
 
+# Runtime DLLs and notices that must sit beside every dynamically linked shim.
+_DYNAMIC_SHIM_COMPANIONS = (
+    "libgcc_s_seh-1.dll",
+    "libstdc++-6.dll",
+    "libwinpthread-1.dll",
+    "LICENSE-exe-shim-MIT.txt",
+    "LICENSE-exe-shim-UNLICENSE.txt",
+    "LICENSE-GCC-3.0.txt",
+    "LICENSE-GCC-RUNTIME-EXCEPTION-3.1.txt",
+    "LICENSE-libwinpthread-MIT.txt",
+)
+
+
+def install_components(
+    identity: PackageIdentity,
+    scope: Scope,
+    scope_paths: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> StepResult:
+    """Run the fixed install sequence for one package version.
+
+    The order is deliberate and fixed: shortcuts, environment variables, the
+    scope ``bin`` directory on PATH (when wrappers are declared), extra PATH
+    entries, and finally wrapper files.
+
+    Parameters
+    ----------
+    identity : PackageIdentity
+        Package version being installed.
+    scope : Scope
+        Selected installation scope (user or machine).
+    scope_paths : dict[str, Any]
+        ``shortcut_root``, ``bin_dir``, ``shim_linkage``, and optionally
+        ``collection_root`` for the selected scope.
+    runtime_config : dict[str, Any]
+        Canonical normalized runtime config derived from ``pkg.toml``.
+
+    Returns
+    -------
+    StepResult
+        Aggregated result; ``errors`` names every row that failed.
+
+    """
+    combined = StepResult(ok=True)
+
+    def run(title: str, step) -> None:
+        """Run one install phase and fold its outcome into the combined result."""
+        log_info("")
+        log_info(title)
+        result: StepResult = step()
+        combined.ok = combined.ok and result.ok
+        combined.changed = combined.changed or result.changed
+        combined.warnings.extend(result.warnings)
+        combined.errors.extend(result.errors)
+
+    # Shortcuts come first so a partial install still exposes the most
+    # user-visible entrypoints; environment values follow so later wrappers
+    # and PATH entries can rely on them.
+    if runtime_config["shortcut"]:
+        run("Creating shortcuts...", lambda: install_shortcuts(
+            runtime_config["shortcut"], identity, scope_paths
+        ))
+    if runtime_config["environment"]:
+        run("Setting environment variables...", lambda: install_environment_variables(
+            runtime_config["environment"], identity, scope, scope_paths
+        ))
+
+    # Wrappers need the scope bin directory on PATH; package-specific PATH
+    # entries follow it. Wrapper files are emitted last so they target
+    # directories and PATH entries prepared earlier in the sequence.
+    if runtime_config["bin"]:
+        run("Managing PATH...", lambda: ensure_bin_in_path(scope_paths, identity, scope))
+    if runtime_config["path"]:
+        if not runtime_config["bin"]:
+            log_info("")
+            log_info("Managing PATH...")
+        path_result = add_to_path(runtime_config["path"], identity, scope, scope_paths)
+        combined.ok = combined.ok and path_result.ok
+        combined.changed = combined.changed or path_result.changed
+        combined.errors.extend(path_result.errors)
+    if runtime_config["bin"]:
+        run("Creating executable wrappers...", lambda: install_wrappers(
+            runtime_config["bin"], identity, scope_paths
+        ))
+    return combined
+
+
+# ---------------------------------------------------------------------------
+# Shortcuts
+# ---------------------------------------------------------------------------
+
+
 def install_shortcuts(
     shortcuts: List[Dict[str, str]],
     identity: PackageIdentity,
-    scope_paths: Dict[str, Path],
+    scope_paths: Dict[str, Any],
 ) -> StepResult:
-    """Install every shortcut declared by a package.
+    """Create every ``[[shortcut]]`` below the scope's Start Menu root.
 
     Parameters
     ----------
@@ -53,180 +151,66 @@ def install_shortcuts(
         Normalized ``[[shortcut]]`` rows from the runtime config.
     identity : PackageIdentity
         Package identity used for variable expansion.
-    scope_paths : Dict[str, Path]
-        Scope-specific filesystem locations computed for install.
+    scope_paths : Dict[str, Any]
+        Scope-specific locations; ``shortcut_root`` receives the shortcuts.
+
     Returns
     -------
     StepResult
-        A :class:`StepResult` summarizing the shortcut step.
+        Shortcut outcome; every shortcut is recreated, so success is a change.
 
     """
-    result = StepResult(ok=True, changed=False)
-    shortcut_root = scope_paths["shortcut_root"]
-    for shortcut_entry in shortcuts:
-        raw_name = shortcut_entry.get("name", "")
-        raw_display_name = raw_name or "<unnamed>"
-
+    result = StepResult(ok=True)
+    shortcut_root: Path = scope_paths["shortcut_root"]
+    for entry in shortcuts:
+        label = entry.get("name") or "unknown"
         try:
-            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, install_context=scope_paths)
-            if name_expansion.unresolved:
-                unresolved = ", ".join(name_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut name for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_name = name_expansion.value.strip()
-
-            target_expansion = expand_text(
-                shortcut_entry.get("targetPath", ""), identity, ExpansionMode.GENERAL,
-                install_context=scope_paths,
-            )
-            if target_expansion.unresolved:
-                unresolved = ", ".join(target_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut targetPath for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_target = target_expansion.value.strip()
-
-            arguments_expansion = expand_text(
-                shortcut_entry.get("arguments", ""), identity, ExpansionMode.GENERAL,
-                install_context=scope_paths,
-            )
-            if arguments_expansion.unresolved:
-                unresolved = ", ".join(arguments_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut arguments for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_arguments = arguments_expansion.value
-
-            working_directory_expansion = expand_text(
-                shortcut_entry.get("workingDirectory", ""),
-                identity,
-                ExpansionMode.GENERAL,
-                install_context=scope_paths,
-            )
-            if working_directory_expansion.unresolved:
-                unresolved = ", ".join(working_directory_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut workingDirectory for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_working_directory = working_directory_expansion.value
-
-            icon_location_expansion = expand_text(
-                shortcut_entry.get("iconLocation", ""), identity, ExpansionMode.GENERAL,
-                install_context=scope_paths,
-            )
-            if icon_location_expansion.unresolved:
-                unresolved = ", ".join(icon_location_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut iconLocation for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_icon_location = icon_location_expansion.value
-
-            description_expansion = expand_text(
-                shortcut_entry.get("description", ""), identity, ExpansionMode.GENERAL,
-                install_context=scope_paths,
-            )
-            if description_expansion.unresolved:
-                unresolved = ", ".join(description_expansion.unresolved)
-                raise ValueError(
-                    f"shortcut description for '{raw_display_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_description = description_expansion.value
-
-            missing: List[str] = []
-            if not expanded_name:
-                missing.append("name")
-            if not expanded_target:
-                missing.append("targetPath")
+            # Expand every field before touching the filesystem.
+            fields = {
+                key: _expand(entry.get(key, ""), identity, scope_paths, f"shortcut {key} for '{label}'")
+                for key in ("name", "targetPath", "arguments", "workingDirectory", "iconLocation", "description")
+            }
+            name, target = fields["name"].strip(), fields["targetPath"].strip()
+            missing = [key for key, value in (("name", name), ("targetPath", target)) if not value]
             if missing:
                 raise ValueError(
-                    f"shortcut '{raw_display_name}' is missing required field(s) after expansion: {', '.join(missing)}"
+                    f"shortcut '{label}' is missing required field(s) after expansion: {', '.join(missing)}"
                 )
 
-            shortcut_root.mkdir(parents=True, exist_ok=True)
-            shortcut_path = shortcut_root / expanded_name
+            # Names may nest below the root; the .lnk suffix is implied.
+            shortcut_path = shortcut_root / name
             if shortcut_path.suffix.lower() != ".lnk":
                 shortcut_path = shortcut_path.with_suffix(".lnk")
-            _warn_if_output_path_is_unusual(
-                "shortcut", shortcut_root, expanded_name, shortcut_path
-            )
+            warn_if_output_path_is_unusual("shortcut", shortcut_root, name, shortcut_path)
             shortcut_path.parent.mkdir(parents=True, exist_ok=True)
-
             create_shortcut(
                 shortcut_path,
-                expanded_target,
-                arguments=expanded_arguments,
-                working_directory=expanded_working_directory,
-                icon_location=expanded_icon_location,
-                description=expanded_description,
+                target,
+                arguments=fields["arguments"],
+                working_directory=fields["workingDirectory"],
+                icon_location=fields["iconLocation"],
+                description=fields["description"],
             )
             log_info(f"SHORTCUT: created: {shortcut_path.name}")
             result.changed = True
-            continue
-
         except Exception as exc:
-            name = raw_name or "unknown"
-            log_error(f"SHORTCUT error creating {name}: {exc}")
-            message = f"Failed to create shortcut '{name}': {exc}"
-
-        result.ok = False
-        log_error(message)
-        result.errors.append(message)
-
+            result.ok = False
+            result.errors.append(f"Failed to create shortcut '{label}': {exc}")
     return result
 
 
-def set_environment_variable(
-    name: str, value: str, scope: Scope, expand: bool = True
-) -> bool:
-    """Set one environment variable in the Windows registry.
-
-    Parameters
-    ----------
-    name : str
-        Variable name.
-    value : str
-        Variable value.
-    scope : Scope
-        Target installation scope.
-    expand : bool
-        Whether to store the value as ``REG_EXPAND_SZ``.
-
-    Returns
-    -------
-    bool
-        ``True`` on success; ``False`` on failure.
-
-    """
-    try:
-        root, subkey = environment_registry_location(scope)
-        reg = require_winreg()
-        reg_type = reg.REG_EXPAND_SZ if expand else reg.REG_SZ
-        write_registry_value(root, subkey, name, value, reg_type)
-        log_info(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
-        try:
-            broadcast_environment_change()
-        except Exception as exc:
-            log_warning(f"failed to broadcast environment change notification: {exc}")
-        return True
-    except PermissionError:
-        log_error(
-            f"Insufficient permissions to set {scope.value} environment variable: {name}"
-        )
-        return False
-    except Exception as exc:
-        log_error(f"ENVIRONMENT error setting {name}: {exc}")
-        return False
+# ---------------------------------------------------------------------------
+# Environment and PATH
+# ---------------------------------------------------------------------------
 
 
 def install_environment_variables(
     environment_entries: List[Dict[str, str]],
     identity: PackageIdentity,
     scope: Scope,
-    *,
-    install_context: Any | None = None,
+    install_context: Dict[str, Any] | None = None,
 ) -> StepResult:
-    """Install every environment variable declared by a package.
+    """Write every ``[[environment]]`` row as an expandable registry string.
 
     Parameters
     ----------
@@ -236,65 +220,139 @@ def install_environment_variables(
         Package identity used for variable expansion.
     scope : Scope
         Target install scope for registry writes.
+    install_context : dict, optional
+        Scope paths that supply ``$ScopeRoot`` and ``$Bin``.
 
     Returns
     -------
     StepResult
-        A :class:`StepResult` summarizing the environment-variable step.
+        Environment outcome; every written value is a change.
 
     """
-    result = StepResult(ok=True, changed=False)
-    for env_var in environment_entries:
-        name = env_var.get("Name", "").strip()
-        value = env_var.get("Value", "")
-        if not name:
-            message = f"Environment variable entry is missing Name: {env_var}"
-            log_error(message)
-            result.ok = False
-            result.errors.append(message)
-            continue
-        expansion = expand_text(
-            str(value), identity, ExpansionMode.GENERAL,
-            install_context=install_context,
-        )
-        if expansion.unresolved:
-            unresolved = ", ".join(expansion.unresolved)
-            message = f"Environment variable '{name}' contains unresolved variable(s): {unresolved}"
-            log_error(message)
-            result.ok = False
-            result.errors.append(message)
-            continue
-        ok = set_environment_variable(name, expansion.value, scope, expand=True)
-        if ok:
+    result = StepResult(ok=True)
+    for entry in environment_entries:
+        name = entry.get("Name", "").strip()
+        try:
+            if not name:
+                raise ValueError("entry is missing Name")
+            value = _expand(entry.get("Value", ""), identity, install_context, f"environment variable '{name}'")
+            root, subkey = environment_registry_location(scope)
+            write_registry_value(root, subkey, name, value, require_winreg().REG_EXPAND_SZ)
+            log_info(f"ENVIRONMENT: setting {scope.value} scope: {name} = {value}")
             result.changed = True
-            continue
-        message = f"Failed to set environment variable: {name}"
-        log_error(message)
-        result.ok = False
-        result.errors.append(message)
+        except PermissionError:
+            result.ok = False
+            result.errors.append(f"Insufficient permissions to set {scope.value} environment variable: {name}")
+        except Exception as exc:
+            result.ok = False
+            result.errors.append(f"Failed to set environment variable '{name or entry}': {exc}")
+    if result.changed:
+        _broadcast_environment_change()
     return result
 
 
-def _path_key(path_value: str) -> str:
-    """Normalize a PATH entry for de-duplication.
+def ensure_bin_in_path(
+    scope_paths: Dict[str, Any], identity: PackageIdentity, scope: Scope
+) -> StepResult:
+    """Create the scope's wrapper directory and make sure it is on PATH.
 
     Parameters
     ----------
-    path_value : str
-        Original PATH entry.
+    scope_paths : Dict[str, Any]
+        Scope-specific locations; ``bin_dir`` is the wrapper directory.
+    identity : PackageIdentity
+        Package identity passed through to PATH expansion.
+    scope : Scope
+        Installation scope whose PATH should include ``bin_dir``.
 
     Returns
     -------
-    str
-        A normalized, case-insensitive comparison key.
+    StepResult
+        ``changed`` is true when the directory was created or PATH rewritten.
+    """
+    bin_dir = Path(scope_paths["bin_dir"])
+    try:
+        created = not bin_dir.exists()
+        bin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return StepResult(ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"])
+    result = add_to_path([str(bin_dir)], identity, scope, scope_paths)
+    result.changed = result.changed or created
+    return result
+
+
+def add_to_path(
+    new_entries: List[str],
+    identity: PackageIdentity,
+    scope: Scope,
+    install_context: Dict[str, Any] | None = None,
+) -> StepResult:
+    """Append directories to the scope PATH, skipping entries already present.
+
+    Entries are compared case-insensitively and without trailing separators.
+
+    Parameters
+    ----------
+    new_entries : List[str]
+        PATH entries that may still contain ``$App``-style variables.
+    identity : PackageIdentity
+        Package identity used for expansion.
+    scope : Scope
+        Installation scope whose PATH should be updated.
+    install_context : dict, optional
+        Scope paths that supply ``$ScopeRoot`` and ``$Bin``.
+
+    Returns
+    -------
+    StepResult
+        PATH outcome; ``changed`` is true when PATH was rewritten.
 
     """
-    key = os.path.normcase(os.path.normpath(path_value))
-    return key.rstrip("\\/")
+    result = StepResult(ok=True)
+
+    # Expand and normalize every entry first; invalid entries are reported
+    # individually and never written.
+    valid_entries: List[str] = []
+    for entry in new_entries:
+        try:
+            expanded = _expand(str(entry), identity, install_context, f"PATH entry '{entry}'").strip()
+            if not expanded:
+                raise ValueError(f"PATH entry '{entry}' expands to an empty value and will not be added.")
+            valid_entries.append(os.path.normpath(expanded))
+        except ValueError as exc:
+            result.ok = False
+            result.errors.append(str(exc))
+
+    # Read, extend, and rewrite PATH in one guarded step: a PATH that cannot
+    # be read must never be replaced by only the new entries.
+    try:
+        current_path = get_current_path(scope)
+        existing_keys = {_path_key(item) for item in current_path}
+        added: List[str] = []
+        for entry in valid_entries:
+            if _path_key(entry) not in existing_keys:
+                existing_keys.add(_path_key(entry))
+                added.append(entry)
+                log_info(f"PATH: adding to {scope.value} scope: {entry}")
+        if not added:
+            return result
+        root, subkey = environment_registry_location(scope)
+        write_registry_value(
+            root, subkey, "Path", ";".join(current_path + added), require_winreg().REG_EXPAND_SZ
+        )
+        _broadcast_environment_change()
+        result.changed = True
+    except PermissionError:
+        result.ok = False
+        result.errors.append(f"Insufficient permissions to set {scope.value} PATH")
+    except Exception as exc:
+        result.ok = False
+        result.errors.append(f"Failed to update {scope.value} PATH: {exc}")
+    return result
 
 
 def get_current_path(scope: Scope) -> List[str]:
-    """Read PATH entries from the Windows registry.
+    """Read the scope's registry PATH entries; a missing value is an empty PATH.
 
     Parameters
     ----------
@@ -304,200 +362,44 @@ def get_current_path(scope: Scope) -> List[str]:
     Returns
     -------
     List[str]
-        A list of PATH components. Missing values return an empty list.
+        Non-empty PATH components in registry order.
 
     """
     try:
         root, subkey = environment_registry_location(scope)
         value, reg_type = read_registry_value(root, subkey, "Path")
-        reg = require_winreg()
-        if reg_type in (reg.REG_EXPAND_SZ, reg.REG_SZ):
-            return [item.strip() for item in str(value).split(";") if item.strip()]
     except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log_error(f"PATH error reading {scope.value} PATH: {exc}")
+        return []
+    reg = require_winreg()
+    if reg_type not in (reg.REG_EXPAND_SZ, reg.REG_SZ):
+        return []
+    return [item.strip() for item in str(value).split(";") if item.strip()]
 
-    return []
+
+def _path_key(path_value: str) -> str:
+    """Normalize a PATH entry for case-insensitive de-duplication."""
+    return os.path.normcase(os.path.normpath(path_value)).rstrip("\\/")
 
 
-def set_path(path_entries: List[str], scope: Scope) -> bool:
-    """Write PATH entries to the registry.
-
-    Parameters
-    ----------
-    path_entries : List[str]
-        Ordered PATH components to store.
-    scope : Scope
-        Installation scope whose PATH should be updated.
-
-    Returns
-    -------
-    bool
-        ``True`` on success; otherwise ``False``.
-
-    """
+def _broadcast_environment_change() -> None:
+    """Notify running applications of environment changes, warning on failure."""
     try:
-        path_value = ";".join(path_entries)
-        root, subkey = environment_registry_location(scope)
-        reg = require_winreg()
-        write_registry_value(root, subkey, "Path", path_value, reg.REG_EXPAND_SZ)
-        try:
-            broadcast_environment_change()
-        except Exception as exc:
-            log_warning(f"failed to broadcast environment change notification: {exc}")
-        return True
-    except PermissionError:
-        log_error(f"Insufficient permissions to set {scope.value} PATH")
-        return False
+        broadcast_environment_change()
     except Exception as exc:
-        log_error(f"PATH error setting {scope.value} PATH: {exc}")
-        return False
+        log_warning(f"failed to broadcast environment change notification: {exc}")
 
 
-def add_to_path(
-    new_entries: List[str], identity: PackageIdentity, scope: Scope,
-    *, install_context: Any | None = None,
-) -> StepResult:
-    """Append directories to PATH while avoiding duplicates.
-
-    Parameters
-    ----------
-    new_entries : List[str]
-        PATH entries that may still contain ``$App``-style
-            variables.
-    identity : PackageIdentity
-        Package identity used for expansion.
-    scope : Scope
-        Installation scope whose PATH should be updated.
-
-    Returns
-    -------
-    StepResult
-        A :class:`StepResult` summarizing the PATH update.
-
-    """
-    result = StepResult(ok=True, changed=False)
-    valid_entries: List[str] = []
-
-    for entry in new_entries:
-        expansion = expand_text(
-            str(entry), identity, ExpansionMode.GENERAL,
-            install_context=install_context,
-        )
-        if expansion.unresolved:
-            unresolved = ", ".join(expansion.unresolved)
-            message = (
-                f"PATH entry '{entry}' contains unresolved variable(s): {unresolved}"
-            )
-            log_error(message)
-            result.ok = False
-            result.errors.append(message)
-            continue
-
-        expanded = expansion.value.strip()
-        if expanded == "":
-            message = (
-                f"PATH entry '{entry}' expands to an empty value and will not be added."
-            )
-            log_error(message)
-            result.ok = False
-            result.errors.append(message)
-            continue
-
-        normalized = os.path.normpath(expanded)
-        if normalized == "":
-            message = f"PATH entry '{entry}' normalized to an empty value and will not be added."
-            log_error(message)
-            result.ok = False
-            result.errors.append(message)
-            continue
-
-        valid_entries.append(normalized)
-
-    if not valid_entries:
-        return result if result.errors else StepResult(ok=True, changed=False)
-
-    current_path = get_current_path(scope)
-    updated_path = current_path.copy()
-    existing_keys = {_path_key(item) for item in current_path if item}
-    added_entries: List[str] = []
-
-    for entry in valid_entries:
-        key = _path_key(entry)
-        if key not in existing_keys:
-            updated_path.append(entry)
-            existing_keys.add(key)
-            added_entries.append(entry)
-            log_info(f"PATH: adding to {scope.value} scope: {entry}")
-
-    if not added_entries:
-        return result
-
-    if set_path(updated_path, scope):
-        result.changed = True
-        return result
-
-    message = f"Failed to update {scope.value} PATH."
-    log_error(message)
-    result.ok = False
-    result.errors.append(message)
-    return result
-
-
-def ensure_bin_in_path(
-    scope_paths: Dict[str, Path], identity: PackageIdentity, scope: Scope,
-) -> StepResult:
-    """Ensure the per-scope ``bin`` directory exists and is on PATH.
-
-    Parameters
-    ----------
-    scope_paths : Dict[str, Path]
-        Scope-specific filesystem locations computed for install.
-    identity : PackageIdentity
-        Package identity passed through to PATH expansion helpers.
-    scope : Scope
-        Installation scope whose PATH should include ``bin``.
-
-    Returns
-    -------
-    StepResult
-        A :class:`StepResult` summarizing the bin-directory and PATH work.
-
-    """
-    bin_dir = scope_paths["bin_dir"]
-
-    changed = False
-    try:
-        existed_before = bin_dir.exists()
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        changed = not existed_before
-    except OSError as exc:
-        return StepResult(
-            ok=False, errors=[f"Failed to create bin directory {bin_dir}: {exc}"]
-        )
-
-    current_path = get_current_path(scope)
-    bin_dir_str = str(bin_dir)
-    bin_key = _path_key(bin_dir_str)
-    current_keys = {_path_key(item) for item in current_path if item}
-    if bin_key not in current_keys:
-        path_result = add_to_path(
-            [bin_dir_str], identity, scope,
-            install_context=scope_paths,
-        )
-        path_result.changed = path_result.changed or changed
-        return path_result
-
-    return StepResult(ok=True, changed=changed)
+# ---------------------------------------------------------------------------
+# Wrappers
+# ---------------------------------------------------------------------------
 
 
 def install_wrappers(
     wrapper_entries: List[Dict[str, Any]],
     identity: PackageIdentity,
-    scope_paths: Dict[str, Path],
+    scope_paths: Dict[str, Any],
 ) -> StepResult:
-    """Install every wrapper declared by a package.
+    """Install every ``[[bin]]`` row as a native shim or a raw content file.
 
     Parameters
     ----------
@@ -505,318 +407,156 @@ def install_wrappers(
         Normalized ``[[bin]]`` rows from the runtime config.
     identity : PackageIdentity
         Package identity used for variable expansion.
-    scope_paths : Dict[str, Path]
-        Scope-specific filesystem locations computed for install.
+    scope_paths : Dict[str, Any]
+        Scope-specific locations; ``bin_dir`` receives the wrappers and
+        ``shim_linkage`` selects the launcher build.
 
     Returns
     -------
     StepResult
-        A :class:`StepResult` summarizing the wrapper-install step.
+        Wrapper outcome; files that are already identical are not changes.
 
     """
-    result = StepResult(ok=True, changed=False)
-    bin_dir = scope_paths["bin_dir"]
-    for wrapper_entry in wrapper_entries:
-        raw_name = wrapper_entry.get("name", "")
+    result = StepResult(ok=True)
+    bin_dir: Path = scope_paths["bin_dir"]
+    for entry in wrapper_entries:
+        label = entry.get("name") or "unknown"
         try:
-            if not raw_name:
+            if not entry.get("name"):
                 raise ValueError("wrapper entry is missing name")
+            name = _expand(entry["name"], identity, scope_paths, f"wrapper name for '{label}'").strip()
 
-            name_expansion = expand_text(raw_name, identity, ExpansionMode.GENERAL, install_context=scope_paths)
-            if name_expansion.unresolved:
-                unresolved = ", ".join(name_expansion.unresolved)
-                raise ValueError(
-                    f"wrapper name for '{raw_name}' contains unresolved variable(s): {unresolved}"
-                )
-            expanded_name = name_expansion.value.strip()
-
-            # Resolve the output before choosing the raw-file or native-shim
-            # path so both forms retain the same placement and warning rules.
-            bin_dir.mkdir(parents=True, exist_ok=True)
-            wrapper_path = bin_dir / expanded_name
-            if "content" not in wrapper_entry:
+            # Shims are always .exe files; content wrappers keep their name.
+            wrapper_path = bin_dir / name
+            if "content" not in entry:
                 if wrapper_path.suffix == "":
                     wrapper_path = wrapper_path.with_suffix(".exe")
                 elif wrapper_path.suffix.lower() != ".exe":
                     raise ValueError("shim name must have no extension or use .exe")
-            _warn_if_output_path_is_unusual("bin", bin_dir, expanded_name, wrapper_path)
+            warn_if_output_path_is_unusual("bin", bin_dir, name, wrapper_path)
             wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Content entries intentionally retain the escape hatch for batch,
-            # PowerShell, and other files that require shell-specific behavior.
-            if "content" in wrapper_entry:
-                raw_content = wrapper_entry.get("content", "")
-                content_expansion = expand_text(
-                    raw_content, identity, ExpansionMode.SCRIPT,
-                    install_context=scope_paths,
-                )
-                if content_expansion.unresolved:
-                    unresolved = ", ".join(content_expansion.unresolved)
-                    raise ValueError(
-                        f"wrapper '{expanded_name or raw_name}' content contains "
-                        f"unresolved variable(s): {unresolved}"
-                    )
-                expanded_content = content_expansion.value
+            if "content" in entry:
+                outputs = [(wrapper_path, _content_wrapper_bytes(entry, identity, scope_paths, wrapper_path), True)]
+            else:
+                outputs = _shim_outputs(entry, identity, scope_paths, wrapper_path, bin_dir)
 
-                extension = wrapper_path.suffix.lower()
-                if extension in (".cmd", ".bat"):
+            # Rewrite only outputs that differ so reinstalling is idempotent
+            # and still repairs incomplete earlier installations.
+            for output_path, desired, overwrite in outputs:
+                if output_path.exists():
+                    if not overwrite:
+                        continue
                     try:
-                        desired_bytes = expanded_content.encode("ascii")
-                    except UnicodeEncodeError:
-                        log_warning(
-                            f"non-ASCII content in {extension} wrapper; writing "
-                            f"UTF-8 with BOM: {wrapper_path.name}"
-                        )
-                        desired_bytes = expanded_content.encode("utf-8-sig")
-                else:
-                    desired_bytes = expanded_content.encode("utf-8")
-
-                existed_before = wrapper_path.exists()
-                if existed_before:
-                    try:
-                        if wrapper_path.read_bytes() == desired_bytes:
-                            log_info(f"BIN: up-to-date: {wrapper_path}")
-                            continue
-                    except OSError:
-                        pass
-
-                write_bytes_atomic(wrapper_path, desired_bytes)
-                action = "updated" if existed_before else "created"
-                log_info(f"BIN: {action}: {wrapper_path}")
-                result.changed = True
-                continue
-
-            # Expand each shim field independently and reject unresolved values
-            # before either of the paired launcher files is written.
-            expanded_fields: Dict[str, str] = {}
-            for field_name in ("target", "working_dir"):
-                raw_value = wrapper_entry.get(field_name) or ""
-                expansion = expand_text(
-                    raw_value, identity, ExpansionMode.GENERAL,
-                    install_context=scope_paths,
-                )
-                if expansion.unresolved:
-                    unresolved = ", ".join(expansion.unresolved)
-                    raise ValueError(
-                        f"shim '{expanded_name}' {field_name} contains unresolved "
-                        f"variable(s): {unresolved}"
-                    )
-                expanded_fields[field_name] = expansion.value
-
-            expanded_arguments: List[str] = []
-            for raw_argument in wrapper_entry.get("arguments", []):
-                expansion = expand_text(
-                    raw_argument, identity, ExpansionMode.GENERAL,
-                    install_context=scope_paths,
-                )
-                if expansion.unresolved:
-                    unresolved = ", ".join(expansion.unresolved)
-                    raise ValueError(
-                        f"shim '{expanded_name}' argument contains unresolved "
-                        f"variable(s): {unresolved}"
-                    )
-                expanded_arguments.append(expansion.value)
-
-            # The executable and adjacent TOML file are the shim's public
-            # installation unit. JSON strings are valid TOML basic strings.
-            config_lines = [
-                f"target = {json.dumps(expanded_fields['target'], ensure_ascii=False)}",
-                "forward_arguments = "
-                + str(wrapper_entry.get("forward_args", True)).lower(),
-                f"elevate = {str(wrapper_entry.get('elevate', False)).lower()}",
-            ]
-            if expanded_fields["working_dir"]:
-                config_lines.append(
-                    "working_dir = "
-                    + json.dumps(expanded_fields["working_dir"], ensure_ascii=False)
-                )
-            for argument in expanded_arguments:
-                config_lines.extend(
-                    [
-                        "",
-                        "[[argument]]",
-                        f"value = {json.dumps(argument, ensure_ascii=False)}",
-                    ]
-                )
-            config_bytes = ("\n".join(config_lines) + "\n").encode("utf-8")
-
-            shim_type = wrapper_entry.get("type", "console")
-            shim_linkage = scope_paths.get("shim_linkage", "dynamic")
-            if shim_linkage not in {"dynamic", "static"}:
-                raise ValueError(
-                    "shim linkage must be either 'dynamic' or 'static'"
-                )
-            launcher_name = (
-                f"shim-{shim_type}.exe"
-                if shim_linkage == "dynamic"
-                else f"shim-{shim_type}.static.exe"
-            )
-            shim_directory = Path(__file__).with_name("shim")
-            launcher_source = shim_directory / launcher_name
-            launcher_bytes = launcher_source.read_bytes()
-            config_path = wrapper_path.with_name(
-                f"{wrapper_path.stem}.config.toml"
-            )
-
-            # Repair either half independently so reinstalling is idempotent
-            # and also recovers incomplete prior installations.
-            for output_path, desired_bytes in (
-                (wrapper_path, launcher_bytes),
-                (config_path, config_bytes),
-            ):
-                existed_before = output_path.exists()
-                if existed_before:
-                    try:
-                        if output_path.read_bytes() == desired_bytes:
+                        if output_path.read_bytes() == desired:
                             log_info(f"BIN: up-to-date: {output_path}")
                             continue
                     except OSError:
                         pass
-                write_bytes_atomic(output_path, desired_bytes)
-                action = "updated" if existed_before else "created"
+                    action = "updated"
+                else:
+                    action = "created"
+                write_bytes_atomic(output_path, desired)
                 log_info(f"BIN: {action}: {output_path}")
                 result.changed = True
-
-            # Dynamically linked launchers need their MinGW runtime and the
-            # accompanying distribution notices beside every installed shim.
-            # Preserve an existing shared copy so a package repair never
-            # overwrites a runtime installed for another command.
-            if shim_linkage == "dynamic":
-                dynamic_companions = (
-                    "libgcc_s_seh-1.dll",
-                    "libstdc++-6.dll",
-                    "libwinpthread-1.dll",
-                    "LICENSE-exe-shim-MIT.txt",
-                    "LICENSE-exe-shim-UNLICENSE.txt",
-                    "LICENSE-GCC-3.0.txt",
-                    "LICENSE-GCC-RUNTIME-EXCEPTION-3.1.txt",
-                    "LICENSE-libwinpthread-MIT.txt",
-                )
-                for companion_name in dynamic_companions:
-                    companion_path = bin_dir / companion_name
-                    if companion_path.exists():
-                        continue
-                    write_bytes_atomic(
-                        companion_path,
-                        (shim_directory / companion_name).read_bytes(),
-                    )
-                    log_info(f"BIN: created: {companion_path}")
-                    result.changed = True
-            continue
-
         except Exception as exc:
-            name = raw_name or "unknown"
-            log_error(f"BIN error creating {name}: {exc}")
-            message = f"Failed to create wrapper '{name}': {exc}"
-
-        log_error(message)
-        result.ok = False
-        result.errors.append(message)
+            result.ok = False
+            result.errors.append(f"Failed to create wrapper '{label}': {exc}")
     return result
 
 
-def install_components(
-    identity: PackageIdentity,
-    scope: Scope,
-    scope_paths: Dict[str, Path],
-    runtime_config: Dict[str, Any],
-) -> StepResult:
-    """Run the fixed install sequence for one package version.
+def _content_wrapper_bytes(
+    entry: Dict[str, Any], identity: PackageIdentity, scope_paths: Dict[str, Any], wrapper_path: Path
+) -> bytes:
+    """Render a raw ``content`` wrapper, keeping shell variables literal.
 
-    The order here is deliberate and intentionally explicit. ``gupkg`` does not
-    have a pluggable install pipeline, so keeping the sequence inline makes the
-    state transitions easier to audit:
-
-    1. create shortcuts
-    2. write environment variables
-    3. when wrappers are declared, ensure the scope ``bin`` directory exists
-       and is on ``PATH``
-    4. add package-specific extra ``PATH`` entries
-    5. create wrapper/bin files
-
-    Parameters
-    ----------
-    identity : PackageIdentity
-        Package version being installed.
-    scope : Scope
-        Selected installation scope.
-    scope_paths : dict[str, Path]
-        Scope-specific filesystem locations computed for installation.
-    runtime_config : dict[str, Any]
-        Canonical normalized runtime config derived from ``pkg.toml``.
-    Returns
-    -------
-    StepResult
-        Aggregated step result for the fixed install sequence.
-
+    Batch files are written as ASCII when possible because ``cmd.exe`` does
+    not honor UTF-8 without a BOM.
     """
-    # Create package-owned shortcuts before mutating PATH or wrapper files so a
-    # partial install still exposes the most user-visible entrypoints first.
-    shortcut_result = StepResult(ok=True, changed=False)
-    if runtime_config["shortcut"]:
-        log_info("")
-        log_info("Creating shortcuts...")
-        shortcut_result = install_shortcuts(
-            runtime_config["shortcut"],
-            identity,
-            scope_paths,
-            )
-
-    # Apply environment variables next so later wrapper and PATH work can rely
-    # on the persisted scope values that users expect after installation.
-    environment_result = StepResult(ok=True, changed=False)
-    if runtime_config["environment"]:
-        log_info("")
-        log_info("Setting environment variables...")
-        environment_result = install_environment_variables(
-            runtime_config["environment"], identity, scope,
-            install_context=scope_paths,
+    content = _expand(
+        entry["content"], identity, scope_paths, f"wrapper '{wrapper_path.name}' content",
+        mode=ExpansionMode.SCRIPT,
+    )
+    if wrapper_path.suffix.lower() not in (".cmd", ".bat"):
+        return content.encode("utf-8")
+    try:
+        return content.encode("ascii")
+    except UnicodeEncodeError:
+        log_warning(
+            f"non-ASCII content in {wrapper_path.suffix.lower()} wrapper; writing "
+            f"UTF-8 with BOM: {wrapper_path.name}"
         )
+        return content.encode("utf-8-sig")
 
-    # Treat PATH management as one phase because wrapper creation may require a
-    # shared ``bin`` directory as well as package-specific extra entries.
-    bin_path_result = StepResult(ok=True, changed=False)
-    extra_path_result = StepResult(ok=True, changed=False)
-    if runtime_config["bin"] or runtime_config["path"]:
-        log_info("")
-        log_info("Managing PATH...")
 
-    if runtime_config["bin"]:
-        bin_path_result = ensure_bin_in_path(
-            scope_paths, identity, scope,
-            )
+def _shim_outputs(
+    entry: Dict[str, Any],
+    identity: PackageIdentity,
+    scope_paths: Dict[str, Any],
+    wrapper_path: Path,
+    bin_dir: Path,
+) -> List[Any]:
+    """Return ``(path, bytes, overwrite)`` for a native shim and its companions.
 
-    if runtime_config["path"]:
-        extra_path_result = add_to_path(
-            runtime_config["path"], identity, scope,
-            install_context=scope_paths,
+    The launcher executable and its adjacent ``.config.toml`` form the shim's
+    installation unit. Shared runtime companions are written only when absent
+    so a package repair never overwrites a copy installed for another command.
+    """
+    label = f"shim '{wrapper_path.stem}'"
+    target = _expand(entry.get("target", ""), identity, scope_paths, f"{label} target")
+    working_dir = _expand(entry.get("working_dir") or "", identity, scope_paths, f"{label} working_dir")
+    arguments = [
+        _expand(argument, identity, scope_paths, f"{label} argument") for argument in entry.get("arguments", [])
+    ]
+
+    # JSON strings are valid TOML basic strings.
+    config_lines = [
+        f"target = {json.dumps(target, ensure_ascii=False)}",
+        f"forward_arguments = {str(entry.get('forward_args', True)).lower()}",
+        f"elevate = {str(entry.get('elevate', False)).lower()}",
+    ]
+    if working_dir:
+        config_lines.append(f"working_dir = {json.dumps(working_dir, ensure_ascii=False)}")
+    for argument in arguments:
+        config_lines.extend(["", "[[argument]]", f"value = {json.dumps(argument, ensure_ascii=False)}"])
+
+    linkage = scope_paths.get("shim_linkage", "dynamic")
+    if linkage not in {"dynamic", "static"}:
+        raise ValueError("shim linkage must be either 'dynamic' or 'static'")
+    shim_directory = Path(__file__).with_name("shim")
+    shim_type = entry.get("type", "console")
+    launcher = shim_directory / (
+        f"shim-{shim_type}.exe" if linkage == "dynamic" else f"shim-{shim_type}.static.exe"
+    )
+    outputs = [
+        (wrapper_path, launcher.read_bytes(), True),
+        (
+            wrapper_path.with_name(f"{wrapper_path.stem}.config.toml"),
+            ("\n".join(config_lines) + "\n").encode("utf-8"),
+            True,
+        ),
+    ]
+    if linkage == "dynamic":
+        outputs.extend(
+            (bin_dir / name, (shim_directory / name).read_bytes(), False)
+            for name in _DYNAMIC_SHIM_COMPANIONS
+            if not (bin_dir / name).exists()
         )
+    return outputs
 
-    # Emit wrapper files last so they can target directories and PATH entries
-    # that were prepared earlier in the install sequence.
-    wrapper_result = StepResult(ok=True, changed=False)
-    if runtime_config["bin"]:
-        log_info("")
-        log_info("Creating executable wrappers...")
-        wrapper_result = install_wrappers(
-            runtime_config["bin"], identity, scope_paths,
-            )
 
-    # Merge per-step status into one result object that accurately reports
-    # whether the overall install mutated state and whether any step failed.
-    combined = StepResult(ok=True, changed=False)
-    for step_result in (
-        shortcut_result,
-        environment_result,
-        bin_path_result,
-        extra_path_result,
-        wrapper_result,
-    ):
-        combined.ok = combined.ok and step_result.ok
-        combined.changed = combined.changed or step_result.changed
-        combined.warnings.extend(step_result.warnings)
-        combined.errors.extend(step_result.errors)
-    if combined.errors:
-        combined.ok = False
-    return combined
-
+def _expand(
+    text: str,
+    identity: PackageIdentity,
+    install_context: Dict[str, Any] | None,
+    label: str,
+    *,
+    mode: ExpansionMode = ExpansionMode.GENERAL,
+) -> str:
+    """Expand one configuration value, rejecting unresolved variables."""
+    expansion = expand_text(text, identity, mode, install_context=install_context)
+    if expansion.unresolved:
+        raise ValueError(
+            f"{label} contains unresolved variable(s): {', '.join(expansion.unresolved)}"
+        )
+    return expansion.value

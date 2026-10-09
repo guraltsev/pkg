@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .core import ActionResult, ConfigValidationError, EXIT_MUTATION_ERROR, EXIT_SUCCESS, Scope
+from .core import ActionResult, ConfigValidationError, EXIT_MUTATION_ERROR, Scope
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,10 @@ def repair_self(
             )
         from .gupkg import install_package
 
-        result = install_package(root, scope=scope, install_context=install_context)
+        linkage = install_context.shim_linkage if install_context is not None else "dynamic"
+        result = install_package(
+            root, scope=scope, install_context=install_context, shim_linkage=linkage
+        )
         return result
     except (ConfigValidationError, OSError, ValueError) as exc:
         return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)

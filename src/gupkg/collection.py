@@ -132,15 +132,3 @@ def discover_collection(root: Path, *, max_depth: int = 8) -> Inventory:
         )
     return inventory
 
-
-def select_package(inventory: Inventory, selector: str) -> DiscoveredPackage:
-    """Select a package by canonical selector or an unambiguous basename."""
-    folded = selector.casefold()
-    exact = [package for package in inventory.packages if package.selector.casefold() == folded]
-    matches = exact or [package for package in inventory.packages if package.root.name.casefold() == folded]
-    if len(matches) == 1:
-        return matches[0]
-    choices = ", ".join(package.selector for package in matches or inventory.packages)
-    if matches:
-        raise ValueError(f"Package selector is ambiguous: {selector}; choose one of: {choices}")
-    raise ValueError(f"Package selector was not found: {selector}; available: {choices or '(none)'}")

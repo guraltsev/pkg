@@ -52,8 +52,8 @@ def test_upgrade_planner_skips_ineligible_targets_with_distinct_reasons() -> Non
     ]
 
 
-def test_upgrade_executor_continues_in_order_and_marks_fail_fast_work() -> None:
-    """Batch execution preserves order and reports later work as not attempted."""
+def test_upgrade_executor_continues_in_order_after_a_failed_target() -> None:
+    """A failed target never stops the batch; later eligible targets still run."""
     targets = [_target("user:a", Scope.USER), _target("user:b", Scope.USER)]
     inventory = _inventory(targets)
 
@@ -68,11 +68,11 @@ def test_upgrade_executor_continues_in_order_and_marks_fail_fast_work() -> None:
         calls.append(target.target_id)
         return ActionResult(False, errors=["provider failed"], exit_code=3)
 
-    execute_upgrade_plan(plan, lambda target: None, upgrade, fail_fast=True)
+    execute_upgrade_plan(plan, lambda target: None, upgrade)
 
-    assert calls == ["user:a"]
-    assert [entry.outcome for entry in plan.entries] == ["failed", "not-attempted"]
-    assert plan.entries[1].reason == "fail-fast"
+    assert calls == ["user:a", "user:b"]
+    assert [entry.outcome for entry in plan.entries] == ["failed", "failed"]
+    assert all(entry.result.exit_code == 3 for entry in plan.entries)
 
 
 def test_upgrade_executor_cancellation_stops_before_the_next_package() -> None:

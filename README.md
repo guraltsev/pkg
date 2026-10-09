@@ -229,7 +229,7 @@ never implicitly installed.
 `gupkg --scope auto manager list` reports the manager inventory. Use
 `gupkg manager tui` for the interactive manager interface. Manager update first shows a
 non-installing plan with available, current, skipped, and failed-check counts.
-The confirmation screen puts `Run planned upgrades` first and exposes scope,
+The confirmation screen puts `Run planned updates` first and exposes scope,
 checksum, and dependency auto-install settings. Execution remains scrollable
 with per-target states and final totals, then refreshes inventory. Elevation
 occurs before any mixed-scope mutation; declining it leaves packages unchanged.
@@ -290,8 +290,10 @@ it as a new version directory without changing `current`. A missing or empty
 candidate version is not already present. A full `update` activates the staged
 version and applies its shortcuts,
 environment settings, PATH entries, and wrappers. There is no automatic update
-policy or background update action. A successful activation consumes its
-download receipt, and the limiting modes never activate a staged version.
+policy or background update action. A full `update` after an earlier
+`--download-only` activates the version that download staged instead of
+downloading it again. A successful activation consumes its download receipt,
+and the limiting modes never activate a staged version.
 
 ### Configuration
 
@@ -525,7 +527,7 @@ PowerShell, and shell variables work as expected.
 
 Updates follow **check → download → install**. `gupkg update --check-only` only
 discovers a candidate. `gupkg update --download-only` stages a complete new version under
-`<package-root>\.gupkg\work`, commits it as a new `v<version>.lN` directory,
+`<package-root>\.gupkg\work`, commits it as a new `v<version>` directory,
 and records a receipt. `gupkg update` activates the most recently
 downloaded version through the regular install workflow.
 `gupkg update` performs those three steps as one explicit command.
@@ -533,7 +535,7 @@ Update state, locks, receipts, and disposable work files all live in
 `<package-root>\.gupkg`; package repositories should ignore `/.gupkg/`.
 
 Updates are never started or activated automatically. A package administrator
-or a scheduler chooses when to run each explicit upgrade command.
+or a scheduler chooses when to run each explicit update command.
 
 Every update needs `[update.payload]` and normally `[update.check]`:
 
@@ -581,7 +583,7 @@ into `%LOCALAPPDATA%\gupkg\embedded\site-packages` when using a system Python;
 the bundled runtime instead uses its own `python\Lib\site-packages` directory.
 The launcher Python is not modified. Trusted package-local hooks never trigger
 dependency installation by default. When a hook needs an unavailable import,
-`gupkg` reports it and stops. Pass `--local-deps-autoinstall` to explicitly
+`gupkg` reports it and stops. Pass `--allow-hook-dependency-install` to explicitly
 allow installation and retrying for that command. Installations use the active
 interpreter's `pip`. Trusted package-local hooks are not sandboxed.
 

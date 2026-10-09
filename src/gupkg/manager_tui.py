@@ -2,8 +2,8 @@
 
 The manager app presents the same scoped inventory used by noninteractive
 commands, performs update checks in worker threads, and hands one selected
-target to the established package operation interface.  Aggregate upgrades
-use the manager planner and executor, including their safety and result rules.
+target to the established package operation interface.  Aggregate updates use
+the manager planner and executor, including their safety and result rules.
 When no configuration is available, the app remains visibly in manager mode,
 offers only initialization, and writes reviewed schema defaults only after
 explicit confirmation.
@@ -45,6 +45,7 @@ from .manager import (
     plan_upgrade_all,
     scope_name,
 )
+from ._version import __version__
 from .core import Scope, write_text_atomic
 
 
@@ -319,7 +320,7 @@ def run_manager_tui(
             yield OptionList(
                 Option("Browse packages", id="browse"),
                 Option("Refresh update status", id="refresh"),
-                Option("Upgrade all installed packages", id="upgrade"),
+                Option("Update all installed packages", id="update"),
                 Option(f"Shim linkage: {config.shim_linkage.title()}", id="shim-linkage"),
                 Option("Doctor: validate manager and packages", id="doctor"),
                 Option("gupkg version", id="version"),
@@ -337,14 +338,14 @@ def run_manager_tui(
                 self.app.push_screen(BrowserScreen())
             elif action == "refresh":
                 self.app.push_screen(RefreshScreen())
-            elif action == "upgrade":
+            elif action == "update":
                 self.app.push_screen(UpgradePlanScreen())
             elif action == "shim-linkage":
                 self.app.push_screen(ShimLinkageScreen())
             elif action == "doctor":
                 self.app.push_screen(DoctorScreen())
             elif action == "version":
-                self.app.push_screen(TextScreen("gupkg version", "gupkg manager interface"))
+                self.app.push_screen(TextScreen("gupkg version", f"gupkg {__version__}"))
 
         def action_quit(self) -> None:
             """Exit from the manager home."""
@@ -479,13 +480,14 @@ def run_manager_tui(
             self.run_worker(self._refresh(), exclusive=True)
 
         async def _refresh(self) -> None:
-            """Perform provider work off the Textual event loop."""
+            """Perform provider work off the Textual event loop, one target at a time.
+
+            Checks run sequentially in one worker thread: each check captures
+            the process-wide stdout, so concurrent checks would corrupt it.
+            """
             targets = list(current_inventory.targets)
-            results = await asyncio.gather(
-                *(
-                    asyncio.to_thread(manager_update_target, target)
-                    for target in targets
-                )
+            results = await asyncio.to_thread(
+                lambda: [manager_update_target(target) for target in targets]
             )
             output = "\n".join(f"{target.target_id}: {target.update_status}" for target in targets)
             self.query_one("#refresh-output", Static).update(output or "No packages discovered.")
@@ -503,7 +505,7 @@ def run_manager_tui(
         BINDINGS = [("escape", "back", "Back")]
 
         def compose(self) -> ComposeResult:
-            yield Label("Upgrade all: plan")
+            yield Label("Update all: plan")
             yield Static("Checking installed packages...", id="plan-status")
             with VerticalScroll(id="plan-output"):
                 yield Static("")
@@ -555,10 +557,10 @@ def run_manager_tui(
             self.no_checksum = False
 
         def compose(self) -> ComposeResult:
-            yield Label("Confirm upgrade all")
-            yield Static("Run planned upgrades first. Settings apply to this plan.")
+            yield Label("Confirm update all")
+            yield Static("Run planned updates first. Settings apply to this plan.")
             yield OptionList(
-                Option("Run planned upgrades", id="run"),
+                Option("Run planned updates", id="run"),
                 Option("Scope: All", id="scope", disabled=True),
                 Option("Checksum: Verify", id="checksum"),
                 Option("Dependency auto-install: Off", id="deps"),
@@ -567,7 +569,7 @@ def run_manager_tui(
 
         def _refresh_options(self) -> None:
             self.query_one("#confirm-actions", OptionList).set_options([
-                Option("Run planned upgrades", id="run"),
+                Option("Run planned updates", id="run"),
                 Option("Scope: All", id="scope", disabled=True),
                 Option(f"Checksum: {'Skip' if self.no_checksum else 'Verify'}", id="checksum"),
                 Option(f"Dependency auto-install: {'On' if self.local_deps else 'Off'}", id="deps"),
@@ -603,7 +605,7 @@ def run_manager_tui(
             self.cancel_requested = False
 
         def compose(self) -> ComposeResult:
-            yield Label("Upgrade all: execution")
+            yield Label("Update all: execution")
             yield Static("Preparing...", id="execution-status")
             with VerticalScroll(id="execution-output"):
                 yield Static("", id="execution-lines")
@@ -636,28 +638,32 @@ def run_manager_tui(
                 self.query_one("#execution-status", Static).update("Execution finished.")
                 return
 
-            def revalidate(target: ManagedTarget) -> str | None:
-                root = config.system_root if target.scope == Scope.MACHINE else config.user_root
-                return manager_revalidate_target(target, root, quiet=True)
-
             def upgrade(target: ManagedTarget):
                 lines.append(f"{target.target_id}: running")
                 result = manager_upgrade_target(
                     target,
+                    config,
                     no_checksum=self.no_checksum,
                     allow_dependencies=self.local_deps,
-                    shim_linkage=config.shim_linkage,
                 )
                 lines[-1] = f"{target.target_id}: {'completed' if result.ok else 'failed'}"
                 return result
 
-            await asyncio.to_thread(
+            # Run the batch in a worker thread and redraw its per-target
+            # states until it finishes, keeping the interface responsive.
+            output = self.query_one("#execution-lines", Static)
+            execution = asyncio.create_task(asyncio.to_thread(
                 execute_upgrade_plan,
                 self.plan,
-                revalidate,
+                lambda target: manager_revalidate_target(target, config),
                 upgrade,
                 cancel_requested=lambda: self.cancel_requested,
-            )
+            ))
+            while not execution.done():
+                output.update("\n".join(lines) or "Starting...")
+                await asyncio.sleep(0.1)
+            await execution
+
             # The browser must observe new current/version state after even a
             # partial batch, so a later return never relies on stale targets.
             current_inventory = await asyncio.to_thread(discover_manager, config)
@@ -665,7 +671,7 @@ def run_manager_tui(
             lines.extend(
                 f"{entry.target.target_id}: {entry.outcome}"
                 for entry in summary
-                if not any(entry.target.target_id in line for line in lines)
+                if not any(line.startswith(f"{entry.target.target_id}:") for line in lines)
             )
             lines.append(
                 "Summary: "
@@ -673,7 +679,7 @@ def run_manager_tui(
                 f"{sum(entry.outcome == 'failed' for entry in summary)} failed, "
                 f"{sum(entry.outcome in {'skipped', 'not-attempted'} for entry in summary)} skipped/not attempted."
             )
-            self.query_one("#execution-lines", Static).update("\n".join(lines))
+            output.update("\n".join(lines))
             self.query_one("#execution-status", Static).update("Execution finished.")
 
         def action_back(self) -> None:
@@ -684,6 +690,8 @@ def run_manager_tui(
 
     class DoctorScreen(Screen):
         """Show concise local diagnostics without running provider checks."""
+
+        BINDINGS = [("escape", "back", "Back")]
 
         def __init__(self) -> None:
             super().__init__()
@@ -758,11 +766,15 @@ def run_manager_tui(
 
     from .tui import run_tui
 
+    result_code = 0
     while True:
         selected = ManagerApp().run()
         if selected is None:
-            return 0
-        run_tui(str(selected.package.root), forced_scope=selected.scope)
+            return result_code
+        result_code = max(
+            result_code,
+            run_tui(str(selected.package.root), forced_scope=selected.scope),
+        )
         # Rebuild the local records before returning to the browser so newly
         # activated versions and repaired health state are immediately visible.
         current_inventory = discover_manager(config)

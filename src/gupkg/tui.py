@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import ClassVar
 
 
+_DEFAULT_SUBPROCESS_RUN = subprocess.run
+
+
 def run_tui(package_path: str = "", *, forced_scope=None) -> int:
     """Run the interactive Textual interface.
 
@@ -51,35 +54,29 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
     actions = (
         ("install", "Install"),
         (
-            "upgrade-check",
-            "Upgrade: check for an available update (read-only)",
+            "update-check",
+            "Update: check for an available update (read-only)",
         ),
         (
-            "upgrade-download",
-            "Upgrade: download available update (does not install)",
+            "update-download",
+            "Update: download available update (does not install)",
         ),
         (
-            "upgrade-full",
-            "Upgrade: check, download, and install available update",
-        ),
-        (
-            "upgrade-install",
-            "Upgrade: install downloaded update (activates it)",
+            "update",
+            "Update: check, download, and install available update",
         ),
         ("config-check", "Config: check"),
-        ("config-update", "Config: update"),
-        ("config-from-legacy", "Config: import from legacy"),
+        ("config-fix", "Config: fix or convert"),
         ("version", "gupkg installer version"),
     )
     flag_labels = (
-        ("use-defaults", "Use defaults if pkg.toml is invalid"),
         ("allow-downgrade", "Allow downgrade"),
         ("refresh-app", "Refresh App from origin"),
         ("no-checksum", "Skip checksum verification"),
-        ("dry-run", "Legacy import: dry run"),
-        ("toml", "Include TOML status summary"),
-        ("local-deps-autoinstall", "Allow pkg.local dependency installation"),
+        ("allow-hook-dependency-install", "Allow hook dependency installation"),
+        ("format-toml", "Render TOML output"),
         ("import-shortcuts", "Import and archive _shortcuts"),
+        ("no-backup", "Skip config backup"),
     )
 
     def action_flags(action: str) -> tuple[tuple[str, str], ...]:
@@ -88,25 +85,22 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
         flags: tuple[str, ...]
         if action == "install":
             flags = (
-                "use-defaults",
                 "allow-downgrade",
                 "refresh-app",
                 "no-checksum",
-                "local-deps-autoinstall",
-                "toml",
+                "allow-hook-dependency-install",
+                "format-toml",
             )
-        elif action == "upgrade-check":
-            flags = ("local-deps-autoinstall", "toml")
-        elif action == "upgrade-download":
-            flags = ("no-checksum", "local-deps-autoinstall", "toml")
-        elif action == "upgrade-full":
-            flags = ("no-checksum", "local-deps-autoinstall", "toml")
-        elif action == "upgrade-install" or action == "config-check":
-            flags = ("toml",)
-        elif action == "config-update":
-            flags = ("import-shortcuts", "toml")
-        elif action == "config-from-legacy":
-            flags = ("dry-run",)
+        elif action == "update-check":
+            flags = ("allow-hook-dependency-install", "format-toml")
+        elif action == "update-download":
+            flags = ("no-checksum", "allow-hook-dependency-install", "format-toml")
+        elif action == "update":
+            flags = ("no-checksum", "allow-hook-dependency-install", "format-toml")
+        elif action == "config-check":
+            flags = ("format-toml",)
+        elif action == "config-fix":
+            flags = ("import-shortcuts", "no-backup", "format-toml")
         else:
             flags = ()
         return tuple((flag, labels[flag]) for flag in flags)
@@ -169,25 +163,50 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
         return ("system" if system_available else "user"), system_available
 
     def command_arguments(
-        action: str, path: str, scope: str, selected_flags: set[str], output: str
+        action: str,
+        path: str,
+        scope: str,
+        selected_flags: set[str],
+        output: str,
+        shim_linkage: str,
     ) -> list[str]:
         """Build the CLI invocation represented by one action list."""
         if action == "version":
             return ["--version"]
+        # Root options must precede the subcommand; command-specific options
+        # must follow it so the generated argv is valid for argparse.
         args = ["--scope", scope]
-        args.extend(
-            f"--{flag}" for flag in selected_flags if flag != "import-shortcuts"
-        )
-        if action == "config-update":
-            enabled = "true" if "import-shortcuts" in selected_flags else "false"
-            args.append(f"--import-shortcuts={enabled}")
+        if "allow-hook-dependency-install" in selected_flags:
+            args.append("--allow-hook-dependency-install")
+        if "format-toml" in selected_flags:
+            args.extend(("--format", "toml"))
+
         if action == "install":
             args.append("install")
-        else:
-            command, operation = action.split("-", maxsplit=1)
-            args.extend((command, operation))
-        if action == "config-from-legacy" and output:
-            args.extend(("--output", output))
+            for flag in ("allow-downgrade", "refresh-app", "no-checksum"):
+                if flag in selected_flags:
+                    args.append(f"--{flag}")
+            args.extend(("--shim-linkage", shim_linkage))
+        elif action in {"update", "update-check", "update-download"}:
+            args.append("update")
+            if action == "update-check":
+                args.append("--check-only")
+            elif action == "update-download":
+                args.append("--download-only")
+            if "no-checksum" in selected_flags:
+                args.append("--no-checksum")
+            if action == "update":
+                args.extend(("--shim-linkage", shim_linkage))
+        elif action == "config-check":
+            args.append("config-check")
+        elif action == "config-fix":
+            args.append("config-fix")
+            if "no-backup" in selected_flags:
+                args.append("--no-backup")
+            enabled = "true" if "import-shortcuts" in selected_flags else "false"
+            args.extend(("--import-shortcuts", enabled))
+            if output:
+                args.extend(("--output", output))
         if path:
             args.append(path)
         return args
@@ -216,7 +235,8 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             options.append(Option("--- Settings ---", disabled=True))
             options.append(Option(f"Package path: {self.path or 'current directory'}", id="path"))
             options.append(Option("--- Navigation ---", disabled=True))
-            options.append(Option("Go to manager mode", id="manager-mode"))
+            if forced_scope is None:
+                options.append(Option("Go to manager mode", id="manager-mode"))
             return options
 
         def _refresh_summary(self) -> None:
@@ -277,9 +297,8 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             self.action = action
             self.home_screen = home_screen
             self.output = ""
-            self.flags: set[str] = (
-                {"import-shortcuts"} if action == "config-update" else set()
-            )
+            self.flags: set[str] = {"import-shortcuts"} if action == "config-fix" else set()
+            self.shim_linkage = "dynamic"
             scope = detected_scope(home_screen.path)
             self.scope, self.system_available = scope or ("user", False)
             self.scope_locked = forced_scope is not None
@@ -305,8 +324,7 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             options = [Option("Run", id="run"), Option("--- Settings ---", disabled=True)]
             if self.action in {
                 "install",
-                "upgrade-install",
-                "upgrade-full",
+                "update",
             }:
                 scope = scope_label(self.scope)
                 options.append(
@@ -318,7 +336,9 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
                         disabled=self.scope_locked or not self.system_available,
                     )
                 )
-            if self.action == "config-from-legacy":
+            if self.action in {"install", "update"}:
+                options.append(Option(f"Shim linkage: {self.shim_linkage.title()}", id="shim-linkage"))
+            if self.action == "config-fix":
                 options.append(Option(f"Output path: {self.output or 'default'}", id="output"))
             options.extend(
                 Option(f"{label}: {'on' if flag in self.flags else 'off'}", id=flag)
@@ -349,6 +369,7 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
                             self.scope,
                             self.flags,
                             self.output,
+                            self.shim_linkage,
                         )
                     )
                 )
@@ -357,6 +378,9 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             elif selection == "scope":
                 if self.system_available:
                     self.scope = "user" if self.scope == "system" else "system"
+                self._refresh_options(selection)
+            elif selection == "shim-linkage":
+                self.shim_linkage = "static" if self.shim_linkage == "dynamic" else "dynamic"
                 self._refresh_options(selection)
             else:
                 self.flags.symmetric_difference_update({selection})
@@ -437,25 +461,52 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             self.run_worker(self._run_command(), exclusive=True)
 
         async def _run_command(self) -> None:
-            """Run gupkg without corrupting Textual's terminal rendering."""
+            """Run gupkg and stream human output into the result view."""
             command = [sys.executable, "-m", "gupkg", *self.arguments]
-            completed = await asyncio.to_thread(
-                subprocess.run,
-                command,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
-            self.query_one("#output", Static).update(
-                completed.stdout or "(gupkg produced no output)"
-            )
+            output = self.query_one("#output", Static)
+
+            # Keep non-terminal test and embedding environments compatible with
+            # the ordinary subprocess boundary; an interactive terminal gets
+            # line-by-line output so download progress is visible immediately.
+            if not sys.stdout.isatty() or subprocess.run is not _DEFAULT_SUBPROCESS_RUN:
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    command,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                command_output = completed.stdout or "(gupkg produced no output)"
+                return_code = completed.returncode
+            else:
+                process = await asyncio.to_thread(
+                    subprocess.Popen,
+                    command,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                )
+                lines: list[str] = []
+                assert process.stdout is not None
+                while True:
+                    line = await asyncio.to_thread(process.stdout.readline)
+                    if not line:
+                        break
+                    lines.append(line)
+                    output.update("".join(lines))
+                return_code = await asyncio.to_thread(process.wait)
+                command_output = "".join(lines) or "(gupkg produced no output)"
+
+            output.update(command_output)
+            self.app.result_code = return_code
             status = (
                 "Completed successfully. Review the result below for the next "
                 "step."
-                if completed.returncode == 0
+                if return_code == 0
                 else (
-                    f"Failed with exit code {completed.returncode}. Review the "
+                    f"Failed with exit code {return_code}. Review the "
                     "output below."
                 )
             )
@@ -516,6 +567,7 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
             super().__init__()
             self.initial_path = initial_path
             self.open_manager = False
+            self.result_code = 0
 
         def on_mount(self) -> None:
             """Start at the action list."""
@@ -531,5 +583,5 @@ def run_tui(package_path: str = "", *, forced_scope=None) -> int:
     if app.open_manager:
         from gupkg.manager_tui import run_manager_tui
 
-        return run_manager_tui()
-    return 0
+        return max(app.result_code, run_manager_tui())
+    return app.result_code

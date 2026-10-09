@@ -1,4 +1,4 @@
-"""Cover observable gupkg collection discovery and selector behavior.
+"""Cover observable gupkg collection discovery and selector naming.
 
 The tests create real package-shaped directories and exercise only the public
 discovery API; Textual, network update sources, and Windows junctions are out
@@ -14,7 +14,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from gupkg.collection import discover_collection, select_package
+from gupkg.collection import discover_collection
 
 
 def _manifest(root: Path, selector: str, version: str = "v1.0.0.l1") -> None:
@@ -39,8 +39,8 @@ def test_discovery_visits_only_marked_groupings_and_keeps_malformed_manifest(tmp
     assert inventory.complete
 
 
-def test_selector_requires_a_canonical_name_when_a_short_name_is_ambiguous(tmp_path: Path) -> None:
-    """An ambiguous basename reports choices instead of selecting an arbitrary package."""
+def test_same_basename_in_two_groupings_yields_distinct_canonical_selectors(tmp_path: Path) -> None:
+    """Packages sharing a basename are reported under their full grouping paths."""
     for group in ("stable", "preview"):
         directory = tmp_path / group
         directory.mkdir()
@@ -49,10 +49,4 @@ def test_selector_requires_a_canonical_name_when_a_short_name_is_ambiguous(tmp_p
 
     inventory = discover_collection(tmp_path)
 
-    try:
-        select_package(inventory, "vscode")
-    except ValueError as exc:
-        assert "stable/vscode" in str(exc)
-        assert "preview/vscode" in str(exc)
-    else:
-        raise AssertionError("ambiguous short selector was accepted")
+    assert [package.selector for package in inventory.packages] == ["preview/vscode", "stable/vscode"]

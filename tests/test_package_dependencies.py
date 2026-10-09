@@ -53,7 +53,7 @@ def test_missing_hook_dependency_is_reported_without_installing() -> None:
             run_with_missing_dependencies(hook)
         except MissingLocalDependencyError as error:
             assert "Package-local dependency unavailable" in str(error)
-            assert "--local-deps-autoinstall" in str(error)
+            assert "--allow-hook-dependency-install" in str(error)
         else:
             raise AssertionError("Missing local dependencies must be reported by default")
     installer.assert_not_called()

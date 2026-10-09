@@ -1,15 +1,26 @@
-"""Load fixed-location manager configuration and build scoped inventories.
+"""Load fixed-location manager configuration, build inventories, and run batches.
 
 The manager domain validates one small TOML schema, expands paths without a
-shell, and delegates package traversal to :func:`discover_collection`. It is
-read-only: loading configuration and inventory never creates or changes a
-configured root.
+shell, and delegates package traversal to :func:`discover_collection`. Loading
+configuration and inventory is read-only and never creates a configured root.
+Batch updates are planned without downloading or activating anything, then
+executed target by target with revalidation and per-target failure isolation.
 
 Usage and API
 -------------
-Call ``load_manager_config(...)`` and ``discover_manager(...)`` for manager
-workflows, then use ``select_target(...)`` to resolve a full target ID or a
-unique selector.
+Call ``discover_manager_config(...)`` and ``load_manager_config(...)``, then
+``discover_manager(...)`` for a scoped inventory. ``plan_upgrade_all(...)`` and
+``execute_upgrade_plan(...)`` form the batch-update boundary shared by the CLI
+and the manager TUI; ``manager_update_target(...)``,
+``manager_revalidate_target(...)``, ``manager_upgrade_target(...)``, and
+``manager_download_target(...)`` are the per-target operations they use.
+
+Implementation Approach
+-----------------------
+Every target is a package discovered below exactly one configured root, and
+that root fixes its scope. Per-target operations call the ordinary package
+workflows with the manager's install context and capture their progress
+output, so callers own presentation.
 """
 
 from __future__ import annotations
@@ -34,9 +45,8 @@ from .core import (
     Scope,
     compare_package_versions,
     read_toml_file,
-    write_text_atomic,
 )
-from .layout import inspect_current
+from .layout import compute_scope_paths, inspect_current
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,10 @@ class ManagerConfig:
     shim_linkage: str = "dynamic"
     schema_version: int = 2
 
+    def root(self, scope: Scope) -> Path:
+        """Return the configured package root that owns *scope*."""
+        return self.user_root if scope == Scope.USER else self.system_root
+
 
 @dataclass(frozen=True)
 class InstallationContext:
@@ -67,11 +81,14 @@ class InstallationContext:
     shim_linkage: str = "dynamic"
 
     def as_scope_paths(self) -> dict[str, Path | str]:
-        """Return the legacy component mapping with manager paths applied."""
-        paths = {"bin_dir": self.bin_dir, "collection_root": self.collection_root}
+        """Return the component scope-path mapping with manager paths applied."""
+        paths: dict[str, Path | str] = {
+            "bin_dir": self.bin_dir,
+            "collection_root": self.collection_root,
+            "shim_linkage": self.shim_linkage,
+        }
         if self.shortcut_root is not None:
             paths["shortcut_root"] = self.shortcut_root
-        paths["shim_linkage"] = self.shim_linkage
         return paths
 
 
@@ -113,7 +130,7 @@ class ManagerInventory:
 
 @dataclass
 class UpgradePlanEntry:
-    """Record one target's planned batch outcome."""
+    """Record one target's planned and, after execution, actual batch outcome."""
 
     target: ManagedTarget
     outcome: str
@@ -126,6 +143,354 @@ class UpgradePlan:
     """Contain a deterministic, non-mutating manager upgrade plan."""
 
     entries: list[UpgradePlanEntry]
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Windows-style ``%NAME%`` references accepted in manager paths.
+_VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
+
+
+def discover_manager_config(
+    explicit: Path | None = None,
+    *,
+    module_directory: Path | None = None,
+    gupkg_home: str | None = None,
+    appdata: str | None = None,
+) -> Path | None:
+    """Select a manager file from the fixed, non-working-directory locations.
+
+    Parameters
+    ----------
+    explicit : Path, optional
+        ``--config`` value; returned as-is when given.
+    module_directory : Path, optional
+        Directory of the installed ``gupkg`` package; defaults to this one.
+    gupkg_home, appdata : str, optional
+        Overrides for ``GUPKG_HOME`` and ``APPDATA``.
+
+    Returns
+    -------
+    Path or None
+        The first existing candidate from :func:`manager_config_candidates`.
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    for candidate in manager_config_candidates(
+        module_directory=module_directory, gupkg_home=gupkg_home, appdata=appdata
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def manager_config_candidates(
+    *,
+    module_directory: Path | None = None,
+    gupkg_home: str | None = None,
+    appdata: str | None = None,
+) -> list[Path]:
+    """Return the ordered fixed locations searched for ``gupkg-config.toml``.
+
+    The search order is the installed package directory, ``GUPKG_HOME``, and
+    ``%APPDATA%\\gupkg``; unset variables are skipped and the working directory
+    is never searched.
+    """
+    directory = Path(module_directory) if module_directory else Path(__file__).resolve().parent
+    candidates = [directory / "gupkg-config.toml"]
+    home = gupkg_home if gupkg_home is not None else os.environ.get("GUPKG_HOME")
+    if home:
+        candidates.append(Path(home) / "gupkg-config.toml")
+    roaming = appdata if appdata is not None else os.environ.get("APPDATA")
+    if roaming:
+        candidates.append(Path(roaming) / "gupkg" / "gupkg-config.toml")
+    return candidates
+
+
+def load_manager_config(path: Path) -> ManagerConfig:
+    """Read and strictly validate one schema-version-two manager file.
+
+    Parameters
+    ----------
+    path : Path
+        Manager configuration file. Relative configured paths resolve against
+        its directory.
+
+    Returns
+    -------
+    ManagerConfig
+        Validated configuration with absolute, expanded paths.
+
+    Raises
+    ------
+    ConfigValidationError
+        If the file is missing, unreadable, or violates the schema.
+    """
+    path = Path(path).expanduser().absolute()
+    if not path.is_file():
+        raise ConfigValidationError(f"Manager configuration is not a regular file: {path}")
+    try:
+        raw = read_toml_file(path)
+    except Exception as exc:
+        raise ConfigValidationError(f"Could not read manager configuration {path}: {exc}") from exc
+
+    # Only the current schema is accepted; older files must be migrated.
+    schema_version = raw.get("schema_version")
+    if type(schema_version) is not int or schema_version != 2:
+        raise ConfigValidationError(
+            "schema_version must be the integer 2; older manager configurations "
+            "must be explicitly migrated"
+        )
+    _exact_table_keys(raw, {"mode", "schema_version", "packages", "bin", "registry"}, "manager configuration", optional={"shims"})
+    if raw["mode"] != "manager":
+        raise ConfigValidationError("mode must be exactly 'manager'")
+
+    # Package roots and bin directories come in user/system pairs that must
+    # not collide; the registry cache must live outside both package roots.
+    _exact_table_keys(raw["packages"], {"system", "user"}, "[packages]")
+    _exact_table_keys(raw["bin"], {"system", "user"}, "[bin]")
+    _exact_table_keys(raw["registry"], {"cache", "channel"}, "[registry]")
+    shims = raw.get("shims", {"linkage": "dynamic"})
+    _exact_table_keys(shims, {"linkage"}, "[shims]")
+    roots = {name: _expand_manager_path(value, path.parent, f"packages.{name}") for name, value in raw["packages"].items()}
+    bins = {name: _expand_manager_path(value, path.parent, f"bin.{name}") for name, value in raw["bin"].items()}
+    cache = _expand_manager_path(raw["registry"]["cache"], path.parent, "registry.cache")
+    if _same_or_nested(roots["system"], roots["user"]):
+        raise ConfigValidationError("Configured system and user roots must be distinct and non-nested")
+    if bins["system"] == bins["user"]:
+        raise ConfigValidationError("Configured system and user bin directories must be distinct")
+    if _same_or_nested(cache, roots["system"]) or _same_or_nested(cache, roots["user"]):
+        raise ConfigValidationError("Registry cache must be outside both package roots")
+    if raw["registry"]["channel"] != "stable":
+        raise ConfigValidationError("[registry].channel must be exactly 'stable'")
+    if shims["linkage"] not in {"dynamic", "static"}:
+        raise ConfigValidationError("[shims].linkage must be exactly 'dynamic' or 'static'")
+    for field_name, value in (("bin.system", bins["system"]), ("bin.user", bins["user"]), ("registry.cache", cache)):
+        if value.exists() and not value.is_dir():
+            raise ConfigValidationError(f"Configured {field_name} path is not a directory: {value}")
+    return ManagerConfig(
+        path,
+        roots["system"],
+        roots["user"],
+        system_bin=bins["system"],
+        user_bin=bins["user"],
+        registry_cache=cache,
+        shim_linkage=shims["linkage"],
+    )
+
+
+def manager_config_text(config: ManagerConfig) -> str:
+    """Render a reviewed schema-version-two manager configuration as TOML.
+
+    Parameters
+    ----------
+    config : ManagerConfig
+        Configuration to render; missing bin and cache paths use the scope
+        defaults.
+
+    Returns
+    -------
+    str
+        TOML text that :func:`load_manager_config` accepts.
+    """
+    user_bin = config.user_bin or compute_scope_paths(Scope.USER)["bin_dir"]
+    system_bin = config.system_bin or compute_scope_paths(Scope.MACHINE)["bin_dir"]
+    cache = config.registry_cache or (
+        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "gupkg" / "registry"
+    )
+
+    def toml_path(value: Path) -> str:
+        """Render a Windows path as a TOML literal string."""
+        return "'" + str(value).replace("\\", "/").replace("'", "''") + "'"
+
+    return (
+        'mode = "manager"\n'
+        "schema_version = 2\n\n"
+        "[packages]\n"
+        f"system = {toml_path(config.system_root)}\n"
+        f"user = {toml_path(config.user_root)}\n\n"
+        "[bin]\n"
+        f"system = {toml_path(system_bin)}\n"
+        f"user = {toml_path(user_bin)}\n\n"
+        "[registry]\n"
+        f"cache = {toml_path(cache)}\n"
+        'channel = "stable"\n\n'
+        "[shims]\n"
+        f'linkage = "{config.shim_linkage}"\n'
+    )
+
+
+def default_manager_config(path: Path | None = None) -> ManagerConfig:
+    """Build the reviewed manager configuration used by interactive initialization.
+
+    Parameters
+    ----------
+    path : Path, optional
+        Destination for the configuration file; defaults to
+        ``%APPDATA%\\gupkg\\gupkg-config.toml``.
+
+    Returns
+    -------
+    ManagerConfig
+        Defaults for the user and system collections, executable directories,
+        and registry cache.
+
+    Raises
+    ------
+    ValueError
+        If the Windows environment does not identify the required default
+        locations.
+    """
+    environment = {name: os.environ.get(name) for name in ("APPDATA", "USERPROFILE", "LOCALAPPDATA", "SYSTEMDRIVE")}
+    if path is None and not environment["APPDATA"]:
+        raise ValueError("APPDATA is not set; cannot initialize manager mode")
+    if not all(environment[name] for name in ("USERPROFILE", "LOCALAPPDATA", "SYSTEMDRIVE")):
+        raise ValueError(
+            "USERPROFILE, LOCALAPPDATA, and SYSTEMDRIVE are required to initialize manager mode"
+        )
+    system_drive = environment["SYSTEMDRIVE"]
+    if len(system_drive) == 2 and system_drive[1] == ":":
+        system_drive += "\\"
+    user_profile = Path(environment["USERPROFILE"])
+    return ManagerConfig(
+        path=Path(path) if path is not None else Path(environment["APPDATA"]) / "gupkg" / "gupkg-config.toml",
+        system_root=Path(system_drive) / "opt",
+        user_root=user_profile / "opt",
+        system_bin=Path(system_drive) / "bin",
+        user_bin=user_profile / "bin",
+        registry_cache=Path(environment["LOCALAPPDATA"]) / "gupkg" / "registry",
+    )
+
+
+def installation_context(
+    config: ManagerConfig, scope: Scope, *, shim_linkage: str | None = None
+) -> InstallationContext:
+    """Build the manager-owned destinations for one explicit scope.
+
+    Parameters
+    ----------
+    config : ManagerConfig
+        Validated manager configuration.
+    scope : Scope
+        ``Scope.USER`` or ``Scope.MACHINE``.
+    shim_linkage : {"dynamic", "static"}, optional
+        Overrides the configured shim linkage.
+
+    Returns
+    -------
+    InstallationContext
+        Package root, bin directory, and Start Menu root for *scope*.
+    """
+    if scope == Scope.AUTO:
+        raise ValueError("Installation context requires an explicit scope")
+    bin_dir = config.user_bin if scope == Scope.USER else config.system_bin
+    try:
+        defaults = compute_scope_paths(scope)
+    except ValueError:
+        defaults = {}
+    if bin_dir is None:
+        bin_dir = defaults["bin_dir"]
+    return InstallationContext(
+        scope=scope,
+        collection_root=config.root(scope),
+        bin_dir=bin_dir,
+        manager_config=config.path,
+        shortcut_root=defaults.get("shortcut_root"),
+        registry_cache=config.registry_cache,
+        shim_linkage=shim_linkage or config.shim_linkage,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inventory
+# ---------------------------------------------------------------------------
+
+
+def discover_manager(config: ManagerConfig, *, max_depth: int = 8) -> ManagerInventory:
+    """Discover both configured roots and return scoped, deterministic targets.
+
+    Parameters
+    ----------
+    config : ManagerConfig
+        Validated manager configuration.
+    max_depth : int, default=8
+        Maximum descent through marked grouping directories.
+
+    Returns
+    -------
+    ManagerInventory
+        Targets sorted by selector and then user-before-system; a missing or
+        unreadable root is reported as an incomplete scope.
+    """
+    scopes: list[ManagedScope] = []
+    targets: list[ManagedTarget] = []
+    for scope in (Scope.USER, Scope.MACHINE):
+        root = config.root(scope)
+        try:
+            if not root.is_dir():
+                raise OSError("root does not exist" if not root.exists() else "root is not a directory")
+            inventory = discover_collection(root, max_depth=max_depth)
+        except OSError as exc:
+            scopes.append(ManagedScope(
+                scope, root, None, False,
+                [f"Cannot access {scope_name(scope)} root {root}: {exc}"],
+            ))
+            continue
+        scopes.append(ManagedScope(scope, root, inventory, inventory.complete, list(inventory.diagnostics)))
+        targets.extend(_managed_target(scope, package, inventory.complete) for package in inventory.packages)
+    targets.sort(key=lambda target: (
+        target.package.selector.casefold(), target.package.selector, _scope_order(target.scope)
+    ))
+    return ManagerInventory(config, scopes, targets)
+
+
+def _managed_target(scope: Scope, package: DiscoveredPackage, complete: bool) -> ManagedTarget:
+    """Describe one discovered package's activation, versions, and health."""
+    current = inspect_current(package.root)
+    diagnostics = list(package.diagnostics) + list(current.diagnostics)
+
+    # Validate every manifest through the package configuration boundary so
+    # inventory health reflects real package semantics, not file presence.
+    for manifest in package.manifests:
+        identity = PackageIdentity.from_version_path(
+            package.root, manifest.version_path, is_current=manifest.version_path == current.version_path
+        )
+        try:
+            read_runtime_config(identity)
+        except Exception as exc:
+            diagnostics.append(f"Invalid manifest {manifest.path}: {exc}")
+    health = "incomplete" if not complete else ("unhealthy" if diagnostics else "healthy")
+    return ManagedTarget(
+        f"{scope.value}:{package.selector}",
+        scope,
+        package,
+        current.status,
+        current.version_path.name if current.version_path else None,
+        max(
+            (manifest.version_path.name for manifest in package.manifests),
+            key=cmp_to_key(compare_package_versions),
+            default=None,
+        ),
+        health,
+        diagnostics=diagnostics,
+    )
+
+
+def scope_name(scope: Scope) -> str:
+    """Return the user-facing manager scope name, ``User`` or ``System``."""
+    return "User" if scope == Scope.USER else "System"
+
+
+def _scope_order(scope: Scope) -> int:
+    """Sort user targets before system targets."""
+    return 0 if scope == Scope.USER else 1
+
+
+# ---------------------------------------------------------------------------
+# Batch planning and execution
+# ---------------------------------------------------------------------------
 
 
 def plan_upgrade_all(
@@ -142,38 +507,37 @@ def plan_upgrade_all(
     scopes : set[Scope]
         Configured scopes selected by the caller.
     check_target : callable
-        Boundary that refreshes one target's update status and returns an
+        Boundary that refreshes one target's ``update_status`` and returns an
         :class:`~gupkg.core.ActionResult`.
 
     Returns
     -------
     UpgradePlan
-        Ordered entries describing skips, failed checks, and eligible targets.
+        User targets before system targets, each ``skipped`` (with a reason),
+        ``failed`` (check failure), or ``eligible``.
     """
+    complete = all(scope.complete for scope in inventory.scopes if scope.scope in scopes)
+    selected = sorted(
+        (target for target in inventory.targets if target.scope in scopes),
+        key=lambda target: (_scope_order(target.scope), target.package.selector.casefold(), target.package.selector),
+    )
     entries: list[UpgradePlanEntry] = []
-    selected_scopes = [scope for scope in inventory.scopes if scope.scope in scopes]
-    complete = all(scope.complete for scope in selected_scopes)
-    for target in _targets_in_upgrade_order(inventory, scopes):
-        if not complete:
-            entries.append(UpgradePlanEntry(target, "skipped", "incomplete"))
-            continue
-        if target.installation_status == "not-installed":
-            entries.append(UpgradePlanEntry(target, "skipped", "uninstalled"))
-            continue
-        if target.installation_status == "broken":
-            entries.append(UpgradePlanEntry(target, "skipped", "broken"))
-            continue
-        if target.health_status != "healthy":
-            entries.append(UpgradePlanEntry(target, "skipped", "unhealthy"))
+    for target in selected:
+        # Only healthy installed targets of complete scopes are ever checked.
+        skip_reason = (
+            "incomplete" if not complete
+            else "uninstalled" if target.installation_status == "not-installed"
+            else "broken" if target.installation_status == "broken"
+            else "unhealthy" if target.health_status != "healthy"
+            else None
+        )
+        if skip_reason is not None:
+            entries.append(UpgradePlanEntry(target, "skipped", skip_reason))
             continue
         result = check_target(target)
-        if target.update_status == "not-configured":
-            entries.append(UpgradePlanEntry(target, "skipped", "not-configured", result))
-        elif not result.ok or target.update_status == "error":
-            entries.append(UpgradePlanEntry(target, "failed", "failed-check", result))
-        elif target.update_status == "current":
-            entries.append(UpgradePlanEntry(target, "skipped", "current", result))
-        elif target.update_status == "available":
+        if target.update_status in {"not-configured", "current"} and result.ok:
+            entries.append(UpgradePlanEntry(target, "skipped", target.update_status, result))
+        elif target.update_status == "available" and result.ok:
             entries.append(UpgradePlanEntry(target, "eligible", result=result))
         else:
             entries.append(UpgradePlanEntry(target, "failed", "failed-check", result))
@@ -185,433 +549,93 @@ def execute_upgrade_plan(
     revalidate_target,
     upgrade_target,
     *,
-    fail_fast=False,
     cancel_requested=None,
 ) -> UpgradePlan:
-    """Execute eligible plan entries sequentially and retain every outcome.
+    """Execute eligible plan entries in order and retain every outcome.
+
+    A failing target never stops the batch; every later eligible target still
+    runs.
 
     Parameters
     ----------
     plan : UpgradePlan
-        Previously generated plan.
+        Previously generated plan; its entries are updated in place.
     revalidate_target : callable
-        Boundary that returns ``None`` when a target is still safe to mutate,
-        or an explanatory string when it changed.
+        Returns ``None`` when a target is still safe to mutate, or an
+        explanatory string when it changed after planning.
     upgrade_target : callable
-        Existing single-package upgrade operation.
-    fail_fast : bool, default=False
-        Mark eligible entries after the first failure as not attempted.
+        Single-package operation returning an :class:`ActionResult`.
     cancel_requested : callable, optional
-        Boundary predicate checked before each new package operation.  A true
-        result stops scheduling without interrupting an operation already in
-        progress.
+        Checked before each new package operation. A true result stops
+        scheduling without interrupting an operation already in progress.
 
     Returns
     -------
     UpgradePlan
-        The same plan with completed action results attached.
+        The same plan, with ``upgraded``, ``current``, ``failed``, or
+        ``not-attempted`` outcomes and results attached.
     """
-    stopped = False
     for entry in plan.entries:
         if entry.outcome != "eligible":
             continue
         if cancel_requested is not None and cancel_requested():
             entry.outcome, entry.reason = "not-attempted", "cancelled"
-            stopped = True
             continue
-        if stopped:
-            entry.outcome, entry.reason = "not-attempted", "fail-fast"
-            continue
+
         # Revalidate ownership and health immediately before mutation, and
-        # preserve the failure as a result so the CLI cannot retain the
-        # earlier successful check result for an invalidated target.
-        revalidation_exit_code = EXIT_USER_ERROR
+        # keep a failure as the entry's result so the earlier successful
+        # check result cannot be reported for an invalidated target.
         try:
             problem = revalidate_target(entry.target)
-        except (ConfigValidationError, ValueError, FileNotFoundError) as exc:
-            problem = str(exc)
-        except OSError as exc:
-            problem = str(exc)
-            revalidation_exit_code = EXIT_MUTATION_ERROR
-        except Exception as exc:  # pragma: no cover - defensive boundary
-            problem = str(exc)
-            revalidation_exit_code = EXIT_INTERNAL_ERROR
-        if problem:
-            entry.result = ActionResult(
-                False, errors=[problem], exit_code=revalidation_exit_code
-            )
-            entry.outcome, entry.reason = "failed", problem
-            stopped = fail_fast
+            failure = ActionResult(False, errors=[problem], exit_code=EXIT_USER_ERROR) if problem else None
+        except Exception as exc:
+            failure = _exception_result(exc)
+        if failure is not None:
+            entry.result = failure
+            entry.outcome, entry.reason = "failed", failure.errors[0]
             continue
 
         # Isolate one target's operational failure so later eligible targets
         # still run and the batch retains a result for every target.
         try:
             entry.result = upgrade_target(entry.target)
-        except (ConfigValidationError, ValueError, FileNotFoundError) as exc:
-            entry.result = ActionResult(
-                False, errors=[str(exc)], exit_code=EXIT_USER_ERROR
-            )
-        except OSError as exc:
-            entry.result = ActionResult(
-                False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR
-            )
-        except Exception as exc:  # pragma: no cover - defensive boundary
-            entry.result = ActionResult(
-                False, errors=[str(exc)], exit_code=EXIT_INTERNAL_ERROR
-            )
-        if entry.result.ok:
-            entry.outcome = "upgraded" if entry.result.changed or entry.result.status in {"installed-update", "downloaded"} else "current"
-        else:
+        except Exception as exc:
+            entry.result = _exception_result(exc)
+        if not entry.result.ok:
             entry.outcome, entry.reason = "failed", "upgrade-failed"
-            stopped = fail_fast
+        elif entry.result.changed or entry.result.status in {"installed-update", "downloaded"}:
+            entry.outcome = "upgraded"
+        else:
+            entry.outcome = "current"
     return plan
 
 
-def _targets_in_upgrade_order(inventory: ManagerInventory, scopes: set[Scope]) -> list[ManagedTarget]:
-    """Return selected targets in the manager's user-then-system order."""
-    selected = [target for target in inventory.targets if target.scope in scopes]
-    return sorted(
-        selected,
-        key=lambda target: (
-            _scope_sort_key(target.scope),
-            target.package.selector.casefold(),
-            target.package.selector,
-        ),
-    )
-
-
-_VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
-
-
-def load_manager_config(path: Path) -> ManagerConfig:
-    """Read and strictly validate one schema-version-two manager file."""
-    path = Path(path).expanduser().absolute()
-    if not path.is_file():
-        raise ConfigValidationError(f"Manager configuration is not a regular file: {path}")
-    try:
-        raw = read_toml_file(path)
-    except Exception as exc:
-        raise ConfigValidationError(f"Could not read manager configuration {path}: {exc}") from exc
-    if "mode" not in raw or "schema_version" not in raw or "packages" not in raw:
-        raise ConfigValidationError(
-            "Invalid manager configuration: missing required top-level key(s)"
-        )
-    schema_version = raw["schema_version"]
-    if type(schema_version) is not int or schema_version != 2:
-        raise ConfigValidationError(
-            "schema_version must be the integer 2; older manager configurations "
-            "must be explicitly migrated"
-        )
-    required_top_level = {"mode", "schema_version", "packages", "bin", "registry"}
-    allowed_top_level = required_top_level | {"shims"}
-    if not required_top_level.issubset(raw) or not set(raw).issubset(allowed_top_level):
-        unknown = sorted(set(raw) - allowed_top_level)
-        missing = sorted(required_top_level - set(raw))
-        parts = []
-        if unknown:
-            parts.append(f"unknown top-level key(s): {', '.join(unknown)}")
-        if missing:
-            parts.append(f"missing top-level key(s): {', '.join(missing)}")
-        raise ConfigValidationError(
-            "Invalid manager configuration: " + "; ".join(parts)
-        )
-    if raw["mode"] != "manager":
-        raise ConfigValidationError("mode must be exactly 'manager'")
-    packages = raw["packages"]
-    if not isinstance(packages, dict) or set(packages) != {"system", "user"}:
-        if not isinstance(packages, dict):
-            raise ConfigValidationError("[packages] must be a table containing system and user")
-        unknown = sorted(set(packages) - {"system", "user"})
-        missing = sorted({"system", "user"} - set(packages))
-        details = []
-        if unknown:
-            details.append(f"unknown key(s): {', '.join(unknown)}")
-        if missing:
-            details.append(f"missing key(s): {', '.join(missing)}")
-        raise ConfigValidationError("Invalid [packages] table: " + "; ".join(details))
-
-    roots = {
-        name: _expand_manager_path(value, path.parent, name)
-        for name, value in packages.items()
-    }
-    system_root, user_root = roots["system"], roots["user"]
-    if _same_or_nested(system_root, user_root):
-        raise ConfigValidationError("Configured system and user roots must be distinct and non-nested")
-    shims_table = raw.get("shims", {"linkage": "dynamic"})
-    if not isinstance(shims_table, dict) or set(shims_table) != {"linkage"}:
-        raise ConfigValidationError("Invalid [shims] table: expected exactly linkage")
-    if shims_table["linkage"] not in {"dynamic", "static"}:
-        raise ConfigValidationError("[shims].linkage must be exactly 'dynamic' or 'static'")
-    bin_table = raw.get("bin")
-    registry_table = raw.get("registry")
-    if not isinstance(bin_table, dict) or set(bin_table) != {"system", "user"}:
-        raise ConfigValidationError("Invalid [bin] table: expected exactly system and user")
-    if not isinstance(registry_table, dict) or set(registry_table) != {"cache", "channel"}:
-        raise ConfigValidationError("Invalid [registry] table: expected exactly cache and channel")
-    bins = {
-        name: _expand_manager_path(value, path.parent, name)
-        for name, value in bin_table.items()
-    }
-    if bins["system"] == bins["user"]:
-        raise ConfigValidationError("Configured system and user bin directories must be distinct")
-    cache = _expand_manager_path(registry_table["cache"], path.parent, "cache")
-    if registry_table["channel"] != "stable":
-        raise ConfigValidationError("[registry].channel must be exactly 'stable'")
-    if _same_or_nested(cache, system_root) or _same_or_nested(cache, user_root):
-        raise ConfigValidationError("Registry cache must be outside both package roots")
-    for field_name, value in (
-        ("bin.system", bins["system"]),
-        ("bin.user", bins["user"]),
-        ("registry.cache", cache),
-    ):
-        if value.exists() and not value.is_dir():
-            raise ConfigValidationError(f"Configured {field_name} path is not a directory: {value}")
-    return ManagerConfig(
-        path,
-        system_root,
-        user_root,
-        system_bin=bins["system"],
-        user_bin=bins["user"],
-        registry_cache=cache,
-        channel="stable",
-        shim_linkage=shims_table["linkage"],
-        schema_version=2,
-    )
-
-
-def discover_manager_config(
-    explicit: Path | None = None,
-    *,
-    module_directory: Path | None = None,
-    gupkg_home: str | None = None,
-    appdata: str | None = None,
-) -> Path | None:
-    """Select a manager file from the fixed, non-working-directory locations."""
-    if explicit is not None:
-        return Path(explicit).expanduser()
-    if module_directory is None:
-        # Keep direct TUI callers on the same first candidate as the CLI: the
-        # installed ``gupkg.cli`` module owns the adjacent default file.
-        try:
-            from . import cli
-
-            module_directory = Path(cli.__file__).resolve().parent
-        except (ImportError, AttributeError, TypeError):
-            module_directory = None
-    candidates = []
-    if module_directory is not None:
-        candidates.append(Path(module_directory) / "gupkg-config.toml")
-    home = gupkg_home if gupkg_home is not None else os.environ.get("GUPKG_HOME")
-    if home:
-        candidates.append(Path(home) / "gupkg-config.toml")
-    roaming_root = appdata if appdata is not None else os.environ.get("APPDATA")
-    if roaming_root:
-        candidates.append(Path(roaming_root) / "gupkg" / "gupkg-config.toml")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def installation_context(
-    config: ManagerConfig, scope: Scope, *, shim_linkage: str | None = None
-) -> InstallationContext:
-    """Build the manager-owned destinations for one selected scope."""
-    if scope == Scope.AUTO:
-        raise ValueError("Installation context requires an explicit scope")
-    if scope == Scope.USER:
-        collection_root = config.user_root
-        bin_dir = config.user_bin
-        if bin_dir is None:
-            from .layout import compute_scope_paths
-
-            bin_dir = compute_scope_paths(scope)["bin_dir"]
+def _exception_result(exc: Exception) -> ActionResult:
+    """Translate an exception from one per-target boundary into a failed result."""
+    if isinstance(exc, (ConfigValidationError, ValueError, FileNotFoundError)):
+        code = EXIT_USER_ERROR
+    elif isinstance(exc, OSError):
+        code = EXIT_MUTATION_ERROR
     else:
-        collection_root = config.system_root
-        bin_dir = config.system_bin
-        if bin_dir is None:
-            from .layout import compute_scope_paths
-
-            bin_dir = compute_scope_paths(scope)["bin_dir"]
-    try:
-        from .layout import compute_scope_paths
-
-        shortcut_root = compute_scope_paths(scope)["shortcut_root"]
-    except (RuntimeError, ValueError, OSError):
-        shortcut_root = None
-    return InstallationContext(
-        scope=scope,
-        collection_root=collection_root,
-        bin_dir=bin_dir,
-        manager_config=config.path,
-        shortcut_root=shortcut_root,
-        registry_cache=config.registry_cache,
-        shim_linkage=shim_linkage or config.shim_linkage,
-    )
+        code = EXIT_INTERNAL_ERROR
+    return ActionResult(False, errors=[str(exc)], exit_code=code)
 
 
-def manager_config_text(config: ManagerConfig) -> str:
-    """Render a reviewed schema-version-two manager configuration."""
-    user_bin = config.user_bin
-    system_bin = config.system_bin
-    if user_bin is None or system_bin is None:
-        from .layout import compute_scope_paths
-
-        user_bin = user_bin or compute_scope_paths(Scope.USER)["bin_dir"]
-        system_bin = system_bin or compute_scope_paths(Scope.MACHINE)["bin_dir"]
-    cache = config.registry_cache or (
-        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        / "gupkg"
-        / "registry"
-    )
-    def toml_path(value: Path) -> str:
-        """Render a Windows path as a TOML literal string."""
-        return "'" + str(value).replace("\\", "/").replace("'", "''") + "'"
-
-    return (
-        'mode = "manager"\n'
-        'schema_version = 2\n\n'
-        '[packages]\n'
-        f"system = {toml_path(config.system_root)}\n"
-        f"user = {toml_path(config.user_root)}\n\n"
-        '[bin]\n'
-        f"system = {toml_path(system_bin)}\n"
-        f"user = {toml_path(user_bin)}\n\n"
-        '[registry]\n'
-        f"cache = {toml_path(cache)}\n"
-        'channel = "stable"\n\n'
-        '[shims]\n'
-        f'linkage = "{config.shim_linkage}"\n'
-    )
-
-
-def default_manager_config_path() -> Path:
-    """Return the per-user location used to initialize manager mode.
-
-    Returns
-    -------
-    Path
-        The roaming per-user manager configuration path.
-
-    Raises
-    ------
-    ValueError
-        If ``APPDATA`` is not available to identify the per-user location.
-    """
-    appdata = os.environ.get("APPDATA")
-    if not appdata:
-        raise ValueError("APPDATA is not set; cannot initialize manager mode")
-    return Path(appdata) / "gupkg" / "gupkg-config.toml"
-
-
-def default_manager_config(path: Path | None = None) -> ManagerConfig:
-    """Build the reviewed manager configuration used by interactive initialization.
-
-    Parameters
-    ----------
-    path : Path, optional
-        Destination for the configuration file. When omitted, the per-user
-        roaming manager location is used.
-
-    Returns
-    -------
-    ManagerConfig
-        Schema-version-two defaults for the user and system collections,
-        executable directories, and registry cache.
-
-    Raises
-    ------
-    ValueError
-        If the Windows environment does not identify the required default
-        locations.
-    """
-    config_path = Path(path) if path is not None else default_manager_config_path()
-    user_profile = os.environ.get("USERPROFILE")
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    system_drive = os.environ.get("SYSTEMDRIVE")
-    if not user_profile or not local_app_data or not system_drive:
-        raise ValueError(
-            "USERPROFILE, LOCALAPPDATA, and SYSTEMDRIVE are required to initialize manager mode"
-        )
-    if len(system_drive) == 2 and system_drive[1] == ":":
-        system_drive += "\\"
-    system_root = Path(system_drive) / "opt"
-    user_root = Path(user_profile) / "opt"
-    return ManagerConfig(
-        path=config_path,
-        system_root=system_root,
-        user_root=user_root,
-        system_bin=Path(system_drive) / "bin",
-        user_bin=Path(user_profile) / "bin",
-        registry_cache=Path(local_app_data) / "gupkg" / "registry",
-        channel="stable",
-        shim_linkage="dynamic",
-        schema_version=2,
-    )
-
-
-def migrate_manager_config(path: Path, output: Path | None = None) -> Path:
-    """Write a schema-version-two copy of a validated manager file."""
-    config = load_manager_config(path)
-    destination = Path(output) if output is not None else Path(path)
-    write_text_atomic(destination, manager_config_text(config))
-    return destination
-
-
-def discover_manager(config: ManagerConfig, *, max_depth: int = 8) -> ManagerInventory:
-    """Discover both configured roots and return scoped, deterministic targets."""
-    scopes: list[ManagedScope] = []
-    targets: list[ManagedTarget] = []
-    for scope, root in ((Scope.USER, config.user_root), (Scope.MACHINE, config.system_root)):
-        diagnostics: list[str] = []
-        inventory: Inventory | None = None
-        complete = True
-        try:
-            if not root.exists():
-                raise OSError("root does not exist")
-            if not root.is_dir():
-                raise OSError("root is not a directory")
-            # Let the collection boundary report traversal failures verbatim.
-            inventory = discover_collection(root, max_depth=max_depth)
-            complete = inventory.complete
-            diagnostics.extend(inventory.diagnostics)
-        except OSError as exc:
-            complete = False
-            diagnostics.append(f"Cannot access {scope_name(scope)} root {root}: {exc}")
-        managed_scope = ManagedScope(scope, root, inventory, complete, diagnostics)
-        scopes.append(managed_scope)
-        if inventory is not None:
-            targets.extend(_managed_targets(scope, inventory))
-    targets.sort(key=lambda target: (target.package.selector.casefold(), target.package.selector, _scope_sort_key(target.scope)))
-    return ManagerInventory(config, scopes, targets)
-
-
-def select_target(inventory: ManagerInventory, selector: str, scope: Scope | None = None) -> ManagedTarget:
-    """Select a full target ID or an unambiguous manager selector."""
-    matches = [target for target in inventory.targets if target.target_id.casefold() == selector.casefold()]
-    if not matches:
-        matches = [target for target in inventory.targets if target.package.selector.casefold() == selector.casefold()]
-    if scope is not None:
-        matches = [target for target in matches if target.scope == scope]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        choices = ", ".join(target.target_id for target in matches)
-        raise ValueError(f"Target selector is ambiguous: {selector}; choose one of: {choices}")
-    raise ValueError(f"Managed target was not found: {selector}")
+# ---------------------------------------------------------------------------
+# Per-target operations
+# ---------------------------------------------------------------------------
 
 
 def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = False) -> ActionResult:
-    """Refresh one managed target through the shared package update workflow.
+    """Refresh one managed target's update status through the package workflow.
 
     Parameters
     ----------
     target : ManagedTarget
-        Target whose active manifest should be checked.
+        Target whose active (or newest local) manifest should be checked; its
+        ``update_status`` and ``candidate_version`` are updated.
     allow_dependencies : bool, default=False
-        Whether trusted package-local hooks may install missing imports for this
-        check.
+        Whether trusted package-local hooks may install missing imports.
 
     Returns
     -------
@@ -619,68 +643,38 @@ def manager_update_target(target: ManagedTarget, *, allow_dependencies: bool = F
         The update-check outcome and its process status.
     """
     from .gupkg import check_package_update
-    from .updates import load_update_state, update_paths
 
     wanted = target.installed_version or target.local_version
     manifest = next(
-        (item for item in target.package.manifests if item.version_path.name == wanted),
-        None,
+        (item for item in target.package.manifests if item.version_path.name == wanted), None
     )
     if manifest is None:
-        target.update_status = "error"
-        message = "No manifest is available for the local version"
-        target.diagnostics.append(message)
-        return ActionResult(False, errors=[message], exit_code=EXIT_USER_ERROR)
+        result = ActionResult(False, errors=["No manifest is available for the local version"], exit_code=EXIT_USER_ERROR)
+    else:
+        result = _quiet(lambda: check_package_update(manifest.version_path, local_deps_autoinstall=allow_dependencies))
+    if result.ok and result.status in {"available", "current", "not-configured"}:
+        target.update_status = result.status
+    else:
+        target.update_status = "error" if not result.ok else "not-configured"
+    target.candidate_version = None
+    if target.update_status == "available":
+        from .updates import load_update_state, update_paths
 
-    # Suppress workflow progress here; the CLI and TUI own presentation.
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            result = check_package_update(
-                manifest.version_path,
-                local_deps_autoinstall=allow_dependencies,
-            )
-    except (ConfigValidationError, ValueError) as exc:
-        target.update_status = "error"
-        target.diagnostics.append(str(exc))
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_USER_ERROR)
-    except OSError as exc:
-        target.update_status = "error"
-        target.diagnostics.append(str(exc))
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
-    except Exception as exc:  # pragma: no cover - defensive provider boundary
-        target.update_status = "error"
-        target.diagnostics.append(str(exc))
-        return ActionResult(False, errors=[str(exc)], exit_code=EXIT_MUTATION_ERROR)
-
-    target.update_status = result.status if result.status in {"available", "current"} else (
-        "not-configured" if result.ok else "error"
-    )
-    state = load_update_state(update_paths(target.package.root)["state"])
-    candidate_id = state.get("lastCandidateId")
-    for candidate in state.get("candidates", []):
-        if candidate.get("candidateId") == candidate_id:
-            target.candidate_version = candidate.get("version")
-            break
+        state = load_update_state(update_paths(target.package.root)["state"])
+        target.candidate_version = state.get("lastCandidateVersion")
     target.diagnostics.extend(result.errors)
     return result
 
 
-def manager_revalidate_target(
-    target: ManagedTarget,
-    configured_root: Path | None = None,
-    *,
-    quiet: bool = False,
-) -> str | None:
+def manager_revalidate_target(target: ManagedTarget, config: ManagerConfig) -> str | None:
     """Recheck managed ownership and health immediately before mutation.
 
     Parameters
     ----------
     target : ManagedTarget
         Target whose activation and package health must still be valid.
-    configured_root : Path, optional
-        Root that must contain the target when supplied.
-    quiet : bool, default=False
-        Suppress package health-check progress when true.
+    config : ManagerConfig
+        Configuration whose scope root must still contain the target.
 
     Returns
     -------
@@ -691,17 +685,14 @@ def manager_revalidate_target(
 
     try:
         root = target.package.root.resolve()
-        if configured_root is not None and not root.is_relative_to(configured_root.resolve()):
+        if not root.is_relative_to(config.root(target.scope).resolve()):
             return "target path escaped configured root"
         current = inspect_current(target.package.root)
         if current.status != "installed" or current.version_path is None:
             return f"current changed to {current.status}"
         if not current.version_path.resolve().is_relative_to(root):
             return "current target escaped configured root"
-        stream = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
-        with stream:
-            result = health_check_package(current.version_path, scope=target.scope)
-        if not result.ok:
+        if not _quiet(lambda: health_check_package(current.version_path, scope=target.scope)).ok:
             return "health changed before upgrade"
     except (OSError, ValueError, RuntimeError) as exc:
         return str(exc)
@@ -710,23 +701,26 @@ def manager_revalidate_target(
 
 def manager_upgrade_target(
     target: ManagedTarget,
+    config: ManagerConfig,
     *,
     no_checksum: bool = False,
     allow_dependencies: bool = False,
     shim_linkage: str | None = None,
 ) -> ActionResult:
-    """Run the ordinary package update workflow for one managed target.
+    """Check, stage, and activate one managed target's update.
 
     Parameters
     ----------
     target : ManagedTarget
         Managed package to update.
+    config : ManagerConfig
+        Manager configuration whose bin and package roots receive the install.
     no_checksum : bool, default=False
         Skip an applicable payload checksum.
     allow_dependencies : bool, default=False
         Permit trusted package-local hooks to install missing imports.
     shim_linkage : {"dynamic", "static"}, optional
-        Native wrapper linkage for the package installation.
+        Native wrapper linkage; defaults to the configured linkage.
 
     Returns
     -------
@@ -735,14 +729,15 @@ def manager_upgrade_target(
     """
     from .gupkg import full_package_upgrade
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        return full_package_upgrade(
-            target.package.root,
-            scope=target.scope,
-            no_checksum=no_checksum,
-            local_deps_autoinstall=allow_dependencies,
-            shim_linkage=shim_linkage or "dynamic",
-        )
+    linkage = shim_linkage or config.shim_linkage
+    return _quiet(lambda: full_package_upgrade(
+        target.package.root,
+        scope=target.scope,
+        no_checksum=no_checksum,
+        local_deps_autoinstall=allow_dependencies,
+        shim_linkage=linkage,
+        install_context=installation_context(config, target.scope, shim_linkage=linkage),
+    ))
 
 
 def manager_download_target(
@@ -752,6 +747,9 @@ def manager_download_target(
     allow_dependencies: bool = False,
 ) -> ActionResult:
     """Stage one managed package update without activating it.
+
+    The package workflow rechecks its source, so a staged payload is never
+    inferred from stale manager inventory.
 
     Parameters
     ----------
@@ -765,83 +763,58 @@ def manager_download_target(
     Returns
     -------
     ActionResult
-        Structured staging outcome with the process status for the operation.
-
-    Notes
-    -----
-    The update check is normally performed by ``plan_upgrade_all`` before this
-    operation.  The underlying package workflow still rechecks its source so a
-    staged payload is never inferred from stale manager inventory.
+        Structured staging outcome.
     """
     from .gupkg import download_package_update
 
+    return _quiet(lambda: download_package_update(
+        target.package.root, no_checksum=no_checksum, local_deps_autoinstall=allow_dependencies
+    ))
+
+
+def _quiet(operation):
+    """Run a package workflow with its progress output captured and discarded."""
     with contextlib.redirect_stdout(io.StringIO()):
-        return download_package_update(
-            target.package.root,
-            no_checksum=no_checksum,
-            local_deps_autoinstall=allow_dependencies,
-        )
+        return operation()
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+def _exact_table_keys(table: object, required: set[str], context: str, *, optional: set[str] = frozenset()) -> None:
+    """Require a TOML table to contain exactly the required and optional keys."""
+    if not isinstance(table, dict):
+        raise ConfigValidationError(f"{context} must be a table containing {', '.join(sorted(required))}")
+    unknown = sorted(set(table) - required - optional)
+    missing = sorted(required - set(table))
+    if unknown or missing:
+        details = []
+        if unknown:
+            details.append(f"unknown key(s): {', '.join(unknown)}")
+        if missing:
+            details.append(f"missing key(s): {', '.join(missing)}")
+        raise ConfigValidationError(f"Invalid {context}: " + "; ".join(details))
 
 
 def _expand_manager_path(value: object, base: Path, field_name: str) -> Path:
+    """Expand ``%NAME%`` and ``~`` in one configured path and make it absolute."""
     if not isinstance(value, str) or not value.strip():
-        raise ConfigValidationError(f"[packages].{field_name} must be a nonempty string")
-    env = {key.casefold(): val for key, val in os.environ.items()}
+        raise ConfigValidationError(f"[{field_name}] must be a nonempty string")
+    environment = {key.casefold(): item for key, item in os.environ.items()}
+
     def replace(match: re.Match[str]) -> str:
+        """Substitute one case-insensitive environment variable."""
         name = match.group(1)
-        if name.casefold() not in env:
-            raise ConfigValidationError(f"[packages].{field_name} references unresolved variable %{name}%")
-        return env[name.casefold()]
-    expanded = _VARIABLE_RE.sub(replace, value.strip())
-    path = Path(expanded).expanduser()
+        if name.casefold() not in environment:
+            raise ConfigValidationError(f"[{field_name}] references unresolved variable %{name}%")
+        return environment[name.casefold()]
+
+    path = Path(_VARIABLE_RE.sub(replace, value.strip())).expanduser()
     return (path if path.is_absolute() else base / path).resolve()
 
 
 def _same_or_nested(left: Path, right: Path) -> bool:
-    try:
-        return left == right or left.is_relative_to(right) or right.is_relative_to(left)
-    except OSError:
-        return os.path.normcase(str(left)) == os.path.normcase(str(right))
-
-
-def _managed_targets(scope: Scope, inventory: Inventory) -> list[ManagedTarget]:
-    result = []
-    for package in inventory.packages:
-        current = inspect_current(package.root)
-        diagnostics = list(package.diagnostics) + list(current.diagnostics)
-        installed_version = current.version_path.name if current.version_path else None
-        local_version = max((manifest.version_path.name for manifest in package.manifests), key=cmp_to_key(compare_package_versions), default=None)
-        # Validate each discovered manifest through the existing package
-        # configuration boundary so inventory health reflects real package
-        # semantics rather than merely the presence of a file.
-        for manifest in package.manifests:
-            identity = PackageIdentity.from_version_path(
-                package.root, manifest.version_path, is_current=manifest.version_path == current.version_path
-            )
-            try:
-                read_runtime_config(identity)
-            except Exception as exc:
-                diagnostics.append(f"Invalid manifest {manifest.path}: {exc}")
-        health = "healthy" if not diagnostics else "unhealthy"
-        if not inventory.complete:
-            health = "incomplete"
-        result.append(ManagedTarget(
-            f"{scope_id(scope)}:{package.selector}", scope, package,
-            current.status, installed_version, local_version, health,
-            diagnostics=diagnostics,
-        ))
-    return result
-
-
-def scope_id(scope: Scope) -> str:
-    """Return the stable lowercase manager identifier for a scope."""
-    return "user" if scope == Scope.USER else "system"
-
-
-def scope_name(scope: Scope) -> str:
-    """Return the user-facing manager scope name."""
-    return "User" if scope == Scope.USER else "System"
-
-
-def _scope_sort_key(scope: Scope) -> int:
-    return 0 if scope == Scope.USER else 1
+    """Return whether two paths are equal or one contains the other."""
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)

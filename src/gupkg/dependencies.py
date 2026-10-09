@@ -83,7 +83,7 @@ def run_with_missing_dependencies(
             if not autoinstall:
                 raise MissingLocalDependencyError(
                     f"Package-local dependency unavailable: {dependency}. "
-                    "Install it yourself or rerun with --local-deps-autoinstall."
+                    "Install it yourself or rerun with --allow-hook-dependency-install."
                 ) from exc
 
             # Install only the missing top-level import because package indexes

@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from gupkg.core import ConfigValidationError, Scope
-from gupkg.manager import discover_manager, load_manager_config, select_target
+from gupkg.manager import discover_manager, load_manager_config
 
 
 def _write_config(path: Path, system: str, user: str, *, extra: str = "", schema_version: int = 2) -> None:
@@ -101,9 +101,6 @@ def test_manager_inventory_keeps_duplicate_selectors_scoped_and_orders_versions(
     assert [target.target_id for target in inventory.targets] == ["user:vscode", "system:vscode"]
     assert inventory.targets[0].local_version == "v1.10.0.l1"
     assert all(target.installation_status == "not-installed" for target in inventory.targets)
-    with pytest.raises(ValueError, match="ambiguous"):
-        select_target(inventory, "vscode")
-    assert select_target(inventory, "vscode", Scope.USER).target_id == "user:vscode"
 
 
 def test_manager_inventory_marks_missing_root_incomplete_without_creating_it(tmp_path: Path) -> None:

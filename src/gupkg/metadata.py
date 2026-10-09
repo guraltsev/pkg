@@ -6,14 +6,15 @@ preserving unrelated tables, comments, ordering, and quoted ``#`` characters.
 
 Usage and API
 -------------
-Call ``update_config_file(...)`` to create a starter document or synchronize an
-existing file. Call ``sync_config_metadata_text(...)`` for an in-memory edit.
+Call ``sync_config_metadata_text(...)`` to synchronize existing TOML text and
+``create_starter_config(...)`` to render a documented starter document. Both
+return text; ``gupkg config-fix`` owns validation, backups, and writing.
 
 Implementation Approach
 -----------------------
 A line-aware parser identifies editable top-level metadata assignments while
 tracking TOML strings and comments. The rendered document is parsed again
-before an atomic file replacement is allowed.
+before it is returned, so a rewrite can never produce invalid TOML.
 """
 
 from __future__ import annotations
@@ -21,56 +22,10 @@ from __future__ import annotations
 import json
 import re
 import tomllib
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
-from .configuration import _validate_exact_keys
-from .core import (
-    ConfigValidationError,
-    PackageIdentity,
-    StepResult,
-    log_info,
-    write_text_atomic,
-)
-
-
-def update_config_file(identity: PackageIdentity) -> StepResult:
-    """Synchronize directory-owned metadata back to ``pkg.toml``.
-
-    ``config-fix`` uses this function. It
-    intentionally works from explicit inputs only: one package identity and the
-    current file contents on disk. Missing configs become documented starter
-    templates; existing configs are rewritten only when they already use the
-    canonical top-level metadata keys that ``gupkg`` owns.
-
-    Parameters
-    ----------
-    identity : PackageIdentity
-        Package identity whose directory-derived metadata should be
-            written back to ``pkg.toml``.
-
-    Returns
-    -------
-    StepResult
-        A :class:`StepResult` describing the update.
-
-    """
-    toml_path = identity.version_path / "pkg.toml"
-
-    if not toml_path.exists():
-        rendered = create_starter_config(identity)
-        write_text_atomic(toml_path, rendered, backup=False)
-        log_info(f"Created: {toml_path}")
-        return StepResult(ok=True, changed=True)
-
-    original_text = toml_path.read_text(encoding="utf-8")
-    rendered, changed = sync_config_metadata_text(original_text, identity)
-    if not changed or rendered == original_text:
-        log_info(f"Configuration already up to date: {toml_path}")
-        return StepResult(ok=True, changed=False)
-
-    write_text_atomic(toml_path, rendered, backup=True)
-    log_info(f"Updated: {toml_path}")
-    return StepResult(ok=True, changed=True)
+from .configuration import validate_top_level_keys
+from .core import ConfigValidationError, PackageIdentity
 
 
 def _to_toml_scalar(value: Any) -> str:
@@ -227,8 +182,8 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
     Raises
     ------
     ConfigValidationError
-        If the existing file is not valid TOML or still
-            uses legacy top-level metadata spellings.
+        If the existing file is not valid TOML, uses unknown or legacy
+        top-level keys, or has a metadata line that cannot be rewritten safely.
 
     """
     try:
@@ -240,119 +195,60 @@ def sync_config_metadata_text(text: str, identity: PackageIdentity) -> Tuple[str
     if not isinstance(parsed, dict):
         raise ConfigValidationError("pkg.toml must contain a top-level TOML table.")
 
-    top_level_keys = [
-        "name",
-        "version",
-        "localVersion",
-        "description",
-        "homepage",
-        "origin",
-        "update",
-        "only_portable",
-        "environment",
-        "shortcut",
-        "path",
-        "bin",
-    ]
-    legacy_top_level_key_hints: Dict[str, Optional[str]] = {
-        "env": "environment",
-        "shortcuts": "shortcut",
-        "portable": "only_portable",
-        "onlyportable": "only_portable",
-        "local_version": "localVersion",
-        "downloadurl": "origin",
-        "download_url": "origin",
-        "main": None,
-    }
-    _validate_exact_keys(
-        parsed,
-        allowed=set(top_level_keys),
-        context="config",
-        ordered_allowed=top_level_keys,
-        legacy_hints=legacy_top_level_key_hints,
-    )
+    validate_top_level_keys(parsed)
 
     metadata = metadata_sync_payload(identity)
+    key_pattern = re.compile(r"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+    # Locate editable top-level metadata assignments. Everything from the
+    # first table header onward belongs to a table and is never rewritten.
     lines = text.splitlines(keepends=True)
-    key_pattern = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
-
-    in_table = False
-    first_table_index = len(lines)
+    first_table: int | None = None
     line_indexes: Dict[str, int] = {}
-    insert_after = -1
-
     for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[[main]]"):
-            raise ConfigValidationError(
-                "Unsupported legacy key 'main' in config. Use canonical top-level metadata keys instead of [[main]]."
-            )
-        if stripped.startswith("["):
-            if first_table_index == len(lines):
-                first_table_index = index
-            in_table = True
-            continue
-        if not stripped or stripped.startswith("#"):
-            continue
-        if in_table:
-            continue
-        match = key_pattern.match(line.rstrip("\r\n"))
-        if match is None:
+        if line.strip().startswith("["):
+            first_table = index
+            break
+        match = key_pattern.match(line)
+        if match is None or match.group("key") not in metadata:
             continue
         key = match.group("key")
-        if key in metadata:
-            _parse_editable_top_level_metadata_line(line.rstrip("\r\n"))
-            if key in line_indexes:
-                raise ConfigValidationError(
-                    f"Duplicate metadata key '{key}' in config."
-                )
-            line_indexes[key] = index
-            insert_after = max(insert_after, index)
-            continue
-        lower = key.lower()
-        if lower in legacy_top_level_key_hints:
-            hint = legacy_top_level_key_hints[lower]
-            if hint is None:
-                raise ConfigValidationError(
-                    f"Unsupported legacy key '{key}' in config. Use canonical top-level metadata keys instead of [[main]]."
-                )
-            raise ConfigValidationError(
-                f"Unsupported legacy key '{key}' in config. Use '{hint}' instead."
-            )
+        _parse_editable_top_level_metadata_line(line.rstrip("\r\n"))
+        if key in line_indexes:
+            raise ConfigValidationError(f"Duplicate metadata key '{key}' in config.")
+        line_indexes[key] = index
 
+    # Rewrite present assignments in place, keeping indentation, trailing
+    # comments, and the line's own newline style.
     changed = False
-    for key, value in metadata.items():
-        rendered_value = _to_toml_scalar(value)
-        line_index = line_indexes.get(key)
-        if line_index is not None:
-            line = lines[line_index].rstrip("\r\n")
-            indent, _, existing_value, comment_text = (
-                _parse_editable_top_level_metadata_line(line)
-            )
-            if existing_value != rendered_value:
-                line_ending = "\n"
-                if lines[line_index].endswith("\r\n"):
-                    line_ending = "\r\n"
-                lines[line_index] = (
-                    f"{indent}{key} = {rendered_value}{comment_text}{line_ending}"
-                )
-                changed = True
-            continue
-        insert_index = (
-            first_table_index if first_table_index != len(lines) else len(lines)
+    for key, index in line_indexes.items():
+        line = lines[index]
+        ending = "\r\n" if line.endswith("\r\n") else "\n"
+        indent, _, existing_value, comment_text = _parse_editable_top_level_metadata_line(
+            line.rstrip("\r\n")
         )
-        new_line = f"{key} = {rendered_value}\n"
-        if insert_after >= 0:
-            insert_index = insert_after + 1
-            insert_after += 1
-        elif insert_index == len(lines):
+        rendered_value = _to_toml_scalar(metadata[key])
+        if existing_value != rendered_value:
+            lines[index] = f"{indent}{key} = {rendered_value}{comment_text}{ending}"
+            changed = True
+
+    # Insert missing keys after the existing metadata block, otherwise before
+    # the first table, otherwise at the end of a table-free document.
+    missing = [key for key in metadata if key not in line_indexes]
+    if missing:
+        if line_indexes:
+            insert_at = max(line_indexes.values()) + 1
+        elif first_table is not None:
+            insert_at = first_table
+        else:
             if lines and lines[-1].strip() != "":
                 lines.append("\n")
-                insert_index = len(lines)
-            insert_after = insert_index
-        lines.insert(insert_index, new_line)
-        if first_table_index != len(lines) and insert_index <= first_table_index:
-            first_table_index += 1
+            insert_at = len(lines)
+        if insert_at > 0 and not lines[insert_at - 1].endswith("\n"):
+            lines[insert_at - 1] += "\n"
+        lines[insert_at:insert_at] = [
+            f"{key} = {_to_toml_scalar(metadata[key])}\n" for key in missing
+        ]
         changed = True
 
     rendered = "".join(lines)

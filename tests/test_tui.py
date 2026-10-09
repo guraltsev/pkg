@@ -1,14 +1,17 @@
-"""Cover package-operation TUI scope labels and command handoff.
+"""Cover package-operation TUI scope labels, command routing, and status handoff.
 
 The package layout and Textual test driver are real; administrator detection
 and subprocess execution are mocked at their operating-system boundaries.
-Manager-mode presentation and package operation results are out of scope.
+Manager-mode presentation is out of scope; the child command route and its
+observable exit status are covered here because they are owned by the package
+TUI boundary.
 """
 
 from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -65,6 +68,52 @@ def test_package_tui_uses_system_scope_label_and_cli_value(
             assert "--scope system install" in str(app.screen.query_one("Label").render())
 
     asyncio.run(drive())
+
+
+def test_package_tui_routes_canonical_update_and_returns_child_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The update selection invokes the canonical CLI and preserves its failure status."""
+    version = _package_version(tmp_path)
+    commands: list[list[str]] = []
+
+    from textual.app import App
+
+    monkeypatch.setattr("gupkg.windows.is_current_user_admin", lambda: False)
+
+    def run_subprocess(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 7, stdout="failed", stderr="")
+
+    monkeypatch.setattr("gupkg.tui.subprocess.run", run_subprocess)
+
+    def run_app(app, *args, **kwargs):
+        async def drive() -> None:
+            async with app.run_test(size=(80, 12)) as pilot:
+                # Home order is Install, update check, update download, update.
+                await pilot.press("down", "down", "down", "enter")
+                await pilot.press("enter")
+                for _ in range(10):
+                    await pilot.pause(0.1)
+
+        asyncio.run(drive())
+
+    monkeypatch.setattr(App, "run", run_app)
+
+    assert run_tui(str(version)) == 7
+    assert commands == [
+        [
+            sys.executable,
+            "-m",
+            "gupkg",
+            "--scope",
+            "user",
+            "update",
+            "--shim-linkage",
+            "dynamic",
+            str(version),
+        ]
+    ]
 
 
 def test_package_tui_keeps_forced_system_scope_locked(
