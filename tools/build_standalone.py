@@ -73,24 +73,8 @@ def main() -> int:
             'target = "%COMSPEC%"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "/d"\n\n[[argument]]\nvalue = "/s"\n\n[[argument]]\nvalue = "/c"\n\n[[argument]]\nvalue = "gupkg.cmd"\n',
             encoding="utf-8",
         )
-        # Keep manager discovery deterministic in a standalone payload while
-        # leaving user roaming configuration as the normal override.
-        (payload / "gupkg-config.toml").write_text(
-            'mode = "manager"\n'
-            'schema_version = 2\n\n'
-            '[packages]\n'
-            'system = "../system"\n'
-            'user = "../user"\n\n'
-            '[bin]\n'
-            'system = "../bin-system"\n'
-            'user = "../bin-user"\n\n'
-            '[registry]\n'
-            'cache = "../registry"\n'
-            'channel = "stable"\n\n'
-            '[shims]\n'
-            'linkage = "dynamic"\n',
-            encoding="utf-8",
-        )
+        # No gupkg-config.toml is shipped: manager settings belong to the
+        # administrator ('gupkg manager init'), never inside the immutable version.
         (payload / "gupkg-tui.config.toml").write_text(
             'target = "%COMSPEC%"\nforward_arguments = true\nelevate = false\n\n[[argument]]\nvalue = "/d"\n\n[[argument]]\nvalue = "/s"\n\n[[argument]]\nvalue = "/c"\n\n[[argument]]\nvalue = "gupkg-tui.cmd"\n',
             encoding="utf-8",

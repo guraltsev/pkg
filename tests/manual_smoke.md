@@ -40,9 +40,15 @@ Standalone and registry checks:
    archive and SHA-256 digest. Confirm the digest is required, a source
    checkout `python\` directory is not copied, and the versioned payload
    contains the embedded runtime, `pkg.toml`, and native shims.
-2. Install the release once with `gupkg-bootstrap.exe --scope user`, then
-   repeat the install/repair path. Confirm it does not require elevation and
-   that `gupkg manager self status` reports a healthy embedded runtime.
+2. Install the release once with
+   `gupkg-bootstrap.cmd -Source <bundle.zip> -Sha256 <digest>` (user scope), then
+   repeat the same command. Confirm the second run reuses the folder, neither run
+   requires elevation, a new terminal finds `gupkg`, `gupkg manager init` created a
+   configuration, and `gupkg manager self status` reports a healthy embedded
+   runtime. Repeat with `-Scope system` from an elevated shell, and confirm a
+   non-elevated shell is refused with a clear message. The automated tests
+   cover only `-SkipInstall`; this step is the only coverage of the live
+   junction, shim, and PATH changes.
 3. Run `gupkg --scope user manager self repair` after removing or renaming only a
    user-scope shim/configuration file. Confirm repair restores it. Repeat in
    system scope with UAC accepted and declined; a declined prompt must leave

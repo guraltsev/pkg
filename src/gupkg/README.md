@@ -23,12 +23,16 @@ domains used by the `gupkg.cli` command boundary and package workflows:
 - `dependencies.py`: isolated installation of runtime and hook dependencies
 - `collection.py`: bounded discovery of packages below a collection root
 - `manager.py`: manager configuration, scoped inventory, and batch updates
-- `registry.py`: validated sparse Git registry cache, search, and selectors
+- `registry.py`: ZIP-downloaded, validated registry cache, search, and selectors
+- `commands.py`: the operations every front end calls (package requests, bulk
+  updates, registry install, manager init, self repair)
+- `outcome.py`, `configfix.py`: command results and their human/TOML
+  formatting; safe `pkg.toml` creation, repair, and conversion
 - `distribution.py`: standalone runtime health and scoped self-repair
 - `bootstrap.py`, `extractors.py`: embedded-runtime preparation and the
   bundled 7-Zip lookup used by package hooks
 
-`gupkg/cli.py` owns command parsing and rendering; `gupkg/gupkg.py` exposes the
+`gupkg/cli.py` owns only command parsing and display; all behaviour lives in `commands.py`; `gupkg/gupkg.py` exposes the
 high-level install, health-check, and update workflows; `tui.py` and
 `manager_tui.py` are the interactive front ends. Workflows return their errors
 in an `ActionResult` instead of printing them, so each front end reports every

@@ -1,9 +1,11 @@
 """Synchronize and query the official, read-only ``pkgs/`` registry tree.
 
-The registry module treats Git as a transport boundary and validates the
-checked-out tree before making it visible to callers. It never imports or
-executes package-local hooks; payload acquisition remains the responsibility
-of the ordinary package installation workflow.
+The registry is a ZIP archive (by default GitHub's archive of the ``stable``
+tag) that contains a ``pkgs`` folder. It is fetched with the Python standard
+library, so neither Git nor any extra tool is needed, and the unpacked tree is
+validated before it becomes visible to callers. It never imports or executes
+package-local hooks; payload acquisition remains the responsibility of the
+ordinary package installation workflow.
 
 Usage and API
 -------------
@@ -13,9 +15,10 @@ inspect its active revision, and ``search_registry(...)`` or
 
 Implementation Approach
 -----------------------
-Stable-tag resolution and sparse checkout write to a disposable directory.
-The resulting ``pkgs`` tree is validated with the existing manifest
-normalizer, then renamed into a revision-addressed cache and published by an
+The archive is downloaded into a disposable directory, identified by its
+commit ID (or content hash), and only its ``pkgs`` folder is extracted with
+path-safety checks. The tree is validated with the existing manifest
+normalizer, then copied into a revision-addressed cache and published by an
 atomic state file update. Failed work is discarded while the previous active
 revision remains usable.
 """
@@ -23,13 +26,15 @@ revision remains usable.
 from __future__ import annotations
 
 import json
+import re
 import shutil
-import subprocess
 import tempfile
+import urllib.parse
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable
+from pathlib import Path, PurePosixPath
 
 from .configuration import check_metadata_consistency, read_runtime_config
 from .core import (
@@ -39,13 +44,15 @@ from .core import (
     EXIT_SUCCESS,
     PackageIdentity,
     VERSION_DIR_NAME_RE,
+    log_info,
     write_text_atomic,
 )
+from .downloads import download_response, file_sha256
 from .origin import validate_origin_health, validate_update_health
 
 
-OFFICIAL_REPOSITORY = "https://github.com/guraltsev/pkg.git"
-STABLE_REF = "refs/tags/stable"
+# Default registry archive: the ``stable`` tag of the official package repository.
+OFFICIAL_SOURCE = "https://github.com/guraltsev/pkg/archive/refs/tags/stable.zip"
 
 
 @dataclass(frozen=True)
@@ -198,87 +205,143 @@ def resolve_selector(cache_root: Path, selector: str) -> RegistryPackage:
 def sync_registry(
     cache_root: Path,
     *,
+    source: str = OFFICIAL_SOURCE,
     offline: bool = False,
-    repository: str = OFFICIAL_REPOSITORY,
-    stable_ref: str = STABLE_REF,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> ActionResult:
-    """Synchronize the official ``pkgs`` subtree into an atomic cache."""
+    """Download the registry archive and publish its validated ``pkgs`` tree.
+
+    Parameters
+    ----------
+    cache_root : Path
+        Registry cache directory from the manager configuration.
+    source : str, default=OFFICIAL_SOURCE
+        ``http(s)://`` or ``file:`` URL of a ZIP archive containing a ``pkgs``
+        folder (a GitHub "archive" link, a mirror, or a file share).
+    offline : bool, default=False
+        Validate and report the existing cache without any download.
+
+    Returns
+    -------
+    ActionResult
+        ``synced``, ``current`` (the archive is the revision already cached),
+        or ``offline``. On failure the previous validated tree stays active.
+    """
     cache_root = Path(cache_root)
     current = registry_status(cache_root)
     if offline:
         if current.tree_path is None:
-            return ActionResult(False, errors=["No validated registry cache is available in offline mode"], exit_code=EXIT_MUTATION_ERROR)
+            return ActionResult(
+                False,
+                errors=["No validated registry cache is available in offline mode"],
+                exit_code=EXIT_MUTATION_ERROR,
+            )
         return ActionResult(True, status="offline", exit_code=EXIT_SUCCESS)
+
     official_root = cache_root / "official"
-    trees_root = official_root / "trees"
     work_parent = official_root / ".work"
     work_parent.mkdir(parents=True, exist_ok=True)
     try:
-        revision = _resolve_revision(repository, stable_ref, runner)
-        if current.revision == revision and current.tree_path is not None:
-            validate_registry_tree(current.tree_path)
-            _write_state(official_root, current, source=repository, last_failure=None)
-            shutil.rmtree(work_parent, ignore_errors=True)
-            return ActionResult(True, status="current", exit_code=EXIT_SUCCESS)
         with tempfile.TemporaryDirectory(prefix="sync-", dir=str(work_parent)) as work_name:
             work = Path(work_name)
-            checkout = _sparse_checkout(repository, revision, work, runner)
-            packages = validate_registry_tree(checkout / "pkgs")
-            if not packages:
+            archive_path = work / "registry.zip"
+            _download(source, archive_path)
+            revision = _archive_revision(archive_path)
+
+            # An archive that is already the active revision needs no rebuild;
+            # just re-validate it and refresh the bookkeeping.
+            if current.revision == revision and current.tree_path is not None:
+                validate_registry_tree(current.tree_path)
+                _write_state(official_root, current, source=source, last_failure=None)
+                return ActionResult(True, status="current", exit_code=EXIT_SUCCESS)
+
+            # Unpack only ``pkgs``, validate it fully, and only then publish.
+            pkgs = work / "pkgs"
+            _extract_pkgs(archive_path, pkgs)
+            if not validate_registry_tree(pkgs):
                 raise ConfigValidationError("Registry pkgs tree is empty")
-            target = trees_root / revision
+            target = official_root / "trees" / revision
             if target.exists():
                 shutil.rmtree(target)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(checkout / "pkgs", target / "pkgs")
+            shutil.copytree(pkgs, target / "pkgs")
         new_state = RegistryState(
             cache_root,
             revision=revision,
-            source=repository,
+            source=source,
             synchronized_at=datetime.now(timezone.utc).isoformat(),
         )
-        _write_state(official_root, new_state, source=repository, last_failure=None)
-        shutil.rmtree(work_parent, ignore_errors=True)
+        _write_state(official_root, new_state, source=source, last_failure=None)
         return ActionResult(True, changed=True, status="synced", exit_code=EXIT_SUCCESS)
     except Exception as exc:
-        _write_state(official_root, current, source=current.source or repository, last_failure=str(exc))
-        shutil.rmtree(work_parent, ignore_errors=True)
+        _write_state(official_root, current, source=current.source or source, last_failure=str(exc))
         return ActionResult(
             False,
             warnings=["The previous validated registry tree remains active."],
             errors=[f"Registry synchronization failed: {exc}"],
             exit_code=EXIT_MUTATION_ERROR,
         )
+    finally:
+        shutil.rmtree(work_parent, ignore_errors=True)
 
 
-def _resolve_revision(repository: str, stable_ref: str, runner: Callable[..., Any]) -> str:
-    """Resolve the stable ref to one full commit ID."""
-    result = runner(
-        ["git", "ls-remote", "--exit-code", repository, stable_ref],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    revision = result.stdout.split()[0] if result.stdout else ""
-    if len(revision) != 40 or any(character not in "0123456789abcdefABCDEF" for character in revision):
-        raise RuntimeError("Stable registry ref did not resolve to a full commit ID")
-    return revision.lower()
+def _download(source: str, destination: Path) -> None:
+    """Download *source* (HTTP, HTTPS, or ``file:``) to *destination* with progress."""
+    if urllib.parse.urlparse(source).scheme.lower() not in {"http", "https", "file"}:
+        raise ConfigValidationError(
+            f"Registry source must be an http(s):// or file: URL to a ZIP archive: {source}"
+        )
+    log_info(f"Downloading registry: {source}")
+    with urllib.request.urlopen(source, timeout=60) as response:
+        download_response(response, destination, label="Downloading registry")
 
 
-def _sparse_checkout(repository: str, revision: str, work: Path, runner: Callable[..., Any]) -> Path:
-    """Checkout only ``pkgs`` into a disposable Git worktree."""
-    checkout = work / "checkout"
-    runner(
-        ["git", "clone", "--filter=blob:none", "--no-checkout", repository, str(checkout)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    runner(["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"], capture_output=True, text=True, check=True)
-    runner(["git", "-C", str(checkout), "sparse-checkout", "set", "pkgs"], capture_output=True, text=True, check=True)
-    runner(["git", "-C", str(checkout), "checkout", "--detach", revision], capture_output=True, text=True, check=True)
-    return checkout
+def _archive_revision(archive_path: Path) -> str:
+    """Return a stable 40-hex revision for a registry archive.
+
+    GitHub archives record their commit ID in the ZIP comment; any other
+    archive is identified by the first 40 hex digits of its SHA-256 digest.
+    """
+    with zipfile.ZipFile(archive_path) as archive:
+        comment = archive.comment.decode("ascii", errors="ignore").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", comment):
+        return comment
+    return file_sha256(archive_path)[:40]
+
+
+def _extract_pkgs(archive_path: Path, destination: Path) -> None:
+    """Extract the archive's ``pkgs`` folder (directly or one level down) safely.
+
+    Entries that are absolute, climb out with ``..``, are symlinks, or are
+    named with a drive are rejected; everything outside ``pkgs`` is ignored.
+    """
+    destination.mkdir(parents=True)
+    root = destination.resolve()
+    with zipfile.ZipFile(archive_path) as archive:
+        members = [(PurePosixPath(info.filename), info) for info in archive.infolist()]
+        names = [parts for parts, _ in members]
+        # GitHub wraps the repository in a single top-level folder.
+        depth = 0 if any(parts.parts[:1] == ("pkgs",) for parts in names) else 1
+        found = False
+        for parts, info in members:
+            if parts.parts[depth : depth + 1] != ("pkgs",):
+                continue
+            if parts.is_absolute() or ".." in parts.parts or ":" in info.filename:
+                raise ConfigValidationError(f"Registry archive contains an unsafe path: {info.filename}")
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                raise ConfigValidationError(f"Registry archive contains a symlink: {info.filename}")
+            relative = PurePosixPath(*parts.parts[depth + 1 :])
+            target = (root / relative).resolve() if relative.parts else root
+            if not target.is_relative_to(root):
+                raise ConfigValidationError(f"Registry archive contains an unsafe path: {info.filename}")
+            found = True
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink)
+    if not found:
+        raise ConfigValidationError("Registry archive has no pkgs folder")
 
 
 def _validate_tree_entries(root: Path, path: Path) -> None:

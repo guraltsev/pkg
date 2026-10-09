@@ -81,16 +81,22 @@ def test_manager_configuration_is_not_discovered_from_cwd(tmp_path: Path, monkey
     assert "searched" in document["errors"][0]
 
 
-def test_manager_tui_owns_format_and_pause(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Interactive manager mode bypasses normal output rendering and pausing."""
-    outcome = mock.Mock(result=ActionResult(True, exit_code=7))
-    command = mock.Mock(return_value=outcome)
+def test_manager_tui_owns_format_and_pause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Interactive manager mode returns the TUI status and neither prints nor pauses."""
+    config = _config(tmp_path, tmp_path / "system", tmp_path / "user")
+    (tmp_path / "system").mkdir()
+    (tmp_path / "user").mkdir()
     pause = mock.Mock()
-    monkeypatch.setattr(cli, "_manager_command", command)
     monkeypatch.setattr(cli, "wait_for_keypress", pause)
+    monkeypatch.setattr("gupkg.dependencies.ensure_runtime_dependencies", lambda feature: None)
+    monkeypatch.setattr("gupkg.manager_tui.run_manager_tui", lambda *args, **kwargs: 7)
 
-    assert cli.main(["--format", "toml", "--pause", "manager", "tui"]) == 7
-    command.assert_called_once()
+    output = io.StringIO()
+    with redirect_stdout(output):
+        code = cli.main(["--format", "toml", "--pause", "manager", "--config", str(config), "tui"])
+
+    assert code == 7
+    assert output.getvalue() == ""
     pause.assert_not_called()
 
 

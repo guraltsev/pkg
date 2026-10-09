@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from functools import cmp_to_key
 from pathlib import Path
@@ -47,6 +49,7 @@ from .core import (
     read_toml_file,
 )
 from .layout import compute_scope_paths, inspect_current
+from .registry import OFFICIAL_SOURCE
 
 
 @dataclass(frozen=True)
@@ -58,8 +61,8 @@ class ManagerConfig:
     user_root: Path
     system_bin: Path | None = None
     user_bin: Path | None = None
-    registry_cache: Path | None = None
-    channel: str = "stable"
+    registry_cache: Path = field(default_factory=lambda: default_registry_cache())
+    registry_source: str = OFFICIAL_SOURCE
     shim_linkage: str = "dynamic"
     schema_version: int = 2
 
@@ -243,7 +246,7 @@ def load_manager_config(path: Path) -> ManagerConfig:
             "schema_version must be the integer 2; older manager configurations "
             "must be explicitly migrated"
         )
-    _exact_table_keys(raw, {"mode", "schema_version", "packages", "bin", "registry"}, "manager configuration", optional={"shims"})
+    _exact_table_keys(raw, {"mode", "schema_version", "packages", "bin"}, "manager configuration", optional={"registry", "shims"})
     if raw["mode"] != "manager":
         raise ConfigValidationError("mode must be exactly 'manager'")
 
@@ -251,20 +254,32 @@ def load_manager_config(path: Path) -> ManagerConfig:
     # not collide; the registry cache must live outside both package roots.
     _exact_table_keys(raw["packages"], {"system", "user"}, "[packages]")
     _exact_table_keys(raw["bin"], {"system", "user"}, "[bin]")
-    _exact_table_keys(raw["registry"], {"cache", "channel"}, "[registry]")
+    registry = raw.get("registry", {})
+    # ``channel`` is accepted for configurations written before ``source``
+    # existed; "stable" was its only value and it no longer has any effect.
+    _exact_table_keys(registry, set(), "[registry]", optional={"cache", "source", "channel"})
+    if registry.get("channel", "stable") != "stable":
+        raise ConfigValidationError("[registry].channel is obsolete; use [registry].source instead")
     shims = raw.get("shims", {"linkage": "dynamic"})
     _exact_table_keys(shims, {"linkage"}, "[shims]")
     roots = {name: _expand_manager_path(value, path.parent, f"packages.{name}") for name, value in raw["packages"].items()}
     bins = {name: _expand_manager_path(value, path.parent, f"bin.{name}") for name, value in raw["bin"].items()}
-    cache = _expand_manager_path(raw["registry"]["cache"], path.parent, "registry.cache")
+    cache = (
+        _expand_manager_path(registry["cache"], path.parent, "registry.cache")
+        if "cache" in registry
+        else default_registry_cache()
+    )
+    source = registry.get("source", OFFICIAL_SOURCE)
+    if not isinstance(source, str) or urllib.parse.urlparse(source).scheme.lower() not in {"http", "https", "file"}:
+        raise ConfigValidationError(
+            "[registry].source must be an http(s):// or file: URL of a ZIP archive"
+        )
     if _same_or_nested(roots["system"], roots["user"]):
         raise ConfigValidationError("Configured system and user roots must be distinct and non-nested")
     if bins["system"] == bins["user"]:
         raise ConfigValidationError("Configured system and user bin directories must be distinct")
     if _same_or_nested(cache, roots["system"]) or _same_or_nested(cache, roots["user"]):
         raise ConfigValidationError("Registry cache must be outside both package roots")
-    if raw["registry"]["channel"] != "stable":
-        raise ConfigValidationError("[registry].channel must be exactly 'stable'")
     if shims["linkage"] not in {"dynamic", "static"}:
         raise ConfigValidationError("[shims].linkage must be exactly 'dynamic' or 'static'")
     for field_name, value in (("bin.system", bins["system"]), ("bin.user", bins["user"]), ("registry.cache", cache)):
@@ -277,6 +292,7 @@ def load_manager_config(path: Path) -> ManagerConfig:
         system_bin=bins["system"],
         user_bin=bins["user"],
         registry_cache=cache,
+        registry_source=source,
         shim_linkage=shims["linkage"],
     )
 
@@ -297,10 +313,6 @@ def manager_config_text(config: ManagerConfig) -> str:
     """
     user_bin = config.user_bin or compute_scope_paths(Scope.USER)["bin_dir"]
     system_bin = config.system_bin or compute_scope_paths(Scope.MACHINE)["bin_dir"]
-    cache = config.registry_cache or (
-        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "gupkg" / "registry"
-    )
-
     def toml_path(value: Path) -> str:
         """Render a Windows path as a TOML literal string."""
         return "'" + str(value).replace("\\", "/").replace("'", "''") + "'"
@@ -315,8 +327,8 @@ def manager_config_text(config: ManagerConfig) -> str:
         f"system = {toml_path(system_bin)}\n"
         f"user = {toml_path(user_bin)}\n\n"
         "[registry]\n"
-        f"cache = {toml_path(cache)}\n"
-        'channel = "stable"\n\n'
+        f"cache = {toml_path(config.registry_cache)}\n"
+        f"source = {json.dumps(config.registry_source)}\n\n"
         "[shims]\n"
         f'linkage = "{config.shim_linkage}"\n'
     )
@@ -360,8 +372,14 @@ def default_manager_config(path: Path | None = None) -> ManagerConfig:
         user_root=user_profile / "opt",
         system_bin=Path(system_drive) / "bin",
         user_bin=user_profile / "bin",
-        registry_cache=Path(environment["LOCALAPPDATA"]) / "gupkg" / "registry",
+        registry_cache=default_registry_cache(),
     )
+
+
+def default_registry_cache() -> Path:
+    """Return the default per-user registry cache without creating it."""
+    local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(local_app_data) / "gupkg" / "registry"
 
 
 def installation_context(

@@ -133,7 +133,6 @@ def install_package(
         Install outcome and recommended exit code.
 
     """
-    _print_action_banner("install", scope)
     if shim_linkage not in {"dynamic", "static"}:
         return _failure("shim linkage must be either 'dynamic' or 'static'", EXIT_USER_ERROR)
 
@@ -153,11 +152,8 @@ def install_package(
             f"'gupkg config-fix {identity.version_path}' before installing."
         )
         return _failure(inconsistencies, EXIT_USER_ERROR, warnings)
-    log_info(f"Package: {identity.name}")
-    log_info(f"Version: {identity.version_string}")
-    log_info(f"Path: {identity.version_path}")
-    log_info(f"only_portable: {runtime_config['only_portable']}")
-    log_info("")
+    log_info(f"Installing {identity.name} {identity.version_string}")
+    log_info(f"  from {identity.version_path}")
 
     # Resolve automatic scope from the portability policy, then reject scope
     # combinations the package model cannot support.
@@ -165,7 +161,6 @@ def install_package(
     if scope == Scope.AUTO:
         scope = Scope.MACHINE if is_admin and not runtime_config["only_portable"] else Scope.USER
         log_info(f"Selected scope: {scope.value}")
-        log_info("")
     if runtime_config["only_portable"] and scope == Scope.MACHINE:
         return _failure(
             "only_portable packages cannot be installed system-wide. Please use User scope.",
@@ -277,7 +272,6 @@ def health_check_package(package_path: Path, *, scope: Scope = Scope.USER) -> Ac
         update-hook problem found.
 
     """
-    _print_action_banner("config-check", scope)
     try:
         identity, _ = resolve_input_path(Path(package_path))
         runtime_config, raw_config, warnings = read_runtime_config(identity)
@@ -292,11 +286,9 @@ def health_check_package(package_path: Path, *, scope: Scope = Scope.USER) -> Ac
     errors.extend(validate_update_health(identity, runtime_config.get("update")))
     if errors:
         return _failure(errors, EXIT_USER_ERROR, warnings)
-    log_info(f"Package: {identity.name}")
-    log_info(f"Version: {identity.version_string}")
-    log_info(f"Path: {identity.version_path}")
+    log_info(f"Checked {identity.name} {identity.version_string}")
     log_info("Health check passed.")
-    return ActionResult(ok=True, warnings=warnings)
+    return ActionResult(ok=True, warnings=warnings, status="ok")
 
 
 # ---------------------------------------------------------------------------
@@ -677,17 +669,6 @@ def _is_update_bootstrap(identity: PackageIdentity, config: Dict[str, Any]) -> b
 # ---------------------------------------------------------------------------
 # Result helpers
 # ---------------------------------------------------------------------------
-
-
-def _print_action_banner(operation: str, scope: Scope) -> None:
-    """Emit the standard progress banner for one operation."""
-    log_info("")
-    log_info("=" * 60)
-    log_info("gupkg: Package Manager")
-    log_info(f"Operation: {operation}")
-    log_info(f"Scope: {scope.value}")
-    log_info("=" * 60)
-    log_info("")
 
 
 def _failure(

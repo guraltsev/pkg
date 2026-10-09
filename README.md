@@ -1,28 +1,89 @@
 # gupkg
 
-`gupkg` is installable with `python -m pip install .`, `python -m pip install
--e .`, `pipx install .`, or `uv tool install .`. Run either `gupkg` or
-`python -m gupkg`; both use the same dispatcher. Package commands are explicit:
-`install`, `update`, `config-check`, `config-fix`, and `tui`. Manager workflows
-are grouped below the explicit `manager` command.
+**Install and update Windows programs from a small text file, with nothing hidden.**
 
-For the supported standalone/operator workflow, read
-[docs/operations.md](docs/operations.md). It covers release installation,
-manager v2 configuration, the GitHub registry, offline operation, migration,
-and self-repair.
+`gupkg` manages self-contained applications that live in ordinary folders. You
+describe a program once in a short `pkg.toml`; `gupkg` downloads and verifies
+it, then creates the Start Menu shortcuts, environment variables, PATH entries,
+and command-line wrappers it needs. Every version stays side by side, updates
+are staged before they switch over, and any command can be repeated safely to
+repair a machine.
 
-For a release install, run the shipped bootstrap wrapper with
-`--scope user` or `--scope system`; the embedded runtime and native shims are
-part of the versioned artifact. For a source-checkout development setup, copy
-the `src` directory to a folder such as `C:\opt\gupkg\` and run
-`src\gupkg.cmd install [PATH]`. It uses an available system Python 3.11+ when present.
-Otherwise it downloads verified x64 CPython and pip into the copied
-directory's ignored `python\` folder on first use. The outer `src\gupkg.cmd`
-selects a package-local native command when present and otherwise delegates to
-the adjacent `src\gupkg\gupkg.cmd` bootstrap before falling back to a
-`gupkg.exe` on `PATH`. Packaged releases provide the native command. See
-[the operations guide](docs/operations.md) for the release build inputs and
-recovery commands.
+```bat
+gupkg install C:\opt\pandoc            :: download, verify, install, wire up Windows
+gupkg update C:\opt\pandoc             :: get the newest release; the old one stays
+gupkg manager update --yes             :: do it for every package you manage
+gupkg install C:\opt\pandoc\v3.6.1 --allow-downgrade    :: roll back
+```
+
+**Why use it**
+
+- **Minimal friction.** One folder per program, one readable file per folder.
+  No installers to click through, no registry archaeology.
+- **Safe by construction.** Downloads are checksummed and built in a separate
+  folder; the working version is never modified in place. A failed update
+  changes nothing.
+- **Repairable.** `install` re-applies shortcuts, PATH, and wrappers without
+  re-downloading. `config-check` and `manager doctor` find problems early.
+- **Built for administration.** Bulk updates with a plan and confirmation,
+  `--yes` for unattended runs, stable exit codes, and `--format toml` for
+  scripts. A failing package never blocks the others.
+- **Transparent.** Plain files and folders, an NTFS junction, standard
+  registry values. Nothing runs in the background.
+
+## Documentation
+
+| I want to... | Read |
+| --- | --- |
+| Install my first program in five minutes | [Getting started](docs/getting_started.md) |
+| Do a specific task (nightly updates, rollback, CI checks, ...) | [Cookbook](docs/cookbook.md) |
+| Fix an error message | [Troubleshooting](docs/troubleshooting.md) |
+| Set up and run the multi-package manager, registry, self-repair | [Operations guide](docs/operations.md) |
+| Look up every `pkg.toml` field | [`pkg.toml` reference](#pkgtoml-reference) below |
+| Look up every command and option | `gupkg --help` and `gupkg <command> --help`, or [Commands and options](#commands-and-options) below |
+| Understand or change the code | [Development guide](docs/development_guide.md) |
+
+Requires Windows and Python 3.11 or newer (the release bundle includes its own
+runtime). Git is needed only for Git-based packages; network access only when a
+package contacts its source.
+
+## Installing gupkg
+
+`gupkg` is a self-contained tool that is deployed as a folder; it is not distributed as a
+package on a Python package index. Pick the route that fits:
+
+- **Bootstrap script (recommended).** Download `gupkg-bootstrap.ps1` and
+  `gupkg-bootstrap.cmd` from this repository, put them in one folder, and run
+
+  ```bat
+  gupkg-bootstrap.cmd                  :: for you, no elevation needed
+  gupkg-bootstrap.cmd -Scope system    :: for all users, from an elevated shell
+  ```
+
+  It downloads gupkg, places it at `<root>\gupkg\v<version>` (default root
+  `%USERPROFILE%\opt` for user scope, `C:\opt` for system scope; `-Root` changes
+  it), creates the `gupkg` and `gupkg-tui` commands and their PATH entry, and
+  runs `gupkg manager init`. It is safe to repeat. Use `-Source` with a ZIP
+  (URL or path) or folder, and `-Sha256` to verify it, to install a vetted
+  release bundle from your own share; `-SkipInstall` only places the files.
+  Nothing needs to be installed first: gupkg fetches a verified embedded
+  Python itself when the machine has none.
+- **Release bundle by hand.** The bundle built by `tools\build_standalone.py`
+  already contains the embedded runtime and native shims; unpack it and run its
+  `gupkg.cmd --scope user install <folder>`, or give it to the bootstrap script
+  as `-Source`.
+- **From a source checkout.** Copy the `src` folder to a place such as
+  `C:\opt\gupkg\` and run `src\gupkg.cmd install [PATH]`. It uses a system
+  Python 3.11+ when one exists; otherwise it downloads a verified x64 CPython
+  and pip into the copied folder's ignored `python\` directory on first use.
+  The launcher prefers a package-local native command, then the adjacent
+  `src\gupkg\gupkg.cmd` bootstrap, then a `gupkg.exe` on `PATH`.
+
+Then open a new terminal and check it with `gupkg --version`. The [operations guide](docs/operations.md)
+covers release build inputs, manager setup, the registry, and recovery commands,
+and [Getting started](docs/getting_started.md) installs a first program.
+
+## What gupkg manages
 
 `gupkg` manages self-contained Windows applications that live on disk rather
 than in a central package store. A package author puts an application's files,
@@ -46,7 +107,8 @@ files are already present.
 - Checks and stages updates before activating a new immutable version.
 - Supports GitHub Releases and trusted package-local Python update hooks.
 
-Git must be available for Git origins or Git updates. PowerShell is used to
+Git is needed only by packages that declare a Git origin or Git updates; gupkg itself, including
+the package registry, downloads plain ZIP files with Python's standard library. PowerShell is used to
 create Windows shortcuts. Network access is required only when a configured
 origin or update source is contacted.
 
@@ -201,14 +263,20 @@ user = '%USERPROFILE%\opt'
 system = 'C:\bin'
 user = '%USERPROFILE%\bin'
 
+# Optional. These are the defaults; change them to move the cache or use a mirror.
 [registry]
 cache = '%LOCALAPPDATA%\gupkg\registry'
-channel = "stable"
+source = "https://github.com/guraltsev/pkg/archive/refs/tags/stable.zip"
 ```
 
 Both package roots are required collection roots and must be distinct and
-non-nesting. The bin roots must also be distinct, and the registry cache must
-not be inside either package root. Relative paths resolve against the manager
+non-nesting. The bin roots must also be distinct. The `[registry]` table is
+optional: `cache` (default `%LOCALAPPDATA%\gupkg\registry`) is where the
+downloaded catalogue is kept and must not be inside either package root, and
+`source` (default: the `stable` tag of the official repository) is the URL of a
+ZIP archive containing a `pkgs` folder; it may be an `https://` mirror or a
+`file:` URL on a share. The older `channel` key is accepted and ignored.
+`gupkg manager init` writes this file for you. Relative paths resolve against the manager
 file, `%NAME%` expands from the case-insensitive process environment, and a
 leading `~` expands to the current user's home. Unknown variables and shell
 substitutions are rejected. A missing root is reported as an incomplete scope
@@ -218,7 +286,7 @@ installation. Only schema version 2 is accepted; older files must be migrated
 explicitly before manager commands can use them.
 
 Manager workflows include `gupkg manager list`, `gupkg manager doctor`,
-`gupkg manager update`, `gupkg manager registry sync|status`,
+`gupkg manager update`, `gupkg manager init`, `gupkg manager registry sync|status`,
 `gupkg manager search`, `gupkg manager install`, and
 `gupkg manager self status|repair|update`. `list` is local-only. Doctor
 validates configuration, roots, `current`, and manifests without contacting providers. A valid `current` is
@@ -324,6 +392,11 @@ they have an effect.
 | `--output <path>` | Selects `config-fix` output for legacy conversion only. |
 | `--no-backup`, `--backup=false` | Suppress the default timestamped `config-fix` backup. |
 | `--check-only`, `--download-only` | Limit `update` or manager update work. |
+| `--shim-linkage dynamic\|static` | For `install`, full `update`, manager update, and `manager self repair`: choose small wrappers with shared runtime DLLs (`dynamic`, default) or self-contained ones. |
+| `--yes` | For `manager update`: skip the confirmation (required without a terminal or with `--format toml`). |
+| `--force` | For `manager init`: replace an existing manager configuration. |
+| `--offline` | For `manager search` and `manager install`: use only the cached registry. |
+| `--config <file>`, `--max-depth N` | For `manager`: choose the configuration file; bound grouping-folder descent. |
 | `--pause` | Waits for a keypress before exit. |
 | `--version` | Prints the `gupkg` version and exits. |
 | `--help` | Prints command help and exits. |

@@ -1,22 +1,21 @@
-"""Cover package-operation TUI scope labels, command routing, and status handoff.
+"""Cover package-operation TUI scope labels, operation routing, and status handoff.
 
 The package layout and Textual test driver are real; administrator detection
-and subprocess execution are mocked at their operating-system boundaries.
-Manager-mode presentation is out of scope; the child command route and its
-observable exit status are covered here because they are owned by the package
-TUI boundary.
+and the core package operation (``gupkg.commands.run_package_command``) are
+mocked at their boundaries, so these tests protect what the user selects and the
+exit status they get back. Manager-mode presentation is out of scope.
 """
 
 from __future__ import annotations
 
 import asyncio
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from gupkg.core import Scope
+from gupkg import commands
+from gupkg.core import ActionResult, Scope
+from gupkg.outcome import Outcome
 from gupkg.tui import run_tui
 
 
@@ -31,68 +30,27 @@ def _package_version(root: Path) -> Path:
     return version
 
 
-def test_package_tui_uses_system_scope_label_and_cli_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An administrator package install displays System and invokes system scope."""
-    version = _package_version(tmp_path)
-    captured = []
+@pytest.fixture
+def operations(monkeypatch: pytest.MonkeyPatch) -> list[commands.PackageRequest]:
+    """Record each package request the TUI runs and answer with a failing status 7."""
+    requests: list[commands.PackageRequest] = []
 
+    def run(request, *, output=None):
+        requests.append(request)
+        return Outcome(request.command, ActionResult(False, errors=["failed"], exit_code=7))
+
+    monkeypatch.setattr(commands, "run_package_command", run)
+    return requests
+
+
+def _drive(monkeypatch: pytest.MonkeyPatch, steps) -> None:
+    """Replace ``App.run`` with a Textual test-driver session that performs *steps*."""
     from textual.app import App
-
-    monkeypatch.setattr("gupkg.windows.is_current_user_admin", lambda: True)
-    monkeypatch.setattr(
-        App,
-        "run",
-        lambda app, *args, **kwargs: captured.append(app),
-    )
-    monkeypatch.setattr(
-        "gupkg.tui.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, stdout="completed", stderr=""
-        ),
-    )
-
-    assert run_tui(str(version)) == 0
-    app = captured[0]
-
-    async def drive() -> None:
-        async with app.run_test(size=(80, 12)) as pilot:
-            await pilot.press("enter")
-            options = app.screen.query_one("#command-options")
-            rendered = str(options.get_option_at_index(2))
-            assert "Installation Scope: System" in rendered
-            assert "Machine" not in rendered
-
-            await pilot.press("enter")
-            assert "--scope system install" in str(app.screen.query_one("Label").render())
-
-    asyncio.run(drive())
-
-
-def test_package_tui_routes_canonical_update_and_returns_child_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The update selection invokes the canonical CLI and preserves its failure status."""
-    version = _package_version(tmp_path)
-    commands: list[list[str]] = []
-
-    from textual.app import App
-
-    monkeypatch.setattr("gupkg.windows.is_current_user_admin", lambda: False)
-
-    def run_subprocess(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 7, stdout="failed", stderr="")
-
-    monkeypatch.setattr("gupkg.tui.subprocess.run", run_subprocess)
 
     def run_app(app, *args, **kwargs):
         async def drive() -> None:
             async with app.run_test(size=(80, 12)) as pilot:
-                # Home order is Install, update check, update download, update.
-                await pilot.press("down", "down", "down", "enter")
-                await pilot.press("enter")
+                await steps(app, pilot)
                 for _ in range(10):
                     await pilot.pause(0.1)
 
@@ -100,54 +58,63 @@ def test_package_tui_routes_canonical_update_and_returns_child_status(
 
     monkeypatch.setattr(App, "run", run_app)
 
-    assert run_tui(str(version)) == 7
-    assert commands == [
-        [
-            sys.executable,
-            "-m",
-            "gupkg",
-            "--scope",
-            "user",
-            "update",
-            "--shim-linkage",
-            "dynamic",
-            str(version),
-        ]
-    ]
 
-
-def test_package_tui_keeps_forced_system_scope_locked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_administrator_install_shows_system_scope_and_requests_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operations
 ) -> None:
-    """A manager handoff displays and forwards its forced system scope consistently."""
+    """An administrator install displays System and runs the install with system scope."""
     version = _package_version(tmp_path)
-    captured = []
+    monkeypatch.setattr("gupkg.windows.is_current_user_admin", lambda: True)
 
-    from textual.app import App
+    async def steps(app, pilot) -> None:
+        await pilot.press("enter")
+        rendered = str(app.screen.query_one("#command-options").get_option_at_index(2))
+        assert "Installation Scope: System" in rendered
+        assert "Machine" not in rendered
+        await pilot.press("enter")
+        assert "--scope system install" in str(app.screen.query_one("Label").render())
 
-    monkeypatch.setattr(
-        App,
-        "run",
-        lambda app, *args, **kwargs: captured.append(app),
-    )
-    monkeypatch.setattr(
-        "gupkg.tui.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, stdout="completed", stderr=""
-        ),
-    )
+    _drive(monkeypatch, steps)
+    run_tui(str(version))
 
-    assert run_tui(str(version), forced_scope=Scope.MACHINE) == 0
-    app = captured[0]
+    assert [(r.command, r.scope) for r in operations] == [("install", Scope.MACHINE)]
 
-    async def drive() -> None:
-        async with app.run_test(size=(80, 12)) as pilot:
-            await pilot.press("enter")
-            options = app.screen.query_one("#command-options")
-            assert "Installation Scope: System (locked)" in str(
-                options.get_option_at_index(2)
-            )
-            await pilot.press("enter")
-            assert "--scope system install" in str(app.screen.query_one("Label").render())
 
-    asyncio.run(drive())
+def test_update_selection_runs_a_full_update_and_returns_its_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operations
+) -> None:
+    """The update selection runs the full update and the process status is the operation's."""
+    version = _package_version(tmp_path)
+    monkeypatch.setattr("gupkg.windows.is_current_user_admin", lambda: False)
+
+    async def steps(app, pilot) -> None:
+        # Home order is Install, update check, update download, update.
+        await pilot.press("down", "down", "down", "enter")
+        await pilot.press("enter")
+
+    _drive(monkeypatch, steps)
+
+    assert run_tui(str(version)) == 7
+    [request] = operations
+    assert (request.command, request.check_only, request.download_only) == ("update", False, False)
+    assert request.scope == Scope.USER
+    assert request.path == version
+
+
+def test_manager_selected_system_scope_stays_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operations
+) -> None:
+    """A manager handoff displays its system scope as locked and runs with it."""
+    version = _package_version(tmp_path)
+
+    async def steps(app, pilot) -> None:
+        await pilot.press("enter")
+        rendered = str(app.screen.query_one("#command-options").get_option_at_index(2))
+        assert "Installation Scope: System (locked)" in rendered
+        await pilot.press("enter")
+        assert "--scope system install" in str(app.screen.query_one("Label").render())
+
+    _drive(monkeypatch, steps)
+    run_tui(str(version), forced_scope=Scope.MACHINE)
+
+    assert [(r.command, r.scope) for r in operations] == [("install", Scope.MACHINE)]

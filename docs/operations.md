@@ -13,6 +13,8 @@ installed `gupkg` should discover packages in separate user and system roots.
 
 | Need | Entry point |
 | --- | --- |
+| Install gupkg itself and set up manager mode | `gupkg-bootstrap.cmd [-Scope user|system]` |
+| Create the manager configuration | `gupkg manager init` |
 | Install or repair one package | `gupkg install [PATH]`, `gupkg config-fix [PATH]` |
 | Inspect or update one package | `gupkg config-check [PATH]`, `gupkg update [PATH]` |
 | Inspect all managed packages | `gupkg manager list`, `gupkg manager doctor` |
@@ -27,21 +29,32 @@ occurs implicitly from the current directory.
 
 ## Standalone installation
 
-Release artifacts contain a version directory with the application payload,
-the embedded Python runtime, package metadata, and the native bootstrap/shim
-files. The release wrapper is the supported entry point. It selects a user or
-system install location and then runs the packaged manager:
+`gupkg-bootstrap.ps1` (with its `gupkg-bootstrap.cmd` launcher, which only
+bypasses the script execution policy for one run) is the supported entry point.
+It runs on stock Windows PowerShell 5.1:
 
 ```bat
-gupkg-bootstrap.exe --scope user
-gupkg-bootstrap.exe --scope system
+gupkg-bootstrap.cmd                      :: user scope, no elevation
+gupkg-bootstrap.cmd -Scope system        :: all users, elevated shell required
+gupkg-bootstrap.cmd -Source \\server\share\gupkg-0.12.0.zip -Sha256 <digest>
 ```
 
-User scope does not require elevation. System scope requires an elevated
-terminal or an accepted UAC prompt. After installation, use the installed
-`gupkg` command and keep the version directory immutable; repairs and upgrades
-should replace or activate a complete version rather than editing the embedded
-runtime in place.
+What it does, in order: choose the root (`%USERPROFILE%\opt` or `C:\opt`, or
+`-Root`); fetch the archive from `-Source` (a URL, ZIP, or folder; default: the
+`stable` tag of the official repository) and verify `-Sha256` when given;
+place it at `<root>\gupkg\v<version>`, reusing a matching folder unless
+`-Force`; run `gupkg install` on it, which creates the `current` junction, the
+`gupkg` and `gupkg-tui` commands, and the PATH entry; and run
+`gupkg manager init` unless `-SkipManagerInit` (an existing configuration is
+left untouched). Every step is repeatable. It needs no Python in advance: the
+first run of gupkg downloads a SHA-256-verified embedded Python when none is
+installed. Keep the version directory immutable; repairs and upgrades should
+replace or activate a complete version rather than editing the runtime in place.
+
+Release archives contain a version directory with the application payload, the
+embedded Python runtime, package metadata, and the native shim files. They ship
+no manager configuration: roots and registry settings belong to the
+administrator and are created by `manager init`.
 
 The repository-side assembly tool is:
 
@@ -99,14 +112,20 @@ user = '%USERPROFILE%\opt'
 system = 'C:\bin'
 user = '%USERPROFILE%\bin'
 
+# Optional. These are the defaults; change them to move the cache or use a mirror.
 [registry]
 cache = '%LOCALAPPDATA%\gupkg\registry'
-channel = "stable"
+source = "https://github.com/guraltsev/pkg/archive/refs/tags/stable.zip"
 ```
 
 `packages.system` and `packages.user` are required, distinct, non-nesting
-collection roots. The two `bin` directories must also be distinct. The registry
-cache must be outside both package roots. Existing configured paths must be
+collection roots. The two `bin` directories must also be distinct. The whole
+`[registry]` table is optional: `cache` defaults to
+`%LOCALAPPDATA%\gupkg\registry` and must be outside both package roots, and
+`source` defaults to the official `stable` archive. `source` may be any
+`https://` or `file:` URL of a ZIP archive that contains a `pkgs` folder, so a
+mirror or a network share works. The obsolete `channel = "stable"` line is
+accepted and ignored. Existing configured paths must be
 directories; loading the configuration does not create roots. Relative paths
 are resolved relative to the configuration file, `%NAME%` references use the
 case-insensitive process environment, and a leading `~` means the current
@@ -116,13 +135,29 @@ relationships are rejected.
 Only schema version 2 is accepted. Older files must be converted as a separate
 administrative operation before they can select manager mode.
 
+## First-time setup
+
+```bat
+gupkg manager init            :: write gupkg-config.toml with defaults and create its folders
+gupkg manager registry sync   :: download the package catalogue
+gupkg manager doctor          :: confirm everything is healthy
+```
+
+`manager init` refuses to overwrite an existing configuration unless you pass
+`--force`, and reports (without failing) any folder it could not create, such as
+the system root without Administrator rights. Edit the file afterwards to move
+any location.
+
 ## Registry workflow
 
-The official stable registry is the Git repository
-`https://github.com/guraltsev/pkg.git`. Registry data is treated as untrusted
-metadata: sync uses a sparse checkout, validates manifests and selectors, and
-does not import or execute package code. A failed sync leaves the previous
-validated active tree in place.
+The official stable registry is the `pkgs` folder of the `stable` tag of
+`github.com/guraltsev/pkg`, fetched as a plain ZIP archive over HTTPS (or from
+the `[registry] source` you configure) using Python's standard library; neither
+Git nor any other tool is required. Registry data is treated as untrusted
+metadata: sync extracts only the `pkgs` folder with path-safety checks,
+validates manifests and selectors, and does not import or execute package code.
+Each archive is identified by its commit ID (or content hash), and a failed sync
+leaves the previous validated tree in place.
 
 ```bat
 gupkg manager registry sync

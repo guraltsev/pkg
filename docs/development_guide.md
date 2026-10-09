@@ -16,8 +16,13 @@ The runtime package has one-way domain boundaries:
 - `components` applies shortcuts, environment variables, `PATH`, and wrappers.
 - `origin` prepares and replaces `App/` payloads.
 - `updates` owns state, hook loading, candidate normalization, and staging.
-- `registry` owns the sparse Git checkout/cache lifecycle and validates registry
+- `registry` owns the ZIP download/cache lifecycle and validates registry
   data without importing package-local code.
+- `commands` is the application layer: every operation the front ends perform
+  (package requests, `config-fix` via `configfix`, bulk manager updates, registry
+  install, manager init, self repair) returns an `outcome.Outcome`.
+- `cli`, `tui`, and `manager_tui` are thin shells that only collect input, call
+  `commands`, and display the result with the shared formatters in `outcome`.
 - `distribution` owns standalone runtime health, bootstrap metadata checks, and
   scoped self-repair.
 
